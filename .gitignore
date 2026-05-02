@@ -1,0 +1,90 @@
+# === Arduino ===
+build/
+*.elf
+*.bin
+*.hex
+*.map
+*.ino.cpp
+
+# === ESP-IDF ===
+sdkconfig.old
+managed_components/
+dependencies.lock
+
+# === Zephyr / west ===
+.west/
+west.yml.user
+
+# === C / C++ build artifacts ===
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+*.d
+*.gch
+*.pch
+compile_commands.json
+.cache/
+.ccls-cache/
+.clangd/
+
+# === CMake ===
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+_deps/
+install_manifest.txt
+
+# === Make / autotools ===
+Makefile.in
+autom4te.cache/
+config.log
+config.status
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.Python
+.venv/
+venv/
+env/
+ENV/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+pip-log.txt
+pip-delete-this-directory.txt
+dist/
+*.whl
+
+# === Editors / IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.#*
+
+# === OS noise ===
+.DS_Store
+Thumbs.db
+desktop.ini
