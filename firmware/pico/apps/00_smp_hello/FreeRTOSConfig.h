@@ -66,9 +66,13 @@
 #define configENABLE_MPU                        0
 #define configENABLE_FPU                        1
 #define secureconfigMAX_SECURE_CONTEXTS         5
-#define configMAX_API_CALL_INTERRUPT_PRIORITY   0
-#define configMAX_SYSCALL_INTERRUPT_PRIORITY    configMAX_API_CALL_INTERRUPT_PRIORITY
+#define configMAX_API_CALL_INTERRUPT_PRIORITY   16
+#define configMAX_SYSCALL_INTERRUPT_PRIORITY    16
 #define configKERNEL_INTERRUPT_PRIORITY         255
+
+/* pico-sdk interop — required for mutex/sem/sleep_ms to yield to FreeRTOS */
+#define configSUPPORT_PICO_SYNC_INTEROP         1
+#define configSUPPORT_PICO_TIME_INTEROP         1
 
 #define configASSERT(x) \
     if ((x) == 0) { portDISABLE_INTERRUPTS(); for( ;; ); }

@@ -20,6 +20,7 @@ target_include_directories(00_smp_hello PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 
 target_link_libraries(00_smp_hello
     pico_stdlib
+    pico_async_context_freertos
     FreeRTOS-Kernel
     FreeRTOS-Kernel-Heap4
 )

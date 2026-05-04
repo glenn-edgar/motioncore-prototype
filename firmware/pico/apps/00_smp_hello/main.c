@@ -1,7 +1,10 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
+#include "pico/async_context_freertos.h"
 #include "FreeRTOS.h"
 #include "task.h"
+
+static async_context_freertos_t async_context_instance;
 
 static void core_task(void *arg) {
     const char *name = pcTaskGetName(NULL);
@@ -13,7 +16,14 @@ static void core_task(void *arg) {
     }
 }
 
+static void setup_task(void *arg) {
+    async_context_freertos_config_t cfg = async_context_freertos_default_config();
+    async_context_freertos_init(&async_context_instance, &cfg);
+    vTaskDelete(NULL);
+}
+
 void vApplicationMallocFailedHook(void) { for(;;); }
+void vApplicationStackOverflowHook(TaskHandle_t t, char *name) { (void)t; (void)name; for(;;); }
 
 void vApplicationGetIdleTaskMemory(StaticTask_t **ppxTaskTCB,
                                    StackType_t **ppxTaskStack,
@@ -48,6 +58,8 @@ void vApplicationGetTimerTaskMemory(StaticTask_t **ppxTaskTCB,
 
 int main(void) {
     stdio_init_all();
+
+    xTaskCreate(setup_task, "setup", configMINIMAL_STACK_SIZE * 2, NULL, tskIDLE_PRIORITY + 3, NULL);
 
     TaskHandle_t t0, t1;
     xTaskCreate(core_task, "core0", configMINIMAL_STACK_SIZE * 2, NULL, tskIDLE_PRIORITY + 1, &t0);

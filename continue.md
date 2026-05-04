@@ -218,7 +218,7 @@ cleanup — recommended before edits begin.
 | Block | Output | Status |
 |---|---|---|
 | A | Pico SDK + FreeRTOS-Kernel SMP toolchain on **Pi 4 (raspberrypi @ 192.168.1.66)**: arm-gcc 14.2.Rel1, `pico-sdk`, `pico-extras`, `FreeRTOS-Kernel` (RPi fork — see §A.1), `picotool` 2.2.0-a4, CMake 4.3.2 via pip. Repo at `~/work/motioncore-prototype`. WSL is editor-only over SSHFS (`~/robot-fs`). | **done 2026-05-03** |
-| B | SMP smoke test at `firmware/pico/apps/00_smp_hello/` — two FreeRTOS tasks pinned one-per-core, both `printf` to USB-CDC. **`.uf2` builds (86.5 KB).** Hardware flash deferred until Pico 2 W is in hand. | **built, not flashed** |
+| B | SMP smoke test at `firmware/pico/apps/00_smp_hello/` — two FreeRTOS tasks pinned one-per-core, both `printf` to USB-CDC. **Verified on hardware 2026-05-03: USB-CDC streams `core0 tick=N core=0` at 1 Hz. Outstanding: core1 task does not produce output — second core launch / affinity to debug next session.** | **flashed, single-core only** |
 | **C** | **`firmware/pico/scservo/` builds and links — vendored library + `uart_pico.c` + `timing_pico.c` + `CMakeLists.txt`.** Plain-UART backing first; swap to PIO half-duplex if §7.1 demands it. | **vendored sources copied; glue files pending** |
 | D | Port main.c + 7 STSCL examples (Ping, WritePos, SyncWritePos, SyncRead, FeedBack, RegWritePos, CalibrationOfs) as FreeRTOS apps under `firmware/pico/apps/`. Verify each on hardware. | not started |
 | E | Diff-drive physics in C99, own .c/.h, no platform headers. | not started |
@@ -408,21 +408,81 @@ These cost time the first pass; **do not** re-discover them next session:
    `vApplicationGetPassiveIdleTaskMemory` (SMP-specific, takes
    `xCoreID`), `vApplicationGetTimerTaskMemory`, and (because
    `configUSE_MALLOC_FAILED_HOOK=1`) `vApplicationMallocFailedHook`.
-   The minimal versions that work are in `00_smp_hello/main.c`.
+   With `configCHECK_FOR_STACK_OVERFLOW=2`, also need
+   `vApplicationStackOverflowHook`. The minimal versions that work are
+   in `00_smp_hello/main.c`.
+8. **`pico_stdio_usb` produces no output under FreeRTOS until you
+   add three things together:**
+   (a) link `pico_async_context_freertos` in CMakeLists,
+   (b) call `async_context_freertos_init()` from a FreeRTOS task
+       (we use a brief `setup_task` that inits and self-deletes),
+   (c) set `configSUPPORT_PICO_SYNC_INTEROP=1` and
+       `configSUPPORT_PICO_TIME_INTEROP=1` in FreeRTOSConfig.h —
+       these make pico-sdk's mutex/sleep_ms yield to FreeRTOS instead
+       of deadlocking. Without (c) the printf path inside stdio_usb
+       hangs on its internal mutex.
+9. **`configMAX_SYSCALL_INTERRUPT_PRIORITY` should be 16, not 0**, on
+   Cortex-M33 NTZ. Setting to 0 prevents API-callable interrupts from
+   ever running. The pico-examples canonical value is 16.
+10. **The pico-examples `hello_world/serial` is the UART variant** —
+    will not produce `/dev/ttyACM*`. Use `hello_world/usb` for the
+    USB-CDC smoke test.
+11. **picotool's `-x` flag executes after load** — much better than
+    a separate reboot dance. `picotool reboot -u -f` to put a running
+    Pico back into BOOTSEL is needed before the next flash.
 
-### A.2 Next-session entry point
+### A.3 Block B verified on hardware (2026-05-03)
+
+`firmware/pico/apps/00_smp_hello/build/00_smp_hello.uf2` flashed to a
+Pico 2 W (BOOTSEL → picotool load -x). Pico re-enumerated as
+`2e8a:0009 Raspberry Pi Pico` with `/dev/ttyACM0`. Output stream:
+
+```
+core0 tick=N core=0
+core0 tick=N+1 core=0
+...
+```
+
+at 1 Hz, read with pyserial (DTR asserted by default). **The `core1`
+task does NOT produce output** — only the `core0` task is active. Two
+candidate causes for next session:
+
+- The second M33 core isn't actually being launched by
+  `vTaskStartScheduler()` despite `configNUMBER_OF_CORES=2`.
+- `vTaskCoreAffinitySet(t1, 1u << 1)` fails or the mask convention is
+  inverted on this port.
+
+Debug plan: drop affinity entirely and let both tasks float; if both
+tasks then print but `core=0` for both, second core isn't running. If
+both print and `core=` differs, affinity logic was wrong. Compare
+against `pico-examples/freertos/hello_freertos.c` directly.
+
+### A.4 Hardware-day gotchas (USB enumeration on this Pi 4)
+
+- **The Pi 4 chronic undervoltage** (hwmon hwmon1 cycles every
+  ~30–60s) was a red herring — once we plugged through a known-good
+  port directly, USB-CDC worked. PSU swap deferred to user.
+- **Plain Picos do NOT enumerate USB out-of-the-box.** The bootrom
+  only enables USB when BOOTSEL is held during plug-in. Without
+  BOOTSEL or running firmware, the USB bus is silent (LED still on
+  from VBUS). XIAO boards behave differently — they ship with a
+  bootloader that exposes USB-CDC unconditionally.
+- **No driver install needed.** The Linux `cdc_acm` kernel module
+  handles all USB-CDC class devices including Picos. Same with
+  mass-storage in BOOTSEL mode.
+
+### A.5 Next-session entry point
 
 1. Skim §1 + §3 + §4 + §6 + §10 of this file to recover context.
 2. Decide open #1 (plain UART vs PIO from day one) and open #2 (GBK
    cleanup). Recommendations: plain UART first, GBK fix yes.
-3. **Order hardware** if not already on the way: 1× Pico 2 W, 1× Bus
-   Servo Adapter (A).
-4. **Once Pico 2 W arrives:** flash `firmware/pico/apps/00_smp_hello/
-   build/00_smp_hello.uf2` (already built). Hold BOOTSEL while
-   plugging USB; copy the UF2 onto the `RPI-RP2` drive. Open the
-   resulting USB-CDC port at any baud — should see
-   `core0 tick=N core=0` and `core1 tick=N core=1` interleaving every
-   1 s, confirming SMP across both M33 cores.
+3. **Address the Pi 4 PSU.** Use the official 5V/3A USB-C; the chronic
+   undervoltage warnings need to go away before USB hubs become
+   reliable.
+4. **Debug single-core SMP** in `00_smp_hello` (see §A.3). Quick
+   tests in order: drop affinity → check both tasks run → if both
+   land on core=0, second core not booting. Diff against
+   `pico-examples/freertos/hello_freertos.c` for the missing pattern.
 5. Run §7.1 (half-duplex tristate test) — needs a logic analyzer. If
    unavailable, defer and pre-bias toward PIO-1.
 6. **Block C:** write `uart_pico.c` (~50 LOC plain UART, or ~80 LOC
@@ -435,6 +495,22 @@ These cost time the first pass; **do not** re-discover them next session:
 8. **Block D:** port the 7 STSCL examples as `firmware/pico/apps/0N_*`
    apps. Flash one at a time. First-flash target is `01_ping` against
    a single ID-1 servo on the bus.
+
+### Build-and-flash one-liner
+
+```bash
+ssh robot 'export PICO_SDK_PATH=$HOME/pico/pico-sdk; \
+           export FREERTOS_KERNEL_PATH=$HOME/pico/FreeRTOS-Kernel; \
+           export PATH=$HOME/.local/bin:$HOME/pico/arm-gnu-toolchain-14.2.rel1-aarch64-arm-none-eabi/bin:$PATH; \
+           set -e; cd ~/work/motioncore-prototype/firmware/pico/apps/<APP>/build && \
+           ninja && \
+           sudo picotool reboot -u -f; sleep 3; \
+           sudo picotool load -x <APP>.uf2; sleep 3; \
+           python3 -c "import serial,time; s=serial.Serial(\"/dev/ttyACM0\",115200,timeout=8); s.dtr=True; time.sleep(0.5); print(s.read(800).decode(errors=\"replace\"))"'
+```
+
+Use `set -e` — the `ninja | tail` pattern silently masks build failures
+because `tail` exits 0 even if `ninja` exited non-zero.
 
 ## 11. Cross-references
 
