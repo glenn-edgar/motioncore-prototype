@@ -335,8 +335,14 @@ local OPCODE_NAMES = {
     [0x0001] = "OP_REGISTER",
     [0x0002] = "OP_HEARTBEAT",
     [0x0005] = "OP_PONG",
+    [0x0010] = "OP_DBG_LOG",
     [0x0103] = "OP_REGISTER_ACK",
     [0x0104] = "OP_PING",
+}
+
+-- Opcodes whose payload should be rendered as plain text (no hex column).
+local OPCODE_TEXT_PAYLOAD = {
+    [0x0010] = true,   -- OP_DBG_LOG
 }
 local function opcode_label(cmd)
     return OPCODE_NAMES[cmd] or string.format("cmd=0x%04X", cmd)
@@ -479,12 +485,6 @@ local function decode_s2m_frame()
         slip_state.synced = true
     end
 
-    -- Render payload as ASCII (with dots for non-printable) + hex bytes
-    local pay_hex, pay_asc = {}, {}
-    for i = 8, 7 + len do
-        table.insert(pay_hex, string.format("%02x", f[i]))
-        table.insert(pay_asc, ascii_safe(f[i]))
-    end
     io.write(string.format(
         "[frame %3d] addr=0x%02X cmd=0x%04X (%-16s) seq=%3d ack_seq=%3d ack_status=0x%02X len=%3d CRC=%s",
         slip_state.frame_no, addr, cmd, opcode_label(cmd),
@@ -492,7 +492,24 @@ local function decode_s2m_frame()
         crc_ok and string.format("ok(0x%02X)", crc_have)
                or  string.format("BAD have=0x%02X calc=0x%02X", crc_have, crc_calc)))
     if len > 0 then
-        io.write(string.format("\n  payload: %s  |%s|", table.concat(pay_hex, " "), table.concat(pay_asc)))
+        if OPCODE_TEXT_PAYLOAD[cmd] then
+            -- Text-payload opcodes (OP_DBG_LOG, future shell replies): render
+            -- payload bytes as a quoted string, no hex column.
+            local s = {}
+            for i = 8, 7 + len do
+                table.insert(s, ascii_safe(f[i]))
+            end
+            io.write(string.format("\n  text: \"%s\"", table.concat(s)))
+        else
+            -- Render payload as ASCII + hex columns (default).
+            local pay_hex, pay_asc = {}, {}
+            for i = 8, 7 + len do
+                table.insert(pay_hex, string.format("%02x", f[i]))
+                table.insert(pay_asc, ascii_safe(f[i]))
+            end
+            io.write(string.format("\n  payload: %s  |%s|",
+                table.concat(pay_hex, " "), table.concat(pay_asc)))
+        end
     end
     io.write("\n")
     io.flush()

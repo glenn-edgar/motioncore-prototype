@@ -22,6 +22,7 @@
 #define OP_REGISTER       ((uint16_t)0x0001)  // dongle boot announcement
 #define OP_HEARTBEAT      ((uint16_t)0x0002)  // periodic alive ping
 #define OP_PONG           ((uint16_t)0x0005)  // response to host's OP_PING
+#define OP_DBG_LOG        ((uint16_t)0x0010)  // se_log output (UTF-8 text payload)
 
 // ----- m2s (host -> dongle) -----
 #define OP_REGISTER_ACK   ((uint16_t)0x0103)  // host acknowledges OP_REGISTER

@@ -40,6 +40,7 @@
 #include "register_dongle_v2.h"
 
 #include "frame.h"
+#include "opcodes.h"
 
 extern const s_engine_rom_t register_dongle_v2_module_rom;
 
@@ -93,6 +94,32 @@ frame_ring_t         g_tx_ring;
 // ----------------------------------------------------------------------------
 
 static frame_decoder_t g_rx_decoder;
+
+// ----------------------------------------------------------------------------
+// debug_packet_fn — bridges s_engine's debug_fn callback to libcomm OP_DBG_LOG.
+// Every se_log / se_log_int / etc. invocation arrives here with a formatted
+// "[timestamp] message" line; we wrap it in an s2m frame and stage it in the
+// TX ring. Same drain path as heartbeats/pongs, so it competes for the same
+// CFG_TUD_CDC_TX_BUFSIZE bytes — keep log output sparse.
+// ----------------------------------------------------------------------------
+
+static uint8_t g_dbg_seq = 0;
+
+static void debug_packet_fn(s_expr_tree_instance_t* inst, const char* msg) {
+    (void)inst;
+    if (!msg) return;
+    size_t len = strlen(msg);
+    if (len > COMM_PAYLOAD_MAX) len = COMM_PAYLOAD_MAX;
+    frame_meta_t meta = {
+        .addr        = 1,
+        .cmd         = OP_DBG_LOG,
+        .seq         = g_dbg_seq++,
+        .ack_seq     = 0,
+        .ack_status  = 0,
+        .payload_len = (uint8_t)len,
+    };
+    (void)frame_encode_s2m(&meta, (const uint8_t*)msg, &g_tx_ring);
+}
 
 // ----------------------------------------------------------------------------
 // Tick the tree and drain its event queue. Mirrors the
@@ -170,6 +197,7 @@ int main(void) {
     uint8_t init_err = s_engine_init_rom(&module, &register_dongle_v2_module_rom, alloc);
     (void)init_err;
     if (init_err == S_EXPR_ERR_OK) {
+        s_expr_module_set_debug(&module, debug_packet_fn);
         tree = s_expr_tree_create_by_hash(&module, REGISTER_DONGLE_V2_HASH, 0);
     }
 
