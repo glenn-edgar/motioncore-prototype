@@ -165,6 +165,12 @@ start_tree("register_dongle_v2")
         -- One-shot init: dongle_state = BOOT (se_i_set_field fires once at INIT)
         se_i_set_field("dongle_state", DONGLE_BOOT)
 
+        -- Top-level dispatcher for engine-internal events (host reattach
+        -- being the only one today). Sits BEFORE the state_machine sibling
+        -- so its field-writes are visible to state_machine in the same tick.
+        local ie = m_call("handle_internal_events")
+        end_call(ie)
+
         -- The top-level driver.
         se_state_machine("dongle_state", case_fn)
 

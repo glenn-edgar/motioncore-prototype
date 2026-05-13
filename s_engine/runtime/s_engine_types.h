@@ -477,15 +477,22 @@ typedef void (*s_expr_error_fn_t)(
 // MEMORY ALLOCATOR INTERFACE
 // ============================================================================
 
-typedef void*  (*s_expr_malloc_fn_t)(void* ctx, size_t size);
-typedef void   (*s_expr_free_fn_t)(void* ctx, void* ptr);
-typedef double (*s_expr_time_fn_t)(void* ctx);
+typedef void*    (*s_expr_malloc_fn_t) (void* ctx, size_t size);
+typedef void     (*s_expr_free_fn_t)   (void* ctx, void* ptr);
+typedef double   (*s_expr_time_fn_t)   (void* ctx);
+typedef uint32_t (*s_expr_time_ms_fn_t)(void* ctx);
 
 typedef struct {
     s_expr_malloc_fn_t   malloc;
     s_expr_free_fn_t     free;
     void*                ctx;
-    s_expr_time_fn_t     get_time;   // Returns monotonic time in seconds
+    s_expr_time_fn_t     get_time;     // monotonic time in seconds (double)
+    // Optional: monotonic uptime in milliseconds (uint32_t). When provided,
+    // se_log* and s_engine_log use it instead of multiplying get_time by
+    // 1000.0 — avoids pulling in newlib's __aeabi_dmul (~1.2 KB) and
+    // __aeabi_ddiv (~1.5 KB) on M-port targets that don't otherwise need
+    // double-precision floating-point math. Leave NULL if get_time is enough.
+    s_expr_time_ms_fn_t  get_time_ms;
 } s_expr_allocator_t;
 
 // ============================================================================

@@ -27,3 +27,10 @@
 // ----- m2s (host -> dongle) -----
 #define OP_REGISTER_ACK   ((uint16_t)0x0103)  // host acknowledges OP_REGISTER
 #define OP_PING           ((uint16_t)0x0104)  // host pings dongle
+
+// ----- engine-internal events (never appear on the wire) -----
+// Range 0xFE00-0xFEFF. main.c (or other firmware-internal code) pushes
+// these to the engine event_queue; chains dispatch on them. They MUST be
+// disjoint from any cmd value that comes in over libcomm so the chain
+// can't be tricked by a malicious host into faking an internal event.
+#define EV_HOST_REATTACH  ((uint16_t)0xFE00)  // host closed and reopened CDC

@@ -195,6 +195,53 @@ void send_pong(s_expr_tree_instance_t* inst,
 }
 
 // ----------------------------------------------------------------------------
+// handle_internal_events — main (m_call). Top-level sibling above
+// se_state_machine. Dispatches on engine-internal event ids (range
+// 0xFE00+, never on the wire).
+//
+// Currently handles only EV_HOST_REATTACH: when main.c detects the host
+// re-opened the CDC port (DTR transitioned low->high), it pushes this
+// event. We respond by writing DONGLE_BOOT into the dongle_state
+// blackboard field. se_state_machine, when invoked later in the same
+// tick by function_interface, reads the freshly-written field and
+// switches from OPERATIONAL back to BOOT — and BOOT's retry chain_flow
+// resumes emitting OP_REGISTER until the new host session ACKs.
+//
+// Why an m_call instead of a DSL se_event_dispatch + se_chain_flow +
+// se_set_field + se_log composition: collapses ~10 lines of DSL into
+// ~5 lines of C, identical observable behavior. Atomic side-effect with
+// no internal sequencing belongs in C; chain-level orchestration belongs
+// in DSL. This is the former.
+// ----------------------------------------------------------------------------
+s_expr_result_t handle_internal_events(s_expr_tree_instance_t* inst,
+                                       const s_expr_param_t*   params,
+                                       uint16_t                param_count,
+                                       s_expr_event_type_t     event_type,
+                                       uint16_t                event_id,
+                                       void*                   event_data) {
+    (void)params; (void)param_count; (void)event_data;
+
+    if (event_type == SE_EVENT_INIT || event_type == SE_EVENT_TERMINATE) {
+        return SE_PIPELINE_CONTINUE;
+    }
+
+    if (event_id == EV_HOST_REATTACH) {
+        // Reset dongle_state to BOOT (=0). dongle_state is the only field
+        // in dongle_record so offset is 0; if the record grows, this
+        // direct-pointer write becomes wrong — switch to
+        // s_expr_blackboard_set_int_by_string().
+        if (inst->blackboard) {
+            *(int32_t*)inst->blackboard = 0;   // DONGLE_BOOT
+        }
+        s_engine_log(inst, "host reattach -> reset to BOOT");
+    }
+
+    // Stay active across ticks; lets function_interface advance to
+    // se_state_machine in the same tick.
+    return SE_PIPELINE_CONTINUE;
+}
+
+// ----------------------------------------------------------------------------
 // toggle_led — main (m_call). Fires every tick (bare leaf under se_fork).
 // PA17 is the Xiao user LED. Must return SE_PIPELINE_CONTINUE so the fork
 // keeps the branch alive across ticks.

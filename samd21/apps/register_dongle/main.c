@@ -26,6 +26,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <string.h>
 
 #include "bsp/board_api.h"
@@ -72,9 +73,13 @@ static void bump_free(void* ctx, void* ptr) {
     (void)ctx; (void)ptr;
 }
 
-static double engine_get_time(void* ctx) {
+// Skips the double-precision math in se_log* — board_millis() returns
+// uint32 ms directly, no __aeabi_dmul/ddiv pulled in (~3 KB flash saved).
+// We don't register a get_time (double seconds) callback at all — leaving
+// it NULL lets --gc-sections drop the dmul/ddiv code entirely.
+static uint32_t engine_get_time_ms(void* ctx) {
     (void)ctx;
-    return (double)board_millis() / 1000.0;
+    return board_millis();
 }
 
 // ----------------------------------------------------------------------------
@@ -186,10 +191,11 @@ int main(void) {
     frame_decoder_init(&g_rx_decoder, FRAME_DIR_M2S);
 
     s_expr_allocator_t alloc = {
-        .malloc   = bump_malloc,
-        .free     = bump_free,
-        .ctx      = NULL,
-        .get_time = engine_get_time,
+        .malloc      = bump_malloc,
+        .free        = bump_free,
+        .ctx         = NULL,
+        .get_time    = NULL,    // skip double-precision path; see comment below
+        .get_time_ms = engine_get_time_ms,
     };
 
     s_expr_module_t module;
@@ -203,21 +209,42 @@ int main(void) {
 
     // Engine tick cadence: 250 ms (chain expects 4 ticks/sec).
     //
-    // KNOWN ISSUE — OP_REGISTER loss on cold boot: the io_call fires once on
-    // first INIT and goes to the CDC TX FIFO. If the host isn't actively
-    // reading at that moment, the FIFO fills up over the next few seconds and
-    // the OP_REGISTER bytes are overwritten. Heartbeats eventually arrive
-    // (once host attaches + sends ACK + state transitions to OPERATIONAL),
-    // but the registration packet is gone. Proper fix is protocol-level:
-    // BOOT state should re-emit OP_REGISTER on a tick_delay loop until
-    // OP_REGISTER_ACK is received. That's a DSL chain change, deferred to
-    // Phase 2f. A C-side startup gate (tried 2026-05-13) cannot fix this
-    // because it gates emission, not delivery — bytes still accumulate in
-    // the CDC FIFO and get dropped while the host's userspace isn't reading.
+    // Cold-boot OP_REGISTER delivery: Phase 2f moved emission to a retry
+    // loop in the BOOT state's chain. Re-fires every ~1 sec until
+    // OP_REGISTER_ACK arrives, so host attach timing doesn't matter.
     uint32_t next_tick_ms = 250;
+
+    // Host-reattach detection: poll tud_cdc_connected() (DTR line state).
+    // On false->true edge after a prior true->false drop, push
+    // EV_HOST_REATTACH to the engine event queue. The chain's
+    // handle_internal_events user fn responds by writing dongle_state =
+    // BOOT, which se_state_machine sees on its tick within the same drain.
+    // Polling (not the tud_cdc_line_state_cb callback) keeps it
+    // race-free single-producer for the event queue.
+    bool prev_cdc_connected = false;
+    bool saw_disconnect     = false;
 
     for (;;) {
         tud_task();
+
+        // Host-reattach edge detection.
+        if (tree != NULL) {
+            bool now_connected = tud_cdc_connected();
+            if (!now_connected && prev_cdc_connected) {
+                saw_disconnect = true;
+                // DIAG: log the drop event so we can see DTR transitions.
+                if (module.debug_fn) module.debug_fn(NULL, "[CDC] DTR dropped");
+            } else if (now_connected && !prev_cdc_connected) {
+                if (saw_disconnect) {
+                    saw_disconnect = false;
+                    s_expr_event_push(tree, SE_EVENT_TICK, EV_HOST_REATTACH, NULL);
+                    if (module.debug_fn) module.debug_fn(NULL, "[CDC] DTR up after drop -> EV_HOST_REATTACH");
+                } else {
+                    if (module.debug_fn) module.debug_fn(NULL, "[CDC] DTR up (first attach)");
+                }
+            }
+            prev_cdc_connected = now_connected;
+        }
 
         // Always drain RX, even between ticks — events accumulate in the
         // tree's queue and are dispatched at the next tick_and_drain().

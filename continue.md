@@ -1003,3 +1003,95 @@ Per `four_chip_dongle_pivot_2026-05-11.md` ordering. First true portability test
 - Production Linux integration (mqtt_robot host stack adoption) — bigger track, after manifest is real
 
 Recommend starting next session with Track A (warmup, removes a known blind spot) then dialog on B vs C as the main work.
+
+---
+
+### Phase 2g closure — Track A (OP_DBG_LOG) + host-reattach detection + ms timestamps (2026-05-13)
+
+Three coupled changes shipped this session, two commits.
+
+**Commit 1 (`56d3fbb`): engine runtime** — integer-ms timestamp + `s_engine_log` helper
+
+- `se_log` / `se_log_int` / `se_log_float` / `se_log_field` now format `[%lu] ` (uint32 ms) instead of `[%.6f] ` (which rendered empty on SAMD21 because `-u _printf_float` isn't linked).
+- New `s_engine_log(inst, msg)` inline helper in `s_engine_module.h` so C user functions can log with the same prefix DSL `se_log()` produces. Byte-identical output.
+
+**Commit 2 (Phase 2g main):** OP_DBG_LOG, host-reattach detection, allocator field for ms time
+
+Runtime additive:
+
+- `s_expr_allocator_t` gained an optional `get_time_ms(void*)` callback (uint32 ms). When registered, `se_log*` and `s_engine_log` use it instead of multiplying `get_time` by 1000.0. Linux harness can also register it. **Why:** the multiplication path pulls `__aeabi_dmul` + `__aeabi_ddiv` + `__aeabi_dsub` into the binary (~3 KB on M-port) — even when the runtime call took the get_time_ms path at runtime, the compiler kept the reachable dead branch's float code. Solved by NOT having a fallback to `get_time` in the log functions at all; SAMD21 sets `.get_time = NULL`. Linux harness sets both (libc has float math anyway).
+
+Track A (OP_DBG_LOG):
+- New opcode `OP_DBG_LOG = 0x0010` (s2m, low range).
+- `debug_packet_fn` in `samd21/apps/register_dongle/main.c` registered as the engine's `debug_fn`. Each `se_log` / `s_engine_log` becomes an `OP_DBG_LOG` frame staged in the TX ring.
+- `dongle_console.lua` gained `OP_DBG_LOG` opcode label + `OPCODE_TEXT_PAYLOAD` rendering: payload bytes shown as a quoted string in `--frame` mode instead of hex columns. Extensible to future text-bearing opcodes.
+
+Host-reattach detection:
+- Internal-event range allocated: `0xFE00+`, never on the wire. First member: `EV_HOST_REATTACH = 0xFE00`.
+- `samd21/apps/register_dongle/main.c` polls `tud_cdc_connected()` each main-loop iteration. On `true → false → true` edge sequence, pushes `EV_HOST_REATTACH` to the engine event queue. (Polling, not the `tud_cdc_line_state_cb` callback — keeps the event_queue producer single-threaded.)
+- New user fn `handle_internal_events` (m_call) added at top level in the chain, before `se_state_machine`. On `EV_HOST_REATTACH`, writes `dongle_state = BOOT` directly into the blackboard (currently safe because `dongle_state` is the sole field at offset 0). Logs the event via `s_engine_log`. state_machine reads the new field on its same-tick invocation and switches BOOT case → BOOT's retry loop resumes emitting OP_REGISTER.
+
+**On-hardware trace (real Xiao, two sequential `dongle_console` sessions, 2 sec gap):**
+
+```
+Session 1 (cold boot):
+  8 × OP_REGISTER (retries)
+  OP_DBG_LOG: "[12250] BOOT: received OP_REGISTER_ACK -> OPERATIONAL"
+  OP_HEARTBEAT seq=0, 1, ...
+
+[host closed dongle_console]
+[2 sec gap]
+[host reopened dongle_console]
+
+Session 2 (re-attach):
+  OP_DBG_LOG: "[CDC] DTR dropped"              ← detected the close
+  OP_HEARTBEAT seq=4, 5 (buffered during disconnect)
+  OP_DBG_LOG: "[CDC] DTR up after drop -> EV_HOST_REATTACH"
+  OP_DBG_LOG: "[19250] host reattach -> reset to BOOT"
+  OP_REGISTER × N  (fresh registration stream resumes)
+```
+
+**Resource impact** (vs previous Phase 2f firmware 31,428 B):
+
+| Build | text | Note |
+|---|---|---|
+| Phase 2f baseline | 31,428 | |
+| Phase 2g (with stale-header issue) | 35,928 | +4.5 KB from accidental `__aeabi_dmul/ddiv/dsub` link via dead branch |
+| Phase 2g (final) | **30,132** | -1,296 vs Phase 2f; double-precision math gone entirely |
+
+The smaller final size is because removing `.get_time = engine_get_time` from the allocator drops `engine_get_time` and its division, and `se_log` no longer has a reachable `get_time * 1000.0` branch. M-port is now fully **double-free** on the SAMD21 register_dongle build.
+
+**Lesson captured: `rsync` without `--delete` leaves stale files behind.** During Phase 2g I accidentally rsynced engine header copies into the SAMD21 app directory in an earlier iteration. The Makefile's `-I$(HERE)` (app dir) preceded `-I$(SENGINE_RT)` (runtime), so the compiler picked up the stale copies — even after editing the runtime sources. A full `rsync --delete` cleared them and the build picked up the real runtime. Workflow rule for next session: use `rsync --delete` when syncing dirs that should be authoritative.
+
+**Linux harness updates (same Phase 2g commit):**
+
+- `main_rom.c` adds `utc_realtime_ms` callback for parity with SAMD21.
+- ACK injection moved from tick 5 → tick 18 to give a longer pre-ACK window so retries are visible.
+- New injection at tick 35: `EV_HOST_REATTACH` (simulated host reset). Verifies the chain handles the reattach path. Output: 8 retries → ACK → OPERATIONAL → reattach injection → REATTACH log → reset to BOOT → fresh retry stream → second ACK → OPERATIONAL resumes. Bump peak: 544 B / 2 KB (same as Phase 2f).
+
+**Push back on three-factor handshake** (documented decision): the F1/F2/F3 design in `dongle_linux_protocol_2026-05-11.md` was speced for a system with subscriptions, sequence tracking, and pin claims to recover. None of that state exists today. "Host re-attach = re-register" is the right floor until there's state worth preserving. When subscriptions land, layer F1/F2/F3 on top of EV_HOST_REATTACH.
+
+**Files added in this session:**
+
+| File | Purpose |
+|---|---|
+| `s_engine/runtime/s_engine_types.h` | `get_time_ms` field added to `s_expr_allocator_t` (additive, backward-compatible) |
+| `s_engine/runtime/s_engine_builtins_oneshot.h` | all `se_log*` use `get_time_ms` (no `get_time` fallback — keeps `__aeabi_d*` out) |
+| `s_engine/runtime/s_engine_module.h` | `s_engine_log()` inline helper, same format/source convention as DSL `se_log` |
+| `s_engine/dsl_tests/register_dongle_v2/register_dongle_v2.lua` | adds `m_call("handle_internal_events")` sibling above `se_state_machine` |
+| `s_engine/dsl_tests/register_dongle_v2/main_rom.c` | adds `utc_realtime_ms`; tick-35 `EV_HOST_REATTACH` injection |
+| `s_engine/dsl_tests/register_dongle_v2/user_functions.c` | `handle_internal_events` mock (printf-based) for the Linux trace |
+| `samd21/apps/register_dongle/main.c` | `engine_get_time_ms`, `debug_packet_fn` registered, `tud_cdc_connected` poll → EV_HOST_REATTACH push |
+| `samd21/apps/register_dongle/user_functions.c` | `handle_internal_events` (s_engine_log via `OP_DBG_LOG`) |
+| `samd21/apps/register_dongle/vendor/libcomm/opcodes.h` | `OP_DBG_LOG = 0x0010`, `EV_HOST_REATTACH = 0xFE00` |
+| `linux/dongle_console/dongle_console.lua` | `OPCODE_NAMES` adds `OP_DBG_LOG`; `OPCODE_TEXT_PAYLOAD` table; payload renders as quoted text |
+
+---
+
+### Plan for the next session (Phase 2h — Track B manifest OR Track C RA4M1)
+
+Track A is closed. Track B (OP_GET_MANIFEST + stub CBOR) and Track C (RA4M1 firmware port) are still open. User has indicated they have ideas for Track B that should be dialoged before execution. **Next session: open with "What are the manifest ideas?" before any code.**
+
+Side observations from this session worth carrying:
+- The `[CDC] DTR ...` diag logs in main.c proved useful and are low-frequency. Consider keeping them long-term as operational signal. Possibly add a verbosity flag if they ever become noise.
+- The bump peak hasn't been measured post-handle_internal_events. Add a startup OP_DBG_LOG with bump_peak figure once we have a stable Phase 2h baseline.

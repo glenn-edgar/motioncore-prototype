@@ -46,11 +46,12 @@ void s_expr_module_set_debug(s_expr_module_t* mod, s_expr_debug_fn_t fn);
 #include <stdio.h>
 static inline void s_engine_log(s_expr_tree_instance_t* inst, const char* msg) {
     if (!inst || !inst->module || !inst->module->debug_fn || !msg) return;
-    double timestamp = 0.0;
-    if (inst->module->alloc.get_time) {
-        timestamp = inst->module->alloc.get_time(inst->module->alloc.ctx);
-    }
-    uint32_t uptime_ms = (uint32_t)(timestamp * 1000.0);
+    // Timestamp uses alloc.get_time_ms (uint32, no float math). NULL = 0.
+    // Intentional: no fallback to get_time*1000.0 — the compiler keeps that
+    // dead branch's __aeabi_dmul/ddiv in the binary even when unreachable.
+    uint32_t uptime_ms = inst->module->alloc.get_time_ms
+                            ? inst->module->alloc.get_time_ms(inst->module->alloc.ctx)
+                            : 0;
     char buf[256];
     snprintf(buf, sizeof(buf), "[%lu] %s", (unsigned long)uptime_ms, msg);
     inst->module->debug_fn(inst, buf);

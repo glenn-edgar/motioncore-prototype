@@ -35,8 +35,14 @@ extern const s_engine_rom_t register_dongle_v2_module_rom;
 // Opcodes (mirror register_dongle_v2.lua). m2s opcodes must avoid the engine-
 // reserved event_id values: SE_EVENT_TICK=4, SE_EVENT_INIT=0xfffe,
 // SE_EVENT_TERMINATE=0xfffd. We allocate m2s in 0x0100+.
-#define OP_REGISTER_ACK 0x0103
-#define OP_PING         0x0104
+#define OP_REGISTER_ACK  0x0103
+#define OP_PING          0x0104
+
+// Engine-internal events (never on the wire). Range 0xFE00+.
+// Pushed from main_rom.c (Linux harness) or main.c (SAMD21 firmware) when
+// some firmware-internal condition is detected — e.g., host reattach on
+// SAMD21. Linux harness fakes the same event to exercise the chain path.
+#define EV_HOST_REATTACH 0xFE00
 
 // ============================================================================
 // Bump allocator (same shape as state_machine/main_rom.c)
@@ -65,6 +71,11 @@ static double utc_realtime(void* ctx) {
     (void)ctx;
     struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+static uint32_t utc_realtime_ms(void* ctx) {
+    (void)ctx;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 }
 static void debug_callback(s_expr_tree_instance_t* inst, const char* msg) {
     (void)inst; (void)msg;
@@ -100,10 +111,11 @@ int main(int argc, char* argv[]) {
     printf("Bump buffer: %d B static\n\n", BUMP_BUFFER_SIZE);
 
     s_expr_allocator_t alloc = {
-        .malloc   = bump_malloc,
-        .free     = bump_free,
-        .ctx      = NULL,
-        .get_time = utc_realtime,
+        .malloc      = bump_malloc,
+        .free        = bump_free,
+        .ctx         = NULL,
+        .get_time    = utc_realtime,
+        .get_time_ms = utc_realtime_ms,
     };
 
     s_expr_module_t module;
@@ -120,18 +132,21 @@ int main(int argc, char* argv[]) {
         &module, REGISTER_DONGLE_V2_HASH, 0);
     if (!tree) { printf("FATAL: create tree\n"); return 1; }
 
-    // Schedule of injected host-side events (tick index, opcode, label).
-    // Phase 2f: delay ACK injection so we observe multiple OP_REGISTER retries
-    // from the BOOT case's retry chain_flow before the state transition.
+    // Schedule of injected events (tick index, opcode, label). Phase 2g
+    // adds EV_HOST_REATTACH at tick 35: after the dongle is in OPERATIONAL
+    // and exchanging heartbeats/pongs, fake a host reset. Expect:
+    // OP_REGISTERs resume at 1 Hz until a second ACK arrives at tick 50.
     struct { int tick; uint16_t op; const char* label; } injections[] = {
         { 18, OP_REGISTER_ACK, "OP_REGISTER_ACK" },
         { 26, OP_PING,         "OP_PING #1" },
         { 32, OP_PING,         "OP_PING #2" },
+        { 35, EV_HOST_REATTACH,"EV_HOST_REATTACH (simulated host reset)" },
+        { 50, OP_REGISTER_ACK, "OP_REGISTER_ACK (post-reattach)" },
     };
     const int N_INJ = (int)(sizeof(injections) / sizeof(injections[0]));
     int next_inj = 0;
 
-    const int TICKS = 40;
+    const int TICKS = 60;
     printf("Running %d ticks @ 250 ms each (~%.1f s real time)\n", TICKS, TICKS * 0.25);
     printf("Expected: REGISTER once -> idle ~5 ticks in BOOT -> ACK -> HEARTBEATs + LED + 3x PONG\n\n");
 

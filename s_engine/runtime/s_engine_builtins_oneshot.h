@@ -24,12 +24,8 @@ static void se_log(
         return;
     }
     
-    double timestamp = 0.0;
     s_expr_module_t* mod = inst->module;
-    if (mod && mod->alloc.get_time) {
-        timestamp = mod->alloc.get_time(mod->alloc.ctx);
-    }
-    
+
     // M-port divergence: no printf fallback. If no debug_fn is registered,
     // se_log is a silent no-op. Reasons:
     //   * SAMD21 has no stdout — printf pulls in newlib-nano's _malloc_r
@@ -38,11 +34,16 @@ static void se_log(
     //   * Future versions may emit a debug packet over the libcomm transport;
     //     register a debug_fn to capture the log line until then.
     //
-    // Format: "[<uptime_ms>] <message>". Integer ms avoids newlib-nano's
-    // float printf (which needs -u _printf_float, ~3 KB flash). %lu format
-    // is uniformly available across all M-port chips.
+    // Format: "[<uptime_ms>] <message>". Timestamp comes from
+    // alloc.get_time_ms (uint32, no float math). If get_time_ms is NULL,
+    // the timestamp displays as 0 — register it on every chip to get
+    // useful logs. Intentional: no fallback to alloc.get_time*1000.0,
+    // because that code path pulls __aeabi_dmul/ddiv into the binary
+    // even if never taken (compiler keeps reachable dead branches).
     if (mod && mod->debug_fn) {
-        uint32_t uptime_ms = (uint32_t)(timestamp * 1000.0);
+        uint32_t uptime_ms = mod->alloc.get_time_ms
+                                ? mod->alloc.get_time_ms(mod->alloc.ctx)
+                                : 0;
         char buf[256];
         snprintf(buf, sizeof(buf), "[%lu] %s", (unsigned long)uptime_ms, msg);
         mod->debug_fn(inst, buf);
@@ -90,15 +91,13 @@ static void se_log_int(
 
     ct_int_t val = *S_EXPR_GET_FIELD(inst, &params[1], ct_int_t);
 
-    double timestamp = 0.0;
     s_expr_module_t* mod = inst->module;
-    if (mod && mod->alloc.get_time) {
-        timestamp = mod->alloc.get_time(mod->alloc.ctx);
-    }
 
     // M-port divergence: no printf fallback (see se_log comment above).
     if (mod && mod->debug_fn) {
-        uint32_t uptime_ms = (uint32_t)(timestamp * 1000.0);
+        uint32_t uptime_ms = mod->alloc.get_time_ms
+                                ? mod->alloc.get_time_ms(mod->alloc.ctx)
+                                : 0;
         char buf[256];
         int n = snprintf(buf, sizeof(buf), "[%lu] ", (unsigned long)uptime_ms);
         if (n > 0 && n < (int)sizeof(buf)) {
@@ -149,17 +148,15 @@ static void se_log_float(
 
     ct_float_t val = *S_EXPR_GET_FIELD(inst, &params[1], ct_float_t);
 
-    double timestamp = 0.0;
     s_expr_module_t* mod = inst->module;
-    if (mod && mod->alloc.get_time) {
-        timestamp = mod->alloc.get_time(mod->alloc.ctx);
-    }
 
     // M-port divergence: no printf fallback (see se_log comment above).
     // NOTE: if `fmt` contains %f/%e/%g, the float printf code is pulled in
     // anyway. se_log_float caller's responsibility — flag in upstream review.
     if (mod && mod->debug_fn) {
-        uint32_t uptime_ms = (uint32_t)(timestamp * 1000.0);
+        uint32_t uptime_ms = mod->alloc.get_time_ms
+                                ? mod->alloc.get_time_ms(mod->alloc.ctx)
+                                : 0;
         char buf[256];
         int n = snprintf(buf, sizeof(buf), "[%lu] ", (unsigned long)uptime_ms);
         if (n > 0 && n < (int)sizeof(buf)) {
@@ -190,16 +187,14 @@ static void se_log_field(
     if (!field_ptr) return;
     
     int32_t val = *field_ptr;
-    
-    double timestamp = 0.0;
+
     s_expr_module_t* mod = inst->module;
-    if (mod && mod->alloc.get_time) {
-        timestamp = mod->alloc.get_time(mod->alloc.ctx);
-    }
-    
+
     // M-port divergence: no printf fallback (see se_log comment above).
     if (mod && mod->debug_fn) {
-        uint32_t uptime_ms = (uint32_t)(timestamp * 1000.0);
+        uint32_t uptime_ms = mod->alloc.get_time_ms
+                                ? mod->alloc.get_time_ms(mod->alloc.ctx)
+                                : 0;
         char buf[256];
         snprintf(buf, sizeof(buf), "[%lu] %s %d",
                  (unsigned long)uptime_ms, msg, val);

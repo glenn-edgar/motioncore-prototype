@@ -35,6 +35,7 @@
 extern void send_register(s_expr_tree_instance_t*, const s_expr_param_t*, uint16_t, s_expr_event_type_t, uint16_t, void*);
 extern void send_heartbeat(s_expr_tree_instance_t*, const s_expr_param_t*, uint16_t, s_expr_event_type_t, uint16_t, void*);
 extern void send_pong(s_expr_tree_instance_t*, const s_expr_param_t*, uint16_t, s_expr_event_type_t, uint16_t, void*);
+extern s_expr_result_t handle_internal_events(s_expr_tree_instance_t*, const s_expr_param_t*, uint16_t, s_expr_event_type_t, uint16_t, void*);
 extern s_expr_result_t toggle_led(s_expr_tree_instance_t*, const s_expr_param_t*, uint16_t, s_expr_event_type_t, uint16_t, void*);
 
 static const s_expr_field_desc_t register_dongle_v2_dongle_record_fields[] = {
@@ -45,117 +46,120 @@ static const s_expr_record_desc_t register_dongle_v2_records[] = {
     { .name_hash = 0x84FEA724U, .total_size = 4, .field_count = 1, .fields = register_dongle_v2_dongle_record_fields }
 };
 
-// Tree: register_dongle_v2 (params=109, nodes=31)
+// Tree: register_dongle_v2 (params=112, nodes=32)
 static const s_expr_param_t register_dongle_v2_register_dongle_v2_params[] = {
-    { .type = 0x07, .index_to_pointer = 0, .brace_idx = 108, .parent_offset = 0 },
+    { .type = 0x07, .index_to_pointer = 0, .brace_idx = 111, .parent_offset = 0 },
     { .type = 0x09, .index_to_pointer = 0, .node_index = 0, .func_index = 0 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 4, .parent_offset = 1 },
     { .type = 0x48, .index_to_pointer = 0, .node_index = 1, .func_index = 0 },
     { .type = 0x0B, .index_to_pointer = 0, .field_offset = 0, .field_size = 4 },
     { .type = 0x01, .index_to_pointer = 0, .uint_val = 0x0U },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 4, .parent_offset = 5 },
-    { .type = 0x07, .index_to_pointer = 0, .brace_idx = 97, .parent_offset = 6 },
+    { .type = 0x07, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 6 },
     { .type = 0x09, .index_to_pointer = 0, .node_index = 2, .func_index = 1 },
+    { .type = 0x06, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 8 },
+    { .type = 0x07, .index_to_pointer = 0, .brace_idx = 97, .parent_offset = 9 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 3, .func_index = 2 },
     { .type = 0x0B, .index_to_pointer = 0, .field_offset = 0, .field_size = 4 },
     { .type = 0x00, .index_to_pointer = 0, .int_val = 0 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 41, .parent_offset = 3 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 3, .func_index = 2 },
-    { .type = 0x07, .index_to_pointer = 0, .brace_idx = 12, .parent_offset = 1 },
     { .type = 0x09, .index_to_pointer = 0, .node_index = 4, .func_index = 3 },
+    { .type = 0x07, .index_to_pointer = 0, .brace_idx = 12, .parent_offset = 1 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 5, .func_index = 4 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 1 },
-    { .type = 0x08, .index_to_pointer = 0, .node_index = 5, .func_index = 1 },
+    { .type = 0x08, .index_to_pointer = 0, .node_index = 6, .func_index = 1 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 3 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 3, .parent_offset = 4 },
-    { .type = 0x89, .index_to_pointer = 0, .node_index = 6, .func_index = 4 },
+    { .type = 0x89, .index_to_pointer = 0, .node_index = 7, .func_index = 5 },
     { .type = 0x00, .index_to_pointer = 0, .int_val = 0 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 3, .parent_offset = 7 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 8 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 7, .func_index = 5 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 8, .func_index = 6 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 10 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 12, .parent_offset = 13 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 25, .parent_offset = 14 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 8, .func_index = 6 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 9, .func_index = 7 },
     { .type = 0x00, .index_to_pointer = 0, .int_val = 259 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 14, .parent_offset = 2 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 9, .func_index = 3 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 10, .func_index = 4 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 3, .parent_offset = 1 },
-    { .type = 0x08, .index_to_pointer = 0, .node_index = 10, .func_index = 2 },
+    { .type = 0x08, .index_to_pointer = 0, .node_index = 11, .func_index = 2 },
     { .type = 0x0D, .index_to_pointer = 0, .str_index = 0, .str_len = 45 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 3, .parent_offset = 4 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 4, .parent_offset = 5 },
-    { .type = 0x08, .index_to_pointer = 0, .node_index = 11, .func_index = 0 },
+    { .type = 0x08, .index_to_pointer = 0, .node_index = 12, .func_index = 0 },
     { .type = 0x0B, .index_to_pointer = 0, .field_offset = 0, .field_size = 4 },
     { .type = 0x01, .index_to_pointer = 0, .uint_val = 0x1U },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 4, .parent_offset = 9 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 10 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 12, .func_index = 5 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 13, .func_index = 6 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 12 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 14, .parent_offset = 16 },
     { .type = 0x00, .index_to_pointer = 0, .int_val = -1 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 5, .parent_offset = 18 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 13, .func_index = 3 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 14, .func_index = 4 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 1 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 14, .func_index = 7 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 15, .func_index = 8 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 3 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 5, .parent_offset = 23 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 25, .parent_offset = 39 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 41, .parent_offset = 44 },
     { .type = 0x00, .index_to_pointer = 0, .int_val = 1 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 38, .parent_offset = 46 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 15, .func_index = 2 },
-    { .type = 0x07, .index_to_pointer = 0, .brace_idx = 12, .parent_offset = 1 },
     { .type = 0x09, .index_to_pointer = 0, .node_index = 16, .func_index = 3 },
+    { .type = 0x07, .index_to_pointer = 0, .brace_idx = 12, .parent_offset = 1 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 17, .func_index = 4 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 1 },
-    { .type = 0x08, .index_to_pointer = 0, .node_index = 17, .func_index = 3 },
+    { .type = 0x08, .index_to_pointer = 0, .node_index = 18, .func_index = 3 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 3 },
     { .type = 0x07, .index_to_pointer = 1, .brace_idx = 3, .parent_offset = 4 },
-    { .type = 0x89, .index_to_pointer = 1, .node_index = 18, .func_index = 4 },
+    { .type = 0x89, .index_to_pointer = 1, .node_index = 19, .func_index = 5 },
     { .type = 0x00, .index_to_pointer = 0, .int_val = 3 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 3, .parent_offset = 7 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 8 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 19, .func_index = 5 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 20, .func_index = 6 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 10 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 12, .parent_offset = 13 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 14 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 20, .func_index = 8 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 21, .func_index = 9 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 16 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 19, .parent_offset = 17 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 21, .func_index = 6 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 22, .func_index = 7 },
     { .type = 0x00, .index_to_pointer = 0, .int_val = 260 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 8, .parent_offset = 2 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 22, .func_index = 3 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 23, .func_index = 4 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 1 },
-    { .type = 0x08, .index_to_pointer = 0, .node_index = 23, .func_index = 4 },
+    { .type = 0x08, .index_to_pointer = 0, .node_index = 24, .func_index = 4 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 3 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 4 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 24, .func_index = 5 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 25, .func_index = 6 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 6 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 8, .parent_offset = 10 },
     { .type = 0x00, .index_to_pointer = 0, .int_val = -1 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 5, .parent_offset = 12 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 25, .func_index = 3 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 26, .func_index = 4 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 1 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 26, .func_index = 7 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 27, .func_index = 8 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 3 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 5, .parent_offset = 17 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 19, .parent_offset = 36 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 38, .parent_offset = 84 },
     { .type = 0x00, .index_to_pointer = 0, .int_val = -1 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 9, .parent_offset = 86 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 27, .func_index = 3 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 28, .func_index = 4 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 3, .parent_offset = 1 },
-    { .type = 0x08, .index_to_pointer = 0, .node_index = 28, .func_index = 2 },
+    { .type = 0x08, .index_to_pointer = 0, .node_index = 29, .func_index = 2 },
     { .type = 0x0D, .index_to_pointer = 0, .str_index = 1, .str_len = 27 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 3, .parent_offset = 4 },
     { .type = 0x07, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 5 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 29, .func_index = 9 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 30, .func_index = 10 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 7 },
     { .type = 0x06, .index_to_pointer = 0, .brace_idx = 9, .parent_offset = 95 },
-    { .type = 0x06, .index_to_pointer = 0, .brace_idx = 97, .parent_offset = 103 },
-    { .type = 0x07, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 104 },
-    { .type = 0x09, .index_to_pointer = 0, .node_index = 30, .func_index = 10 },
-    { .type = 0x06, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 106 },
-    { .type = 0x06, .index_to_pointer = 0, .brace_idx = 108, .parent_offset = 0 }
+    { .type = 0x06, .index_to_pointer = 0, .brace_idx = 97, .parent_offset = 106 },
+    { .type = 0x07, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 107 },
+    { .type = 0x09, .index_to_pointer = 0, .node_index = 31, .func_index = 11 },
+    { .type = 0x06, .index_to_pointer = 0, .brace_idx = 2, .parent_offset = 109 },
+    { .type = 0x06, .index_to_pointer = 0, .brace_idx = 111, .parent_offset = 0 }
 };
 
 // Tree definitions
@@ -164,8 +168,8 @@ static const s_expr_tree_def_t register_dongle_v2_trees[] = {
         .name_hash = 0xAE14A061U,
         .record_hash = 0x84FEA724U,
         .params = register_dongle_v2_register_dongle_v2_params,
-        .param_count = 109,
-        .func_node_count = 31,
+        .param_count = 112,
+        .func_node_count = 32,
         .pointer_count = 2,
         .defaults_index = 65535,
     }
@@ -181,16 +185,17 @@ static const s_expr_oneshot_fn_t register_dongle_v2_oneshot_fns[] = {
 
 static const s_expr_main_fn_t register_dongle_v2_main_fns[] = {
     se_function_interface,  // 0: SE_FUNCTION_INTERFACE
-    se_state_machine,  // 1: SE_STATE_MACHINE
-    se_fork,  // 2: SE_FORK
-    se_chain_flow,  // 3: SE_CHAIN_FLOW
-    se_tick_delay,  // 4: SE_TICK_DELAY
-    se_return_pipeline_reset,  // 5: SE_RETURN_PIPELINE_RESET
-    se_event_dispatch,  // 6: SE_EVENT_DISPATCH
-    se_return_pipeline_halt,  // 7: SE_RETURN_PIPELINE_HALT
-    toggle_led,  // 8: toggle_led
-    se_return_terminate,  // 9: SE_RETURN_TERMINATE
-    se_return_halt  // 10: SE_RETURN_HALT
+    handle_internal_events,  // 1: handle_internal_events
+    se_state_machine,  // 2: SE_STATE_MACHINE
+    se_fork,  // 3: SE_FORK
+    se_chain_flow,  // 4: SE_CHAIN_FLOW
+    se_tick_delay,  // 5: SE_TICK_DELAY
+    se_return_pipeline_reset,  // 6: SE_RETURN_PIPELINE_RESET
+    se_event_dispatch,  // 7: SE_EVENT_DISPATCH
+    se_return_pipeline_halt,  // 8: SE_RETURN_PIPELINE_HALT
+    toggle_led,  // 9: toggle_led
+    se_return_terminate,  // 10: SE_RETURN_TERMINATE
+    se_return_halt  // 11: SE_RETURN_HALT
 };
 
 static const s_expr_pred_fn_t register_dongle_v2_pred_fns[1] = { NULL };
@@ -210,12 +215,12 @@ const s_engine_rom_t register_dongle_v2_module_rom = {
     .oneshot_fns = register_dongle_v2_oneshot_fns,
     .oneshot_count = 5,
     .main_fns = register_dongle_v2_main_fns,
-    .main_count = 11,
+    .main_count = 12,
     .pred_fns = register_dongle_v2_pred_fns,
     .pred_count = 0,
-    .max_func_node_count = 31,
+    .max_func_node_count = 32,
     .max_pointer_count = 2,
-    .max_param_count = 109,
+    .max_param_count = 112,
     .bump_buffer_size = 0,  // TODO: DSL-computed when bump allocator lands
 };
 

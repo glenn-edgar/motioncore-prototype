@@ -65,6 +65,36 @@ void send_pong(
 }
 
 // ----------------------------------------------------------------------------
+// handle_internal_events — m_call sibling of se_state_machine. Dispatches
+// on engine-internal event ids (range 0xFE00+, never on the wire).
+// On Linux this mocks the SAMD21 behavior — write dongle_state=BOOT on
+// EV_HOST_REATTACH so the state_machine can switch back to BOOT case.
+// ----------------------------------------------------------------------------
+#define EV_HOST_REATTACH 0xFE00
+
+s_expr_result_t handle_internal_events(
+    s_expr_tree_instance_t* inst,
+    const s_expr_param_t* params,
+    uint16_t param_count,
+    s_expr_event_type_t event_type,
+    uint16_t event_id,
+    void* event_data
+) {
+    (void)params; (void)param_count; (void)event_data;
+    if (event_type == SE_EVENT_INIT || event_type == SE_EVENT_TERMINATE) {
+        return SE_PIPELINE_CONTINUE;
+    }
+    if (event_id == EV_HOST_REATTACH) {
+        if (inst->blackboard) {
+            *(int32_t*)inst->blackboard = 0;   // DONGLE_BOOT
+        }
+        printf("[REATTACH] dongle_state -> BOOT (simulated host reset)\n");
+        fflush(stdout);
+    }
+    return SE_PIPELINE_CONTINUE;
+}
+
+// ----------------------------------------------------------------------------
 // m_call inside OPERATIONAL fork — fires every tick, must return CONTINUE
 // ----------------------------------------------------------------------------
 static uint8_t g_led_state = 0;
