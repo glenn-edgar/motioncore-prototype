@@ -24,7 +24,7 @@ extern "C" {
 #define FRAME_BUFFER_MAX  (7 + COMM_PAYLOAD_MAX + 1)
 
 // ============ CRC-8/AUTOSAR ============
-// Polynomial 0x2F, init 0xFF, no reflection, no final XOR.
+// Polynomial 0x2F, init 0xFF, no reflection, final XOR 0xFF.
 // Reference vector: crc8_autosar("123456789", 9) == 0xDF.
 
 uint8_t crc8_autosar       (const uint8_t *data, size_t len);

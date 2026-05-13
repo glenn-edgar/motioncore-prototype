@@ -324,7 +324,23 @@ local SLIP_ESC     = 0xDB
 local SLIP_ESC_END = 0xDC
 local SLIP_ESC_ESC = 0xDD
 
-local slip_state = { in_frame = false, escaped = false, frame = {}, frame_no = 0 }
+-- synced: false until we observe at least one *plausible* frame body. While
+-- unsynced, frames are decoded but their BAD-* warnings are suppressed --
+-- prevents the well-known "first frame partial after mid-stream attach"
+-- noise. After the first valid CRC, gating goes away.
+local slip_state = { in_frame = false, escaped = false, frame = {}, frame_no = 0, synced = false }
+
+-- Opcode label table — extend as the catalog grows.
+local OPCODE_NAMES = {
+    [0x0001] = "OP_REGISTER",
+    [0x0002] = "OP_HEARTBEAT",
+    [0x0005] = "OP_PONG",
+    [0x0103] = "OP_REGISTER_ACK",
+    [0x0104] = "OP_PING",
+}
+local function opcode_label(cmd)
+    return OPCODE_NAMES[cmd] or string.format("cmd=0x%04X", cmd)
+end
 
 -- ============================================================================
 -- v2c: libcomm-flavored CRC-8/AUTOSAR (poly 0x2F, init 0xFF, FINAL XOR 0xFF)
@@ -427,9 +443,11 @@ end
 local function decode_s2m_frame()
     local f = slip_state.frame
     if #f < 8 then
-        io.write(string.format("[frame %d BAD-SHORT %d B]\n", slip_state.frame_no, #f))
-        for i, b in ipairs(f) do io.write(string.format(" %02x", b)) end
-        io.write("\n"); io.flush()
+        if slip_state.synced then
+            io.write(string.format("[frame %d BAD-SHORT %d B]\n", slip_state.frame_no, #f))
+            for i, b in ipairs(f) do io.write(string.format(" %02x", b)) end
+            io.write("\n"); io.flush()
+        end
         return
     end
     local addr       = f[1]
@@ -442,15 +460,24 @@ local function decode_s2m_frame()
     local len        = f[7]
     local expected   = 7 + len + 1
     if #f ~= expected then
-        io.write(string.format(
-            "[frame %d BAD-LEN got=%d expected=%d (len_field=%d)]\n",
-            slip_state.frame_no, #f, expected, len))
-        io.flush()
+        if slip_state.synced then
+            io.write(string.format(
+                "[frame %d BAD-LEN got=%d expected=%d (len_field=%d)]\n",
+                slip_state.frame_no, #f, expected, len))
+            io.flush()
+        end
         return
     end
     local crc_have = f[#f]
     local crc_calc = crc8_autosar(f, #f - 1)
     local crc_ok   = (crc_have == crc_calc)
+    if not crc_ok and not slip_state.synced then
+        -- First frame after attach is allowed to be garbage; skip silently.
+        return
+    end
+    if not slip_state.synced then
+        slip_state.synced = true
+    end
 
     -- Render payload as ASCII (with dots for non-printable) + hex bytes
     local pay_hex, pay_asc = {}, {}
@@ -459,8 +486,9 @@ local function decode_s2m_frame()
         table.insert(pay_asc, ascii_safe(f[i]))
     end
     io.write(string.format(
-        "[frame %3d] addr=0x%02X cmd=0x%04X seq=%3d ack_seq=%3d ack_status=0x%02X len=%3d CRC=%s",
-        slip_state.frame_no, addr, cmd, seq, ack_seq, ack_status, len,
+        "[frame %3d] addr=0x%02X cmd=0x%04X (%-16s) seq=%3d ack_seq=%3d ack_status=0x%02X len=%3d CRC=%s",
+        slip_state.frame_no, addr, cmd, opcode_label(cmd),
+        seq, ack_seq, ack_status, len,
         crc_ok and string.format("ok(0x%02X)", crc_have)
                or  string.format("BAD have=0x%02X calc=0x%02X", crc_have, crc_calc)))
     if len > 0 then

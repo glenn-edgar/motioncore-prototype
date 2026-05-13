@@ -174,6 +174,18 @@ int main(void) {
     }
 
     // Engine tick cadence: 250 ms (chain expects 4 ticks/sec).
+    //
+    // KNOWN ISSUE — OP_REGISTER loss on cold boot: the io_call fires once on
+    // first INIT and goes to the CDC TX FIFO. If the host isn't actively
+    // reading at that moment, the FIFO fills up over the next few seconds and
+    // the OP_REGISTER bytes are overwritten. Heartbeats eventually arrive
+    // (once host attaches + sends ACK + state transitions to OPERATIONAL),
+    // but the registration packet is gone. Proper fix is protocol-level:
+    // BOOT state should re-emit OP_REGISTER on a tick_delay loop until
+    // OP_REGISTER_ACK is received. That's a DSL chain change, deferred to
+    // Phase 2f. A C-side startup gate (tried 2026-05-13) cannot fix this
+    // because it gates emission, not delivery — bytes still accumulate in
+    // the CDC FIFO and get dropped while the host's userspace isn't reading.
     uint32_t next_tick_ms = 250;
 
     for (;;) {

@@ -830,19 +830,74 @@ luajit /home/pi/dongle_console/dongle_console.lua --frame --send-ack --send-ping
 
 ---
 
-### Plan for the next session (Phase 2e — secondary scope cleanup + RA4M1 toolchain)
+### Phase 2e closure — secondary scope cleanup (2026-05-13)
 
-After Phase 2d closure, two tracks open:
+Five items planned; outcome:
 
-**Track A — secondary cleanup items (~half a session):**
+| Item | Status |
+|---|---|
+| `dongle_console` v2d: opcode label decode | **DONE** — small `OPCODE_NAMES` table; output now reads `cmd=0x0002 (OP_HEARTBEAT)` etc. |
+| `dongle_console` first-frame sync drop | **DONE** — `slip_state.synced` flag; BAD-SHORT/BAD-LEN/BAD-CRC silent until first valid CRC; eliminates mid-stream-attach noise |
+| `frame.h` "no final XOR" comment | **DONE** — 1-line doc fix to match the code (which has `^ 0xFF`) |
+| `check_completion:` label-decl patch | **ALREADY DONE** — both labels already have empty `;` workaround (was applied during Phase 2 SAMD21 bring-up) |
+| Firmware: gate `send_register` on `tud_cdc_connected()` | **REVERTED — wrong-layer fix.** Tested with 200ms-stability + 5s-timeout gate; OP_REGISTER still got lost in the CDC TX FIFO when the host wasn't actively reading. Bytes accumulate in the 64-byte FIFO; older bytes get overwritten when newer frames arrive (heartbeats every second once OPERATIONAL). The C-side gate cannot fix this — it gates *emission*, not *delivery*. **Proper fix deferred to Phase 2f**: re-emit OP_REGISTER on a `tick_delay` loop in the BOOT state's chain until OP_REGISTER_ACK arrives. That's a DSL change to `register_dongle_v2.lua` (BOOT case becomes a fork of [periodic-retry-chain, event_dispatch-for-ACK]); guarantees delivery regardless of host-attach timing. Documented in `samd21/apps/register_dongle/main.c` adjacent to the affected `tick_and_drain` loop. |
 
-| Item | Type | Effort |
-|---|---|---|
-| Firmware: gate `send_register` on `tud_cdc_connected()` or buffer first frame until CDC is up | code | ~10 LOC in main.c |
-| dongle_console: first-frame sync drop (decoder discards bytes until first END-pair produces valid frame, even across reconnects) | code | ~10 LOC |
-| Fix `frame.h` "no final XOR" comment (the implementation has `^ 0xFF`) | doc | 1 line |
-| Patch `check_completion:` label-decl issue in `s_engine_builtins_flow_control.h` (gcc 8.3.1 portability) | code | 2 lines |
-| dongle_console v2d: opcode label decode (show `OP_PONG` not `cmd=0x0005`) | code | ~20 LOC + small opcode table |
+**Lesson captured:** secondary-scope items aren't always small. The CDC gate looked like a 10-LOC tweak but failed to address the root cause (TX FIFO loss during host-unattached windows). Worth ~30 min of trace-debugging to discover; saved by the dialog discipline (push back on own fix when evidence contradicts).
+
+**Resume command after Phase 2e:**
+
+```
+ssh robot
+luajit /home/pi/dongle_console/dongle_console.lua --frame --send-ack --send-ping
+# opcode labels now visible; first-frame partial garbage silently dropped
+```
+
+---
+
+### Plan for the next session (Phase 2f — periodic OP_REGISTER retry + RA4M1 toolchain)
+
+**Track A — chain change for OP_REGISTER retry (~half a session):**
+
+Replace the BOOT case in `register_dongle_v2.lua` from:
+
+```lua
+se_case(DONGLE_BOOT, function()
+    se_event_dispatch(boot_dispatch)
+end)
+```
+
+to:
+
+```lua
+se_case(DONGLE_BOOT, function()
+    se_fork(
+        function()
+            -- Re-send OP_REGISTER every ~2 sec until ACK arrives.
+            se_chain_flow(function()
+                local r = o_call("send_register")
+                end_call(r)
+                se_tick_delay(7)                 -- 8 ticks * 250 ms = 2 sec
+                se_return_pipeline_reset()
+            end)
+        end,
+        function()
+            se_event_dispatch(boot_dispatch)     -- existing OP_REGISTER_ACK handler
+        end
+    )
+end)
+```
+
+Then drop the top-level `io_call("send_register")` (the BOOT-state retry covers it). Re-emit, re-flash, verify OP_REGISTER arrives reliably regardless of when the host attaches.
+
+**Track B — second chip family (RA4M1 toolchain bring-up):**
+
+Per `four_chip_dongle_pivot_2026-05-11.md` ordering: "SAMD21 → Linux dongle-manager → RA4M1 → RP2350 → ESP32-C6". Linux side (dongle-manager) is large and the production stack lives at `~/knowledge_base_assembly/.../ros_planner_ii_mqtt_robot/` — that's a discrete future track. RA4M1 firmware is a portability litmus test: same s_engine M-port + same DSL chain should compile and run with only HAL/USB layer swap.
+
+RA4M1 prerequisites:
+- arm-none-eabi-gcc (already present)
+- Renesas FSP HAL (TBD — vendor download similar to TinyUSB)
+- Xiao RA4M1 board file / pin map
+- USB-CDC equivalent (RA4M1 has hardware USBHS — different driver)
 
 **Track B — second chip family (RA4M1 toolchain bring-up):**
 
@@ -863,5 +918,5 @@ RA4M1 prerequisites:
 
 **Things NOT to do next session:**
 - Don't redesign the architecture — Phase 2d locked the inbound-event pattern; future work composes on top
-- Don't expand the opcode catalog beyond the secondary cleanup — keep PHASE 2e small and tight
+- Don't expand the opcode catalog beyond the OP_REGISTER retry fix — keep Phase 2f small and tight
 - Don't merge tracks A and B in one commit if both are pursued — they're separable
