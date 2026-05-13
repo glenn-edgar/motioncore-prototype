@@ -30,14 +30,17 @@ static void se_log(
         timestamp = mod->alloc.get_time(mod->alloc.ctx);
     }
     
+    // M-port divergence: no printf fallback. If no debug_fn is registered,
+    // se_log is a silent no-op. Reasons:
+    //   * SAMD21 has no stdout — printf pulls in newlib-nano's _malloc_r
+    //     which sbrk-fails silently, wastes ~6 KB flash, and the bytes go
+    //     nowhere anyway (nosys.specs _write returns -1).
+    //   * Future versions may emit a debug packet over the libcomm transport;
+    //     register a debug_fn to capture the log line until then.
     if (mod && mod->debug_fn) {
         char buf[256];
         snprintf(buf, sizeof(buf), "[%.6f] %s", timestamp, msg);
         mod->debug_fn(inst, buf);
-    } else {
-        #ifndef S_ENGINE_NO_STDIO
-        printf("[SE_LOG %.6f] %s\n", timestamp, msg);
-        #endif
     }
 }
 
@@ -88,9 +91,15 @@ static void se_log_int(
         timestamp = mod->alloc.get_time(mod->alloc.ctx);
     }
 
-    printf("[%.6f] ", timestamp);
-    printf(fmt, val);
-    printf("\n");
+    // M-port divergence: no printf fallback (see se_log comment above).
+    if (mod && mod->debug_fn) {
+        char buf[256];
+        int n = snprintf(buf, sizeof(buf), "[%.6f] ", timestamp);
+        if (n > 0 && n < (int)sizeof(buf)) {
+            snprintf(buf + n, sizeof(buf) - n, fmt, val);
+        }
+        mod->debug_fn(inst, buf);
+    }
 }
 // ============================================================================
 // SE_LOG_FLOAT (oneshot)
@@ -140,9 +149,15 @@ static void se_log_float(
         timestamp = mod->alloc.get_time(mod->alloc.ctx);
     }
 
-    printf("[%.6f] ", timestamp);
-    printf(fmt, (double)val);
-    printf("\n");
+    // M-port divergence: no printf fallback (see se_log comment above).
+    if (mod && mod->debug_fn) {
+        char buf[256];
+        int n = snprintf(buf, sizeof(buf), "[%.6f] ", timestamp);
+        if (n > 0 && n < (int)sizeof(buf)) {
+            snprintf(buf + n, sizeof(buf) - n, fmt, (double)val);
+        }
+        mod->debug_fn(inst, buf);
+    }
 }
 
 // SE_LOG_FIELD - log message with field value
@@ -173,14 +188,11 @@ static void se_log_field(
         timestamp = mod->alloc.get_time(mod->alloc.ctx);
     }
     
+    // M-port divergence: no printf fallback (see se_log comment above).
     if (mod && mod->debug_fn) {
         char buf[256];
         snprintf(buf, sizeof(buf), "[%.6f] %s %d", timestamp, msg, val);
         mod->debug_fn(inst, buf);
-    } else {
-        #ifndef S_ENGINE_NO_STDIO
-        printf("[SE_LOG %.6f] %s %d\n", timestamp, msg, val);
-        #endif
     }
 }
 
