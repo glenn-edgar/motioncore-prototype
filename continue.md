@@ -746,3 +746,122 @@ luajit /tmp/dongle_console.lua --frame       # confirm last build is still emitt
 ```
 
 The dongle is currently still running `register_dongle` with the live OP_REGISTER+OP_HEARTBEAT stream. That's the launching pad for tomorrow — add bidirectional flow on top of the proven s2m path.
+
+---
+
+### Phase 2d closure — bidirectional libcomm + engine event injection (2026-05-13)
+
+Phase 2d delivered. Host-to-dongle command path is now end-to-end verified: PING arrives over USB-CDC, decoder validates, engine event queue receives it, `se_event_dispatch` matches, user function fires OP_PONG, response decoded on the host. State machine (`BOOT → OPERATIONAL`) gates the heartbeat per the protocol's "responder must pause unsolicited sends" rule.
+
+**Locked-this-session decisions:**
+
+| # | Decision |
+|---|---|
+| 1 | Use `se_state_machine` + `se_event_dispatch`, not `se_wait_event` — reactive handlers compose naturally across all future host-initiated opcodes (manifest, shell, handshake) |
+| 2 | BOOT → OPERATIONAL transition driven by explicit `OP_REGISTER_ACK` opcode (option a from dialog), not timeout heuristic |
+| 3 | HANDSHAKE state deferred — only built when F1/F2/F3 opcode definitions land |
+| 4 | `dongle_state` field added as `int32_t` in `dongle_record` blackboard; `se_i_set_field` initializes to `DONGLE_BOOT=0` on tree init |
+| 5 | **Opcode allocation rule (load-bearing):** s2m opcodes stay in `0x0001-0x00FF`; m2s opcodes use `0x0100+`. Reason: m2s opcodes become engine `event_id` values via `s_expr_event_push`; must avoid `SE_EVENT_TICK=4`/`SE_EVENT_INIT=0xfffe`/`SE_EVENT_TERMINATE=0xfffd`. Verified the hard way — `OP_PING=0x0004` collided with `SE_EVENT_TICK` and PONG fired every tick. Captured in `memory/s_engine_dsl_composition_rules.md`. |
+| 6 | Host `dongle_console` lives at `/home/pi/dongle_console/` on the Pi + WSL canonical at `linux/dongle_console/`; sync via `cp`/`rsync` on edit. Eventually folds into mqtt_robot. |
+| 7 | Path-B verification discipline locked: before flashing a complex firmware, prove wire-level integrity with a minimal `cdc_rx_hexdump` echo firmware. Two layers of debugging surface separated. |
+
+**Files added/changed:**
+
+| File | Purpose |
+|---|---|
+| `s_engine/dsl_tests/register_dongle_v2/` | Linux prototype of v2 chain (state machine + dispatch); 520 B bump peak; clean trace verified |
+| `linux/dongle_console/dongle_console.lua` | Added `--send-ack`, `--send-ping`, `--send-cmd N`; m2s encoder (SLIP + CRC-8); 50 ms inter-frame gap |
+| `linux/dongle_console/test_encode.lua` | Offline byte verification: CRC-8/AUTOSAR self-test against reference vector `0xDF` for `"123456789"`; m2s wire bytes for ACK/PING/PING |
+| `samd21/apps/cdc_rx_hexdump/` | Sanity-check firmware — `tud_cdc_read` drain + hex print every loop. Proved wire transport before adding chain. |
+| `samd21/apps/register_dongle/` | Updated to v2 chain (`register_dongle_v2_module_rom`); new RX path (`frame_decoder_feed` + `s_expr_event_push`); `tick_and_drain` helper drains event queue post-tick; `send_pong` user fn |
+| `samd21/apps/register_dongle/vendor/libcomm/opcodes.h` | Added `OP_REGISTER_ACK=0x0103`, `OP_PING=0x0104`, `OP_PONG=0x0005` with allocation-rule comment |
+| `memory/s_engine_dsl_composition_rules.md` | Added m2s/event_id collision rule + canonical event-injection harness reference |
+| `memory/pi_side_tool_locations.md` | New — dual-tracked tool list (WSL canonical, Pi live copy) |
+
+**On-chip measurements:**
+
+| Section | v1 register_dongle | v2 register_dongle (current) | Δ |
+|---|---|---|---|
+| `.text` | 24,460 B | 33,640 B | +9,180 B (state machine + dispatch + event_queue + RX path) |
+| `.bss` | 2,228 B | 4,448 B | +2,220 B (768 B bump vs 512, plus RX bufs + decoder state) |
+| RAM (.bss + 2KB stack) | 4.3 KB / 32 KB (13%) | 6.5 KB / 32 KB (20%) | +2.2 KB |
+| Bump peak (runtime) | 208 B / 256 B (81%) | 336 B / 768 B (44%) | +128 B |
+
+**~80% RAM still free** for manifest CBOR + shell + additional chains + handshake.
+
+**Verified on real hardware (Cortex-M0+ Thumb, gcc 8.3.1, Seeeduino Xiao SAMD21):**
+
+```
+On boot:
+  OP_REGISTER emitted once (24-byte payload: chip_uid + vid:pid + fw_version)
+  ↳ Note: first ~12 bytes lost because host hasn't opened CDC port yet
+       (known issue, deferred — see secondary scope below)
+
+BOOT state (silent — no heartbeats, LED off):
+  Engine ticks at 4 Hz; event_dispatch in BOOT case halts on default
+
+After dongle_console --send-ack:
+  OP_REGISTER_ACK arrives → state_machine sees dongle_state=OPERATIONAL on next tick
+  HEARTBEAT begins at 1 Hz (cmd=0x0002, uptime_ms + seq counter)
+  LED begins toggling at 4 Hz on PA17
+
+After dongle_console --send-ping (3×):
+  OP_PONG emitted in response, in order (cmd=0x0005, seq=0,1,2)
+  Heartbeat continues through PING bursts (no interference)
+  SLIP-escape verified: payload byte 0xC0 emitted as DB DC, host decodes back to 0xC0
+```
+
+**Bug found + fixed during the session:**
+
+| Bug | Symptom | Fix |
+|---|---|---|
+| `OP_PING=0x0004` collided with `SE_EVENT_TICK=4` | PONGs fired on every engine tick, not only on OP_PING | Relocated m2s opcodes to `0x0100+`; rule captured in memory |
+| `table.unpack` not in LuaJIT 5.1 | `dongle_console --send-*` crashed with "attempt to call field 'unpack' (a nil value)" | Use bare `unpack()` (LuaJIT 5.1 idiomatic) |
+
+**Resume command for next session:**
+
+```
+ssh robot
+lsusb | grep 2886   # should show register_dongle (2886:802f) running clean v2
+luajit /home/pi/dongle_console/dongle_console.lua --frame   # observe REGISTER + (silent BOOT)
+luajit /home/pi/dongle_console/dongle_console.lua --frame --send-ack --send-ping
+# expect: heartbeats + PONG response
+```
+
+---
+
+### Plan for the next session (Phase 2e — secondary scope cleanup + RA4M1 toolchain)
+
+After Phase 2d closure, two tracks open:
+
+**Track A — secondary cleanup items (~half a session):**
+
+| Item | Type | Effort |
+|---|---|---|
+| Firmware: gate `send_register` on `tud_cdc_connected()` or buffer first frame until CDC is up | code | ~10 LOC in main.c |
+| dongle_console: first-frame sync drop (decoder discards bytes until first END-pair produces valid frame, even across reconnects) | code | ~10 LOC |
+| Fix `frame.h` "no final XOR" comment (the implementation has `^ 0xFF`) | doc | 1 line |
+| Patch `check_completion:` label-decl issue in `s_engine_builtins_flow_control.h` (gcc 8.3.1 portability) | code | 2 lines |
+| dongle_console v2d: opcode label decode (show `OP_PONG` not `cmd=0x0005`) | code | ~20 LOC + small opcode table |
+
+**Track B — second chip family (RA4M1 toolchain bring-up):**
+
+Per `four_chip_dongle_pivot_2026-05-11.md` ordering: "SAMD21 → Linux dongle-manager → RA4M1 → RP2350 → ESP32-C6". Linux side (dongle-manager) is large and the production stack lives at `~/knowledge_base_assembly/.../ros_planner_ii_mqtt_robot/` — that's a discrete future track. RA4M1 firmware is a portability litmus test: same s_engine M-port + same DSL chain should compile and run with only HAL/USB layer swap.
+
+RA4M1 prerequisites:
+- arm-none-eabi-gcc (already present)
+- Renesas FSP HAL (TBD — vendor download similar to TinyUSB)
+- Xiao RA4M1 board file / pin map
+- USB-CDC equivalent (RA4M1 has hardware USBHS — different driver)
+
+**Deferred indefinitely** (NOT secondary scope):
+- Engine surgery: `s_expr_module_def_t` → `s_engine_rom_t` rename + delete loader/stack/.cc sources + write `DIVERGENCE.md`
+- DSL: compute `bump_buffer_size` per-tree and emit into ROM
+- Three-factor handshake (F1/F2/F3 opcodes + HANDSHAKE state stub)
+- OP_GET_MANIFEST + CBOR encoder
+- Production Linux integration (mqtt_robot host stack adoption)
+
+**Things NOT to do next session:**
+- Don't redesign the architecture — Phase 2d locked the inbound-event pattern; future work composes on top
+- Don't expand the opcode catalog beyond the secondary cleanup — keep PHASE 2e small and tight
+- Don't merge tracks A and B in one commit if both are pursued — they're separable

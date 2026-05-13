@@ -57,6 +57,8 @@ int cfsetspeed(struct termios *t, speed_t speed);
 struct pollfd { int fd; short events; short revents; };
 int poll(struct pollfd *fds, unsigned long nfds, int timeout);
 
+int usleep(unsigned int usec);
+
 char *strerror(int errnum);
 int errno;
 ]]
@@ -104,6 +106,7 @@ local function parse_args(argv)
         script    = nil,
         list_only = false,
         help      = false,
+        send_seq  = {},           -- list of m2s opcodes to send before listening
     }
     local i = 1
     while i <= #argv do
@@ -120,6 +123,13 @@ local function parse_args(argv)
         elseif a == "--frame"    then opts.frame = true; opts.slip = true  -- frame implies slip
         elseif a == "--script"   then i = i + 1; opts.script = argv[i]
         elseif a == "--list"     then opts.list_only = true
+        elseif a == "--send-ack" then table.insert(opts.send_seq, {cmd=0x0103, label="OP_REGISTER_ACK"})
+        elseif a == "--send-ping" then table.insert(opts.send_seq, {cmd=0x0104, label="OP_PING"})
+        elseif a == "--send-cmd" then
+            i = i + 1
+            local cmd = tonumber(argv[i])
+            if not cmd then die("--send-cmd expects an integer (decimal or 0x-hex)") end
+            table.insert(opts.send_seq, {cmd=cmd, label=string.format("cmd=0x%04X", cmd)})
         elseif a == "--help" or a == "-h" then opts.help = true
         else
             die("unknown argument: %s (try --help)", a)
@@ -145,6 +155,11 @@ Options:
   --hex               Hex + ASCII column dump (default is plain ASCII)
   --script FILE       Run Lua script with on_byte/on_frame/send hooks
   --list              List candidate ACM ports and exit (no open)
+  --send-ack          Send one m2s OP_REGISTER_ACK (0x0103) frame after open
+  --send-ping         Send one m2s OP_PING (0x0104) frame after open
+  --send-cmd N        Send one m2s frame with raw cmd=N (decimal or 0xHHHH)
+                      All --send-* flags can be combined; sent in argv order
+                      with 50 ms gap, then the listen loop begins.
   --help, -h          This help
 
 Multi-device: errors out if more than one device matches; specify
@@ -335,6 +350,70 @@ local function crc8_autosar(frame_tbl, last_idx)
 end
 
 -- ============================================================================
+-- v2d: libcomm m2s frame encoder (host -> dongle)
+-- m2s wire layout (per libcomm/frame.h frame_encode_common):
+--   addr cmd_lo cmd_hi seq len <payload..len> crc8
+--   = 5-byte header + payload_len + 1-byte CRC
+-- Whole body SLIP-escaped; wrapped with leading + trailing END (0xC0).
+-- ============================================================================
+
+local g_tx_seq = 0   -- monotonic m2s seq per dongle_console run
+
+local function encode_m2s(cmd, payload)
+    payload = payload or {}
+    local addr = 0x00
+    local seq  = g_tx_seq
+    g_tx_seq   = bit.band(g_tx_seq + 1, 0xFF)
+    local len  = #payload
+
+    -- Body = 5-byte header + payload
+    local body = {
+        addr,
+        bit.band(cmd, 0xFF),
+        bit.band(bit.rshift(cmd, 8), 0xFF),
+        seq,
+        len,
+    }
+    for _, b in ipairs(payload) do table.insert(body, b) end
+
+    -- CRC over header + payload (final XOR 0xFF, per frame.c, despite frame.h comment)
+    local crc = crc8_autosar(body, #body)
+    table.insert(body, crc)
+
+    -- SLIP-escape and wrap with END markers
+    local wire = { SLIP_END }
+    for _, b in ipairs(body) do
+        if b == SLIP_END then
+            table.insert(wire, SLIP_ESC)
+            table.insert(wire, SLIP_ESC_END)
+        elseif b == SLIP_ESC then
+            table.insert(wire, SLIP_ESC)
+            table.insert(wire, SLIP_ESC_ESC)
+        else
+            table.insert(wire, b)
+        end
+    end
+    table.insert(wire, SLIP_END)
+    return wire, seq
+end
+
+local function send_m2s_frame(fd, entry)
+    local wire, seq = encode_m2s(entry.cmd)
+    -- Hex-dump what we're about to write
+    local hex = {}
+    for _, b in ipairs(wire) do table.insert(hex, string.format("%02X", b)) end
+    io.write(string.format("[TX %s] cmd=0x%04X seq=%d  %d bytes: %s\n",
+        entry.label, entry.cmd, seq, #wire, table.concat(hex, " ")))
+    io.flush()
+    -- Convert to string and write
+    local s = string.char(unpack(wire))
+    local n = tonumber(C.write(fd, s, #s))
+    if n ~= #s then
+        io.stderr:write(string.format("[TX] short write: %d / %d\n", n, #s))
+    end
+end
+
+-- ============================================================================
 -- v2c: libcomm s2m frame decoder
 -- s2m wire layout (per libcomm/frame.h):
 --   addr cmd_lo cmd_hi seq ack_seq ack_status len <payload..len> crc8
@@ -446,7 +525,7 @@ local script_env = {
 
 local function script_send(bytes)
     if script_env.write_fd < 0 then error("send: port not open") end
-    local s = (type(bytes) == "string") and bytes or string.char(table.unpack(bytes))
+    local s = (type(bytes) == "string") and bytes or string.char(unpack(bytes))
     local n = tonumber(C.write(script_env.write_fd, s, #s))
     return n
 end
@@ -574,5 +653,18 @@ io.flush()
 slip_state.decode_as_frame = opts.frame
 
 local fd = open_raw(info.path)
+
+-- Send any queued m2s frames before entering the listen loop. 50 ms inter-frame
+-- gap gives the dongle time to dispatch one event before the next arrives.
+if #opts.send_seq > 0 then
+    io.write(string.format("Sending %d m2s frame(s) before listen:\n", #opts.send_seq))
+    for _, entry in ipairs(opts.send_seq) do
+        send_m2s_frame(fd, entry)
+        C.usleep(50 * 1000)
+    end
+    io.write("\n")
+    io.flush()
+end
+
 run(fd, opts)
 C.close(fd)

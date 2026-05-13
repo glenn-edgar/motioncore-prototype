@@ -1,9 +1,5 @@
-# register_dongle - Seeeduino Xiao SAMD21 (Phase-2 merge)
-#
-# Combines the s_engine M-port (blink_engine), libcomm SLIP+CRC framing
-# (blink_frame), and the register_dongle chain (Linux waypoint) into a
-# single binary. Bare-metal, TinyUSB-as-a-library, newlib-nano.
-# Builds register_dongle.elf -> register_dongle.bin -> register_dongle.uf2
+# cdc_rx_hexdump - Seeeduino Xiao SAMD21
+# Clone of hello_cdc/Makefile; only TARGET changes.
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -18,14 +14,8 @@ BSP_BOARD    := $(BSP_FAMILY)/boards/seeeduino_xiao
 CMSIS        := $(TUSB)/lib/CMSIS_5/CMSIS/Core/Include
 UF2CONV      := $(TUSB)/tools/uf2/utils/uf2conv.py
 
-# s_engine runtime lives outside the samd21 tree.
-SENGINE_RT   := $(abspath $(TOP)/../s_engine/runtime)
-
 BUILD        := $(HERE)/build
-TARGET       := register_dongle
-
-# Vendored libcomm framing slice (copy of canonical libcomm; see VENDORED.md).
-LIBCOMM      := $(HERE)/vendor/libcomm
+TARGET       := cdc_rx_hexdump
 
 # ---------------------------------------------------------------------------
 # Toolchain
@@ -43,8 +33,7 @@ CPU_FLAGS := -mcpu=cortex-m0plus -mthumb
 DEFS := \
   -D__SAMD21G18A__ \
   -DCFG_TUSB_MCU=OPT_MCU_SAMD21 \
-  -DCONF_DFLL_OVERWRITE_CALIBRATION=0 \
-  -DMODULE_IS_64BIT=0
+  -DCONF_DFLL_OVERWRITE_CALIBRATION=0
 
 WARN := -Wall -Wextra -Wno-unused-parameter -Wno-unused-function
 
@@ -52,8 +41,6 @@ OPT  := -Os -ffunction-sections -fdata-sections
 
 INC := \
   -I$(HERE) \
-  -I$(LIBCOMM) \
-  -I$(SENGINE_RT) \
   -I$(SRC) \
   -I$(TUSB)/hw \
   -I$(BSP_FAMILY) \
@@ -71,7 +58,6 @@ INC := \
 CFLAGS  := $(CPU_FLAGS) $(OPT) $(WARN) $(DEFS) $(INC) -std=gnu11
 ASFLAGS := $(CPU_FLAGS) $(OPT) $(DEFS) $(INC)
 
-# Microchip hri headers re-declare some symbols; same suppression hello_cdc uses.
 CFLAGS += -Wno-error=redundant-decls
 
 LDSCRIPT := $(BSP_BOARD)/seeeduino_xiao.ld
@@ -80,8 +66,8 @@ LDFLAGS  := $(CPU_FLAGS) \
             -nostartfiles \
             --specs=nano.specs --specs=nosys.specs \
             -Wl,--gc-sections \
-            -Wl,--defsym=__stack_size__=0x800 \
-            -Wl,-Map=$(BUILD)/$(TARGET).map
+            -Wl,-Map=$(BUILD)/$(TARGET).map \
+            -Wl,--wrap=malloc
 LIBS     := -lc -lm -lgcc -lnosys
 
 # ---------------------------------------------------------------------------
@@ -90,27 +76,7 @@ LIBS     := -lc -lm -lgcc -lnosys
 APP_SRCS := \
   $(HERE)/main.c \
   $(HERE)/usb_descriptors.c \
-  $(HERE)/user_functions.c \
-  $(HERE)/register_dongle_v2_module_rom.c
-
-LIBCOMM_SRCS := \
-  $(LIBCOMM)/frame.c
-
-# M-port engine subset. Explicitly excludes:
-#   s_engine_loader.c   - no blob loader
-#   s_engine_init.c     - printf-diagnostic path; we use s_engine_init_rom
-#   s_engine_builtins.c - global registration table; emit-c uses headers directly
-#   s_engine_stack.c    - no stack on M-port
-#   *.cc                - C++ helpers not needed for the M-port subset
-SENGINE_SRCS := \
-  $(SENGINE_RT)/s_engine_module.c \
-  $(SENGINE_RT)/s_engine_eval.c \
-  $(SENGINE_RT)/s_engine_node.c \
-  $(SENGINE_RT)/s_engine_rom_init.c \
-  $(SENGINE_RT)/s_engine_exception.c \
-  $(SENGINE_RT)/s_engine_event_queue.c \
-  $(SENGINE_RT)/se_dict_hash.c \
-  $(SENGINE_RT)/se_dict_string.c
+  $(HERE)/syscalls_cdc.c
 
 BSP_SRCS := \
   $(BSP_FAMILY)/family.c \
@@ -131,11 +97,9 @@ TUSB_SRCS := \
 
 VENDOR_SRCS := $(BSP_SRCS) $(TUSB_SRCS)
 
-APP_OBJS     := $(patsubst $(HERE)/%.c,$(BUILD)/app/%.o,$(APP_SRCS))
-VENDOR_OBJS  := $(patsubst $(TOP)/%.c,$(BUILD)/vendor/%.o,$(VENDOR_SRCS))
-SENGINE_OBJS := $(patsubst $(SENGINE_RT)/%.c,$(BUILD)/sengine/%.o,$(SENGINE_SRCS))
-LIBCOMM_OBJS := $(patsubst $(LIBCOMM)/%.c,$(BUILD)/libcomm/%.o,$(LIBCOMM_SRCS))
-OBJS         := $(APP_OBJS) $(VENDOR_OBJS) $(SENGINE_OBJS) $(LIBCOMM_OBJS)
+APP_OBJS    := $(patsubst $(HERE)/%.c,$(BUILD)/app/%.o,$(APP_SRCS))
+VENDOR_OBJS := $(patsubst $(TOP)/%.c,$(BUILD)/vendor/%.o,$(VENDOR_SRCS))
+OBJS        := $(APP_OBJS) $(VENDOR_OBJS)
 
 DEPS := $(OBJS:.o=.d)
 
@@ -159,23 +123,11 @@ $(BUILD)/$(TARGET).uf2: $(BUILD)/$(TARGET).bin
 size: $(BUILD)/$(TARGET).elf
 	@$(SIZE) $<
 
-# App sources -> build/app/...
 $(BUILD)/app/%.o: $(HERE)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
-# Vendor/SDK/TinyUSB sources -> build/vendor/...
 $(BUILD)/vendor/%.o: $(TOP)/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
-
-# s_engine runtime sources -> build/sengine/...
-$(BUILD)/sengine/%.o: $(SENGINE_RT)/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
-
-# Vendored libcomm sources -> build/libcomm/...
-$(BUILD)/libcomm/%.o: $(LIBCOMM)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 

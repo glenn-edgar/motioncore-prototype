@@ -153,6 +153,48 @@ void send_heartbeat(s_expr_tree_instance_t* inst,
 }
 
 // ----------------------------------------------------------------------------
+// send_pong — oneshot (o_call). Fires once per OP_PING event dispatch.
+// Payload (8 B, little-endian): uptime_ms + monotonic pong_seq counter.
+// Mirrors send_heartbeat's shape; cmd is OP_PONG (0x0005) on s2m.
+// ----------------------------------------------------------------------------
+#define PONG_PAYLOAD_LEN  8u
+
+static uint32_t g_pong_seq = 0;
+
+void send_pong(s_expr_tree_instance_t* inst,
+               const s_expr_param_t*   params,
+               uint16_t                param_count,
+               s_expr_event_type_t     event_type,
+               uint16_t                event_id,
+               void*                   event_data) {
+    (void)inst; (void)params; (void)param_count;
+    (void)event_type; (void)event_id; (void)event_data;
+
+    uint32_t uptime_ms = (uint32_t)board_millis();
+    uint32_t seq       = g_pong_seq++;
+
+    uint8_t payload[PONG_PAYLOAD_LEN];
+    payload[0] = (uint8_t)(uptime_ms >>  0);
+    payload[1] = (uint8_t)(uptime_ms >>  8);
+    payload[2] = (uint8_t)(uptime_ms >> 16);
+    payload[3] = (uint8_t)(uptime_ms >> 24);
+    payload[4] = (uint8_t)(seq       >>  0);
+    payload[5] = (uint8_t)(seq       >>  8);
+    payload[6] = (uint8_t)(seq       >> 16);
+    payload[7] = (uint8_t)(seq       >> 24);
+
+    frame_meta_t meta = {
+        .addr        = 1,
+        .cmd         = OP_PONG,
+        .seq         = (uint8_t)(seq & 0xFFu),
+        .ack_seq     = 0,
+        .ack_status  = 0,
+        .payload_len = PONG_PAYLOAD_LEN,
+    };
+    (void)frame_encode_s2m(&meta, payload, &g_tx_ring);
+}
+
+// ----------------------------------------------------------------------------
 // toggle_led — main (m_call). Fires every tick (bare leaf under se_fork).
 // PA17 is the Xiao user LED. Must return SE_PIPELINE_CONTINUE so the fork
 // keeps the branch alive across ticks.
