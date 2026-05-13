@@ -30,6 +30,31 @@ uint8_t s_expr_module_validate(s_expr_module_t* mod);
 void s_expr_module_free(s_expr_module_t* mod);
 
 void s_expr_module_set_debug(s_expr_module_t* mod, s_expr_debug_fn_t fn);
+
+// ----------------------------------------------------------------------------
+// Helper for user C functions that want to emit a log line. Equivalent to
+// the DSL se_log() oneshot from inside C code. Prepends "[<uptime_ms>] "
+// to match the format DSL se_log produces (see s_engine_builtins_oneshot.h).
+//
+// No-op when no debug_fn is registered (silent on bare M-port until a
+// debug_packet_fn or equivalent is registered).
+//
+// Caveat: format-free. If you need formatting, snprintf into a local buf
+// first then pass the result. Don't add an s_engine_logf variant — %f in
+// format strings would pull in newlib float printf (~3 KB flash on M-port).
+// ----------------------------------------------------------------------------
+#include <stdio.h>
+static inline void s_engine_log(s_expr_tree_instance_t* inst, const char* msg) {
+    if (!inst || !inst->module || !inst->module->debug_fn || !msg) return;
+    double timestamp = 0.0;
+    if (inst->module->alloc.get_time) {
+        timestamp = inst->module->alloc.get_time(inst->module->alloc.ctx);
+    }
+    uint32_t uptime_ms = (uint32_t)(timestamp * 1000.0);
+    char buf[256];
+    snprintf(buf, sizeof(buf), "[%lu] %s", (unsigned long)uptime_ms, msg);
+    inst->module->debug_fn(inst, buf);
+}
 void s_expr_module_set_error(s_expr_module_t* mod, s_expr_error_fn_t fn);
 void s_expr_module_set_pools(s_expr_module_t* mod, void** pools, uint16_t count);
 

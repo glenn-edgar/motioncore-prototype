@@ -37,9 +37,14 @@ static void se_log(
     //     nowhere anyway (nosys.specs _write returns -1).
     //   * Future versions may emit a debug packet over the libcomm transport;
     //     register a debug_fn to capture the log line until then.
+    //
+    // Format: "[<uptime_ms>] <message>". Integer ms avoids newlib-nano's
+    // float printf (which needs -u _printf_float, ~3 KB flash). %lu format
+    // is uniformly available across all M-port chips.
     if (mod && mod->debug_fn) {
+        uint32_t uptime_ms = (uint32_t)(timestamp * 1000.0);
         char buf[256];
-        snprintf(buf, sizeof(buf), "[%.6f] %s", timestamp, msg);
+        snprintf(buf, sizeof(buf), "[%lu] %s", (unsigned long)uptime_ms, msg);
         mod->debug_fn(inst, buf);
     }
 }
@@ -93,8 +98,9 @@ static void se_log_int(
 
     // M-port divergence: no printf fallback (see se_log comment above).
     if (mod && mod->debug_fn) {
+        uint32_t uptime_ms = (uint32_t)(timestamp * 1000.0);
         char buf[256];
-        int n = snprintf(buf, sizeof(buf), "[%.6f] ", timestamp);
+        int n = snprintf(buf, sizeof(buf), "[%lu] ", (unsigned long)uptime_ms);
         if (n > 0 && n < (int)sizeof(buf)) {
             snprintf(buf + n, sizeof(buf) - n, fmt, val);
         }
@@ -150,9 +156,12 @@ static void se_log_float(
     }
 
     // M-port divergence: no printf fallback (see se_log comment above).
+    // NOTE: if `fmt` contains %f/%e/%g, the float printf code is pulled in
+    // anyway. se_log_float caller's responsibility — flag in upstream review.
     if (mod && mod->debug_fn) {
+        uint32_t uptime_ms = (uint32_t)(timestamp * 1000.0);
         char buf[256];
-        int n = snprintf(buf, sizeof(buf), "[%.6f] ", timestamp);
+        int n = snprintf(buf, sizeof(buf), "[%lu] ", (unsigned long)uptime_ms);
         if (n > 0 && n < (int)sizeof(buf)) {
             snprintf(buf + n, sizeof(buf) - n, fmt, (double)val);
         }
@@ -190,8 +199,10 @@ static void se_log_field(
     
     // M-port divergence: no printf fallback (see se_log comment above).
     if (mod && mod->debug_fn) {
+        uint32_t uptime_ms = (uint32_t)(timestamp * 1000.0);
         char buf[256];
-        snprintf(buf, sizeof(buf), "[%.6f] %s %d", timestamp, msg, val);
+        snprintf(buf, sizeof(buf), "[%lu] %s %d",
+                 (unsigned long)uptime_ms, msg, val);
         mod->debug_fn(inst, buf);
     }
 }
