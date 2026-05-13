@@ -1,0 +1,47 @@
+# Makefile.rom — black_board: 5 per-tree binaries
+CC = gcc
+CFLAGS_BASE = -Wall -Wextra -std=c11 -O2 -g -DMODULE_IS_64BIT=0 -ffunction-sections -fdata-sections
+LDFLAGS = -Wl,--gc-sections
+OBJ_DIR = obj_rom
+LIB_DIR = ../../lib
+INCLUDE_DIR = ../../include/s_engine
+INCS = -I. -I$(INCLUDE_DIR)
+LIB_FILE = $(LIB_DIR)/libs_s_engine.a
+LIBS = -L$(LIB_DIR) -ls_s_engine -lm
+
+# Compile rom + user_functions once (shared across all per-tree binaries)
+SHARED_OBJS = $(OBJ_DIR)/black_board_module_rom.o $(OBJ_DIR)/user_functions.o
+
+TREES = demo_blackboard_access demo_slot_access demo_array_access demo_nested_access demo_constants
+TARGETS = $(addprefix main_rom_,$(TREES))
+
+# Map tree -> HASH macro
+HASH_demo_blackboard_access = DEMO_BLACKBOARD_ACCESS_HASH
+HASH_demo_slot_access       = DEMO_SLOT_ACCESS_HASH
+HASH_demo_array_access      = DEMO_ARRAY_ACCESS_HASH
+HASH_demo_nested_access     = DEMO_NESTED_ACCESS_HASH
+HASH_demo_constants         = DEMO_CONSTANTS_HASH
+
+all: $(TARGETS)
+
+$(OBJ_DIR):
+	mkdir -p $(OBJ_DIR)
+
+$(OBJ_DIR)/black_board_module_rom.o: black_board_module_rom.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS_BASE) $(INCS) -c $< -o $@
+
+$(OBJ_DIR)/user_functions.o: user_functions.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS_BASE) $(INCS) -c $< -o $@
+
+# Per-tree main object
+$(OBJ_DIR)/main_rom_%.o: main_rom.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS_BASE) $(INCS) -DBB_TREE_HASH=$(HASH_$*) -DBB_TREE_NAME=\"$*\" -c $< -o $@
+
+# Per-tree binary
+main_rom_%: $(OBJ_DIR)/main_rom_%.o $(SHARED_OBJS) $(LIB_FILE)
+	$(CC) $(CFLAGS_BASE) $(OBJ_DIR)/main_rom_$*.o $(SHARED_OBJS) $(LIBS) $(LDFLAGS) -o $@
+
+clean:
+	rm -rf $(OBJ_DIR) $(TARGETS)
+
+.PHONY: all clean

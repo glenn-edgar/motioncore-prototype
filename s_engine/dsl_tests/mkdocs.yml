@@ -1,0 +1,75 @@
+site_name: C S_ENGINE
+nav:
+  - Design Overview: README_top_design.md
+  - DSL: README_DSL.md
+  - DSL Closures: README_DSL_closure_guide.md
+  - Return Codes: README_return_codes.md
+  - Predicate System: README_predicate_system.md
+  - User Defined Functions: README_user_defined_functions.md
+  - User Events: README_user_events.md
+  - JSON Support: README_json_support.md
+  - JSON Array Support: README_json_array_support.md
+  - Reading Debug Map: README_reading_debug_map.md
+  - Stack Operations and Runtime: README_stack_operations.md
+  - Stack Equations: README_stack_equation_handler.md
+  - Inner Engine Design: README_inner_engine_design.md
+  - Outer Engine Design: README_outer_engine_design.md
+  - Runtime Dictionary Handling: README_runtime_dictionary_handling.md
+  - Composite Functions:
+    - Overview: composite_functions/README_composite_functions.md
+    - Chain Flow: composite_functions/README_chain_flow.md
+    - Sequence: composite_functions/README_sequence.md
+    - State Machine: composite_functions/README_state_machine.md
+    - Cond: composite_functions/README_cond.md
+    - Fork: composite_functions/README_fork.md
+    - Fork Join: composite_functions/README_fork_join.md
+    - While: composite_functions/README_while.md
+    - Event Dispatch: composite_functions/README_event_dispatch.md
+    - Field Dispatch: composite_functions/README_field_dispatch.md
+    - Trigger on Change: composite_functions/README_trigger_on_change.md
+    - Engine Interface: composite_functions/README_engine_interface.md
+    - Function Dictionary: composite_functions/README_function_dictionary_handling.md
+    - External Tree: composite_functions/README_external_tree.md
+  - Simple Functions:
+    - Main Functions:
+      - Wait: simple_functions/main_functions/README_wait.md
+      - Wait Event: simple_functions/main_functions/README_wait_event.md
+      - Wait Timeout: simple_functions/main_functions/README_wait_time_out.md
+      - Verify: simple_functions/main_functions/README_verify.md
+      - Verify Elapsed Events: simple_functions/main_functions/README_verify_elasped_events.md
+      - Verify Elapsed Time: simple_functions/main_functions/README_verify_elasped_time.md
+      - Tick Time Delay: simple_functions/main_functions/README_tick_time_delay.md
+    - One Shot Functions:
+      - Dictionary Functions: simple_functions/one_shot_functions/README_dictionary_functions.md
+      - Queue Event: simple_functions/one_shot_functions/README_queue_event.md
+      - SE Log: simple_functions/one_shot_functions/README_se_log.md
+      - Set Field: simple_functions/one_shot_functions/README_set_field.md
+    - Predicate Functions: simple_functions/predicate_functions/README.md
+  - Unit Tests:
+    - Overview: tests/README_test_overview.md
+    - Return Codes: tests/README_return_test.md
+    - Black Board Tests:
+      - Overview: tests/black_board/README_test_overview.md
+      - DSL: tests/black_board/README_DSL.md
+      - Black Board Initialization: tests/black_board/README_black_board_initializations.md
+      - Black Board Nested Fields: tests/black_board/README_field_ref_nested_field_ref.md
+      - Black Board main.c test: tests/black_board/README_MAIN.md
+      - Black Board user_functions.c test: tests/black_board/README_USER_FUNCTIONS.md
+    - Dispatch Test: tests/README_dispatch.md
+    - State Machine Test: tests/README_state_machine.md
+    - Basic Predicate Test: tests/README_basic_predicates.md
+    - Advanced Predicate Test: tests/README_advanced_predicates.md
+    - Complex Sequence Test: tests/README_complex_sequence.md
+    - Loop Test: tests/README_loop_test.md
+    - Json Test: tests/README_json.md
+    - Stack Test: tests/README_stack_test.md
+    - Stack Equations Test: tests/README_stack_equation_test.md
+    - Function Dictionary Test: tests/README_function_dictionary.md
+    - Callback Function Test: tests/README_callback_function_test.md
+    - External Tree Test: tests/README_external_tree_management.md
+  - Car Window Controller:
+    - Requirements: car_window_controller/README_cardoor_requirements.md
+    - Implementation: car_window_controller/README_cardoor_s_engine_implementation.md
+
+  
+

@@ -1,0 +1,22 @@
+CC = gcc
+CFLAGS = -Wall -Wextra -std=c11 -O2 -g -DMODULE_IS_64BIT=0 -ffunction-sections -fdata-sections
+LDFLAGS = -Wl,--gc-sections
+OBJ_DIR = obj_rom
+LIB_DIR = ../../lib
+INCLUDE_DIR = ../../include/s_engine
+CFLAGS += -I. -I$(INCLUDE_DIR)
+SRCS = main_rom.c advanced_primitive_test_module_rom.c user_functions.c
+OBJS = $(SRCS:%.c=$(OBJ_DIR)/%.o)
+HDRS = $(wildcard *.h)
+LIB_FILE = $(LIB_DIR)/libs_s_engine.a
+TARGET = main_rom
+all: $(TARGET)
+$(OBJ_DIR):
+	mkdir -p $(OBJ_DIR)
+$(TARGET): $(OBJS) $(LIB_FILE)
+	$(CC) $(CFLAGS) $(OBJS) -L$(LIB_DIR) -ls_s_engine -lm $(LDFLAGS) -o $@
+$(OBJ_DIR)/%.o: %.c $(HDRS) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+clean:
+	rm -rf $(OBJ_DIR) $(TARGET)
+.PHONY: all clean

@@ -1,0 +1,170 @@
+DoorController [Root Node - Concurrency]
+├─── StartCondition: PowerUp
+├─── EndCondition: SystemShutdown
+│
+├─── [Concurrent Branch 1] SerialMessageHandler
+│    ├─── Sequence: WaitForMessage
+│    │    ├─── Condition: SerialDataAvailable
+│    │    ├─── Action: ReadSerialMessage
+│    │    └─── Action: ParseMessageType
+│    │
+│    └─── Priority-Switch: MessageDispatch
+│         ├─── Case: CMD_OPEN
+│         │    └─── Action: PostEvent(OpenDoorRequest)
+│         ├─── Case: CMD_CLOSE
+│         │    └─── Action: PostEvent(CloseDoorRequest)
+│         ├─── Case: CMD_STOP
+│         │    └─── Action: PostEvent(StopRequest)
+│         ├─── Case: CMD_STATUS
+│         │    └─── Action: PostEvent(StatusRequest)
+│         └─── Case: CMD_EMERGENCY
+│              └─── Action: PostEvent(EmergencyStop)
+│
+├─── [Concurrent Branch 2] DoorMotorControl
+│    ├─── StartCondition: true
+│    ├─── RepeatCondition: !SystemShutdown
+│    │
+│    └─── Priority-Switch: MotorStateMachine
+│         │
+│         ├─── [Priority 0 - Highest] EmergencyState
+│         │    ├─── StartCondition: EmergencyStop || OverCurrent || Obstruction
+│         │    ├─── Sequence:
+│         │    │    ├─── Action: DisableMotor_TLE7269G
+│         │    │    ├─── Action: SetBridgeMode(FREEWHEEL)
+│         │    │    ├─── Action: SendStatusMessage(EMERGENCY_STOPPED)
+│         │    │    └─── Wait: ManualReset
+│         │    └─── EndCondition: ManualResetReceived
+│         │
+│         ├─── [Priority 1] OpeningState
+│         │    ├─── StartCondition: OpenDoorRequest && !FullyOpen && !Emergency
+│         │    ├─── InvariantCondition: !OverCurrent && !Obstruction
+│         │    │
+│         │    └─── Sequence:
+│         │         ├─── Action: SetBridgeMode(FORWARD)
+│         │         ├─── Action: SetMotorPWM(OpenSpeed)
+│         │         ├─── Action: EnableMotor_TLE7269G
+│         │         │
+│         │         ├─── Concurrency:
+│         │         │    ├─── Monitor: CurrentSense
+│         │         │    │    ├─── RepeatCondition: !FullyOpen
+│         │         │    │    └─── If: Current > MaxCurrent
+│         │         │    │         └─── PostEvent(OverCurrent)
+│         │         │    │
+│         │         │    ├─── Monitor: PositionSense
+│         │         │    │    ├─── RepeatCondition: !FullyOpen
+│         │         │    │    └─── If: LimitSwitch_Open
+│         │         │    │         └─── PostEvent(FullyOpenReached)
+│         │         │    │
+│         │         │    └─── Monitor: ObstacleSense
+│         │         │         ├─── RepeatCondition: !FullyOpen
+│         │         │         └─── If: CurrentSpike || MotorStall
+│         │         │              └─── PostEvent(Obstruction)
+│         │         │
+│         │         ├─── Wait: FullyOpenReached || StopRequest || Timeout(30s)
+│         │         │
+│         │         └─── Sequence: Shutdown
+│         │              ├─── Action: DisableMotor_TLE7269G
+│         │              ├─── Action: SetBridgeMode(BRAKE)
+│         │              ├─── Wait: 100ms
+│         │              ├─── Action: SetBridgeMode(FREEWHEEL)
+│         │              └─── Action: SendStatusMessage(DOOR_OPEN)
+│         │
+│         ├─── [Priority 2] ClosingState
+│         │    ├─── StartCondition: CloseDoorRequest && !FullyClosed && !Emergency
+│         │    ├─── InvariantCondition: !OverCurrent && !Obstruction
+│         │    │
+│         │    └─── Sequence:
+│         │         ├─── Action: SetBridgeMode(REVERSE)
+│         │         ├─── Action: SetMotorPWM(CloseSpeed)
+│         │         ├─── Action: EnableMotor_TLE7269G
+│         │         │
+│         │         ├─── Concurrency:
+│         │         │    ├─── Monitor: CurrentSense
+│         │         │    │    ├─── RepeatCondition: !FullyClosed
+│         │         │    │    └─── If: Current > MaxCurrent
+│         │         │    │         └─── PostEvent(OverCurrent)
+│         │         │    │
+│         │         │    ├─── Monitor: PositionSense
+│         │         │    │    ├─── RepeatCondition: !FullyClosed
+│         │         │    │    └─── If: LimitSwitch_Closed
+│         │         │    │         └─── PostEvent(FullyClosedReached)
+│         │         │    │
+│         │         │    └─── Monitor: ObstacleSense
+│         │         │         ├─── RepeatCondition: !FullyClosed
+│         │         │         └─── If: CurrentSpike || MotorStall
+│         │         │              └─── Sequence:
+│         │         │                   ├─── PostEvent(Obstruction)
+│         │         │                   └─── PostEvent(AutoReverseRequest)
+│         │         │
+│         │         ├─── Wait: FullyClosedReached || StopRequest || Timeout(30s)
+│         │         │
+│         │         └─── Sequence: Shutdown
+│         │              ├─── Action: DisableMotor_TLE7269G
+│         │              ├─── Action: SetBridgeMode(BRAKE)
+│         │              ├─── Wait: 100ms
+│         │              ├─── Action: SetBridgeMode(FREEWHEEL)
+│         │              └─── Action: SendStatusMessage(DOOR_CLOSED)
+│         │
+│         ├─── [Priority 3] AutoReverseStateF
+│         │    ├─── StartCondition: AutoReverseRequest
+│         │    │
+│         │    └─── Sequence:
+│         │         ├─── Action: DisableMotor_TLE7269G
+│         │         ├─── Wait: 50ms
+│         │         ├─── Action: SetBridgeMode(FORWARD)
+│         │         ├─── Action: SetMotorPWM(OpenSpeed * 0.5)
+│         │         ├─── Action: EnableMotor_TLE7269G
+│         │         ├─── Wait: 500ms
+│         │         ├─── Action: DisableMotor_TLE7269G
+│         │         ├─── Action: SetBridgeMode(FREEWHEEL)
+│         │         └─── Action: SendStatusMessage(OBSTRUCTION_DETECTED)
+│         │
+│         └─── [Priority 4 - Default] IdleState
+│              ├─── StartCondition: !OpenDoorRequest && !CloseDoorRequest
+│              │
+│              └─── Sequence:
+│                   ├─── Action: DisableMotor_TLE7269G
+│                   ├─── Action: SetBridgeMode(FREEWHEEL)
+│                   └─── Wait: StatusRequest || NewCommand
+│
+├─── [Concurrent Branch 3] StatusReporter
+│    ├─── RepeatCondition: !SystemShutdown
+│    │
+│    └─── Sequence:
+│         ├─── Wait: StatusRequest || PeriodicTrigger(1s)
+│         │
+│         └─── Sequence: CollectAndSend
+│              ├─── Action: ReadDiagnostics_TLE7269G
+│              ├─── Action: ReadCurrentPosition
+│              ├─── Action: ReadMotorCurrent
+│              ├─── Action: ReadTemperature
+│              ├─── Action: AssembleStatusMessage
+│              └─── Action: SendSerialStatus
+│
+└─── [Concurrent Branch 4] DiagnosticsMonitor
+     ├─── RepeatCondition: !SystemShutdown
+     │
+     └─── Concurrency:
+          ├─── Monitor: ThermalProtection
+          │    ├─── RepeatCondition: true
+          │    └─── If: Temperature > ThermalThreshold
+          │         └─── Sequence:
+          │              ├─── PostEvent(ThermalShutdown)
+          │              └─── PostEvent(EmergencyStop)
+          │
+          ├─── Monitor: VoltageMonitor
+          │    ├─── RepeatCondition: true
+          │    └─── If: Voltage < MinVoltage || Voltage > MaxVoltage
+          │         └─── Sequence:
+          │              ├─── PostEvent(VoltageError)
+          │              └─── PostEvent(EmergencyStop)
+          │
+          └─── Monitor: TLE7269G_FaultPin
+               ├─── RepeatCondition: true
+               └─── If: FaultPinActive
+                    └─── Sequence:
+                         ├─── Action: ReadFaultStatus_TLE7269G
+                         ├─── Action: LogFaultCode
+                         └─── PostEvent(EmergencyStop)
+
+
