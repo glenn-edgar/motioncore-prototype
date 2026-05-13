@@ -920,3 +920,86 @@ RA4M1 prerequisites:
 - Don't redesign the architecture — Phase 2d locked the inbound-event pattern; future work composes on top
 - Don't expand the opcode catalog beyond the OP_REGISTER retry fix — keep Phase 2f small and tight
 - Don't merge tracks A and B in one commit if both are pursued — they're separable
+
+---
+
+### Phase 2f closure — periodic OP_REGISTER retry + se_log runtime fix (2026-05-13)
+
+Phase 2f delivered. OP_REGISTER now arrives reliably regardless of when the host attaches — the BOOT-state chain re-emits it every ~1 sec until OP_REGISTER_ACK lands. The session also surfaced and fixed a latent runtime hazard that was breaking Phase 2f on SAMD21.
+
+**Chain change** (`s_engine/dsl_tests/register_dongle_v2/register_dongle_v2.lua`):
+
+```lua
+-- BOOT case was: bare se_event_dispatch
+-- BOOT case now:
+se_fork(
+    function()
+        se_chain_flow(function()
+            local r = o_call("send_register")
+            end_call(r)
+            se_tick_delay(0)                  -- 1 tick HALT
+            se_return_pipeline_reset()         -- cycle ~ 1 sec at 250 ms tick base
+        end)
+    end,
+    function()
+        se_event_dispatch(boot_dispatch)       -- existing ACK listener
+    end
+)
+```
+
+The top-level `io_call("send_register")` was dropped — the retry loop covers it. SURVIVES_RESET semantic was correctly given up (retry-until-ACK is the right protocol shape).
+
+**Latent bug discovered + fixed:** the new BOOT chain didn't transition out of BOOT on SAMD21 even though Linux prototype worked. After ~30 min of trace-debugging:
+
+- The `se_log("BOOT: ...")` inside the OP_REGISTER_ACK action was hitting a printf path on SAMD21 (no `debug_fn` registered → fallback `printf`)
+- printf pulled `lib_a-nano-mallocr.o` into the link (2.3 KB), reached `_malloc_r` which sbrk-failed silently — *but the code path was still reachable from inside the chain's dispatch action and corrupted something*
+- Phase 2d worked despite using the same `se_log` — the new fork+dispatch+chain_flow structure must have crossed some threshold (stack depth? newlib reentrancy?) that the simpler Phase 2d structure didn't
+- Fix: drop the printf fallback from `se_log` / `se_log_int` / `se_log_float` / `se_log_field` in `s_engine_builtins_oneshot.h`. When no debug_fn registered, these are silent no-ops. Linux harnesses register a silent debug_fn so no change there.
+- Committed separately as `59fc78a s_engine: drop printf fallback in se_log* — M-port heap-free` (one engine commit before the Phase 2f chain commit)
+- Flash savings: register_dongle text 33,640 → 31,428 B (-2,212 B = 6.6%)
+
+**Future fix** for getting log output back on SAMD21 documented in `memory/se_log_debug_packet_plan.md`: route `se_log` through an `OP_DBG_LOG` s2m libcomm frame. The dongle's `debug_fn` would call `frame_encode_s2m(OP_DBG_LOG, "...", &g_tx_ring)`; `dongle_console` adds a decoder branch. Not blocking; for whenever observable log output becomes useful (probably during three-factor handshake work).
+
+**On-hardware verification:** flashed and tested with `dongle_console --frame`:
+
+```
+8 frames of OP_REGISTER (1 Hz retries while waiting for ACK)
+↓ host sent --send-ack
+OP_HEARTBEAT seq=0 (transition successful)
+↓ host sent --send-ping --send-ping
+OP_PONG seq=0  (answer to first PING)
+OP_PONG seq=1  (answer to second PING)
+OP_HEARTBEAT seq=11, 12, 13... (1 Hz continues)
+```
+
+All four observable behaviors correct: retry, transition, heartbeat, PONG.
+
+**Other learnings:**
+
+- `chip is in boot` workflow: double-short reset, mount via `sudo mount /dev/sd[bcd] /mnt/xiao` (number changes per re-enumeration; loop through). UF2 drop + sync. ~3 sec for re-enumeration.
+- Diagnostic discipline that paid off: when ACK didn't transition, the four-stage suspect ladder (bytes arrive? frame decode? event queue? action fires?) gave clear narrowing. Added `[RX-DIAG]` print + action-side `o_call(send_pong)` marker. Both diagnostics together revealed the action was firing — pointing to a downstream issue — which is when I started looking at se_log + the runtime.
+
+---
+
+### Plan for the next session (Phase 2g — manifest OP_GET_MANIFEST + CBOR encoder, or RA4M1 toolchain)
+
+After Phase 2f closure, several tracks are open. Picked candidates ordered by leverage:
+
+**Track A — OP_DBG_LOG so se_log becomes observable again (~30 min, small):**
+
+Per `memory/se_log_debug_packet_plan.md`. Smallest possible patch. Doesn't unblock anything else but eliminates a debugging blind spot before deeper work. Pairs nicely as warmup.
+
+**Track B — OP_GET_MANIFEST + stub CBOR manifest (~1 session, medium):**
+
+Manifest is the load-bearing portability primitive per `dongle_linux_protocol_2026-05-11.md`. Even a minimal manifest (firmware version + commands list + symbols list) lets the Linux host start to be "command-set-aware" instead of hardcoded against specific opcodes. CBOR encoder on the dongle side ~200 LOC; host decoder pre-exists in canonical libcomm.
+
+**Track C — RA4M1 firmware port (~1-2 sessions, larger):**
+
+Per `four_chip_dongle_pivot_2026-05-11.md` ordering. First true portability test of the s_engine M-port + chain DSL. Requires Renesas FSP HAL download + new BSP. Verifies the "same chain works unchanged across chips" claim.
+
+**Deferred** (NOT immediate next):
+- Three-factor handshake (F1/F2/F3 opcodes + HANDSHAKE state) — needs more protocol surface first
+- Engine surgery (loader/stack/.cc deletions, DIVERGENCE.md) — cosmetic, current state works
+- Production Linux integration (mqtt_robot host stack adoption) — bigger track, after manifest is real
+
+Recommend starting next session with Track A (warmup, removes a known blind spot) then dialog on B vs C as the main work.

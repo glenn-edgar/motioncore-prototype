@@ -92,9 +92,24 @@ local case_fn = {}
 
 case_fn[1] = function()
     se_case(DONGLE_BOOT, function()
-        -- Single composite (event_dispatch) is the case action. Returns CONTINUE
-        -- until an OP_REGISTER_ACK arrives and the action sets dongle_state=1.
-        se_event_dispatch(boot_dispatch)
+        -- Phase 2f: periodic OP_REGISTER retry. The original io_call at the top
+        -- of the tree fired once at boot and got lost in the CDC TX FIFO if the
+        -- host wasn't reading yet. This fork keeps re-emitting OP_REGISTER on a
+        -- tick-delay loop alongside the ACK listener. When dongle_state flips to
+        -- OPERATIONAL, state_machine terminates this case and the loop stops.
+        se_fork(
+            function()
+                se_chain_flow(function()
+                    local r = o_call("send_register")
+                    end_call(r)
+                    se_tick_delay(0)             -- 1 tick of HALT, then advance
+                    se_return_pipeline_reset()    -- ~1 sec/cycle at 250 ms tick base
+                end)
+            end,
+            function()
+                se_event_dispatch(boot_dispatch)
+            end
+        )
     end)
 end
 
@@ -143,10 +158,9 @@ start_tree("register_dongle_v2")
     use_record("dongle_record")
 
     se_function_interface(function()
-        -- Boot-once: send_register fires on first INIT, never re-fires
-        -- (SURVIVES_RESET) even when sub-trees reset.
-        local reg = io_call("send_register")
-        end_call(reg)
+        -- Phase 2f: top-level io_call("send_register") removed. The BOOT case's
+        -- retry loop now owns OP_REGISTER emission — re-fires every ~1 sec
+        -- until OP_REGISTER_ACK arrives. Survives host attach timing.
 
         -- One-shot init: dongle_state = BOOT (se_i_set_field fires once at INIT)
         se_i_set_field("dongle_state", DONGLE_BOOT)

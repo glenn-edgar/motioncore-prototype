@@ -121,17 +121,17 @@ int main(int argc, char* argv[]) {
     if (!tree) { printf("FATAL: create tree\n"); return 1; }
 
     // Schedule of injected host-side events (tick index, opcode, label).
-    // Spaced so we observe BOOT-state idle ticks, transition, then PONGs.
+    // Phase 2f: delay ACK injection so we observe multiple OP_REGISTER retries
+    // from the BOOT case's retry chain_flow before the state transition.
     struct { int tick; uint16_t op; const char* label; } injections[] = {
-        {  5, OP_REGISTER_ACK, "OP_REGISTER_ACK" },
-        { 12, OP_PING,         "OP_PING #1" },
-        { 18, OP_PING,         "OP_PING #2" },
-        { 24, OP_PING,         "OP_PING #3" },
+        { 18, OP_REGISTER_ACK, "OP_REGISTER_ACK" },
+        { 26, OP_PING,         "OP_PING #1" },
+        { 32, OP_PING,         "OP_PING #2" },
     };
     const int N_INJ = (int)(sizeof(injections) / sizeof(injections[0]));
     int next_inj = 0;
 
-    const int TICKS = 30;
+    const int TICKS = 40;
     printf("Running %d ticks @ 250 ms each (~%.1f s real time)\n", TICKS, TICKS * 0.25);
     printf("Expected: REGISTER once -> idle ~5 ticks in BOOT -> ACK -> HEARTBEATs + LED + 3x PONG\n\n");
 
