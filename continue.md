@@ -1108,3 +1108,85 @@ Track C (RA4M1 firmware port) remains future work — the identity system makes 
 Side observations from this session worth carrying:
 - The `[CDC] DTR ...` diag logs in main.c proved useful and are low-frequency. Consider keeping them long-term as operational signal. Possibly add a verbosity flag if they ever become noise.
 - The bump peak hasn't been measured post-handle_internal_events. Add a startup OP_DBG_LOG with bump_peak figure once we have a stable Phase 2h baseline.
+
+---
+
+## How to start tomorrow
+
+### Step 1 — minute-zero verification
+
+```bash
+ssh robot
+lsusb | grep 2886
+# Expected: "ID 2886:802f Seeed Technology Co., Ltd. register_dongle"
+# Dongle is still running Phase 2g firmware (host-reattach + OP_DBG_LOG enabled)
+
+timeout 5 luajit /home/pi/dongle_console/dongle_console.lua --frame
+# Expected: stream of OP_HEARTBEAT frames at 1 Hz (dongle is in OPERATIONAL
+# from the last session's ACK). If you see OP_REGISTER instead, the dongle
+# rebooted and is in BOOT waiting for ACK — fine, --send-ack to advance.
+```
+
+### Step 2 — required cold-start reading (in order, ~10 minutes)
+
+1. **`memory/feedback_design_dialog_style.md`** — MANDATORY. The locked dialog discipline (one concern at a time, push back is value-add, stay in dialog before pre-executing).
+2. **This file's "Phase 2g closure" section** above — what landed last session.
+3. **`memory/dongle_class_identity_2026-05-13.md`** — load-bearing. The full Phase 2h design lives here.
+4. **`docs/dongle_classes/README.md` + skim `samd21_shell_v1.lua`** — the chain shape Phase 2h modifies.
+5. **`docs/cross_repo_handoff/dongle_class_catalog.md`** — only the parts that affect motioncore-prototype (sections 3 ABI contract + 7.8 Pi-side flow); skip the kb_build catalog details, that's the other AI session.
+
+### Step 3 — decide the day's track
+
+**Two viable directions:**
+
+| Track | Description | Blocking? |
+|---|---|---|
+| **A** | Phase 2h motioncore-prototype side: REGISTER v2 payload + SAMD21 flash storage + OP_COMMISSION_* opcodes + handle_commissioning user fn + chain edit | **Unblocked** — can stub `class_ids.h` locally with a placeholder hash (`#define MY_CLASS_ID 0x12345678U`). Real value plugs in later when kb_build emits the file. |
+| **B** | Wait for the kb_build / nano_data_center AI session to ship `class_ids.h` first | Blocked on external coordination. Not recommended — we can do Track A in parallel with stubbed constants. |
+| **C** | Other work — RA4M1 toolchain bring-up, more secondary cleanup (build_date vs fw_version, etc.), or simplify/audit existing code | Unblocked, smaller scope |
+
+**Recommend: Track A.** Phase 2h has clear scope, all the design is locked, the firmware path through bootloader+flash is well-trodden. Stub class_ids.h with `#define MY_CLASS_ID 0xDEADBEEF` initially; replace when the real hash is available.
+
+### Step 4 — first concrete action of Track A
+
+Edit `samd21/apps/register_dongle/user_functions.c`'s `send_register` user fn to emit the REGISTER v2 payload (38 B):
+
+```c
+// v2 payload — see memory/dongle_class_identity_2026-05-13.md
+#define DONGLE_PROTO_VERSION  2
+#define MY_CLASS_ID           0xDEADBEEFU   // STUB until kb_build emits class_ids.h
+extern uint32_t g_instance_id;               // set from flash at boot, 0 if uncommissioned
+extern uint8_t  g_commissioning_state;       // 0=UNCOMMISSIONED, 1=COMMISSIONED
+
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t  version;
+    uint32_t class_id;
+    uint32_t instance_id;
+    uint8_t  commissioning_state;
+    uint8_t  chip_uid[16];
+    uint16_t vid, pid;
+    uint32_t fw_version;
+    uint32_t build_date;
+} op_register_payload_v2_t;
+#pragma pack(pop)
+_Static_assert(sizeof(op_register_payload_v2_t) == 38, "OP_REGISTER v2 must be 38 B");
+```
+
+That's the spike. Build, flash, observe — host sees v2 REGISTER frames with the stub class_id. Then build out the rest of Phase 2h piece by piece per `memory/dongle_class_identity_2026-05-13.md`'s "What the dongle firmware side needs" table.
+
+### Key TBDs to keep in mind (don't rabbit-hole)
+
+- friendly_name in commissioning (defer until needed)
+- commissioning authentication (defer past bench phase)
+- aux_blob format per comm option (only matters for routers, not Phase 2h)
+- build_date vs fw_version redundancy (pick one, document briefly)
+
+### If the dongle isn't responding
+
+The host-reattach mechanism from Phase 2g means re-plug usually works. If stuck:
+1. Power cycle (unplug + replug)
+2. Bootloader entry: double-short reset pads
+3. Re-flash last known good UF2: `/home/pi/motioncore-prototype/samd21/apps/register_dongle/build/register_dongle.uf2`
+
+12 commits ahead of origin as of session end — see `git log --oneline -12` for the trail.
