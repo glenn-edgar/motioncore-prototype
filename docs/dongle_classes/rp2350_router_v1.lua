@@ -33,15 +33,22 @@ local OP_PING           = 0x0104
 local OP_COMMISSION_SET = 0x0105
 local OP_COMMISSION_CLEAR = 0x0106
 
--- Router-specific L2 opcodes (m2s, 0x0180+ to leave 0x0107-0x017F for
--- shared leaf-dongle commands the router may also implement)
-local OP_BUS_RS485_SEND     = 0x0180  -- {addr:u8, cmd:u16, payload[]}: forward to slave
-local OP_BUS_CAN_SEND       = 0x0181  -- {addr:u8, cmd:u16, payload[]}: forward to slave
-local OP_BUS_RS485_BAUDRATE = 0x0182  -- {baud_rate:u32}
-local OP_BUS_CAN_BITRATE    = 0x0183  -- {bit_rate:u32}
-local OP_SLAVE_COMMISSION_BEGIN = 0x0184  -- {bus_id:u8, slave_addr:u8}
-local OP_SLAVE_LIST_QUERY   = 0x0185  -- -> reply with active slave roster
-local OP_BUS_STATS_QUERY    = 0x0186  -- {bus_id:u8} -> reply with frame counters
+-- Router-specific L2.inner channel 0x40xx — slave management.
+-- Pi-driven: dongle's slave_map is populated by these commands, not by
+-- autonomous bus discovery. See memory/dongle_class_identity_2026-05-13.md
+-- "Slave registration model" section.
+local OP_SLAVE_REGISTER     = 0x4000  -- {mcu_id, slave_class_id, comm, addr_or_inst, aux}
+local OP_SLAVE_UNREGISTER   = 0x4001  -- {mcu_id}
+local OP_SLAVE_LIST_QUERY   = 0x4002  -- empty
+local OP_SLAVE_LIST_REPLY   = 0x4003  -- s2m, fragmented if needed
+local OP_SLAVE_STATUS       = 0x4004  -- s2m unsolicited {mcu_id, status, age_ms}
+
+-- Router-specific app shell opcodes (0x20xx — chip-specific shell). The
+-- Pi has direct addr-based forwarding for normal slave traffic, so these
+-- are out-of-band control/config commands.
+local OP_BUS_RS485_BAUDRATE = 0x2080  -- {baud_rate:u32}
+local OP_BUS_CAN_BITRATE    = 0x2081  -- {bit_rate:u32}
+local OP_BUS_STATS_QUERY    = 0x2082  -- {bus_id:u8} -> reply with frame counters
 
 -- Internal events
 local EV_HOST_REATTACH  = 0xFE00
@@ -99,33 +106,24 @@ op_dispatch[1] = function()
     end)
 end
 
--- Bus-routing commands. C user fns forward to the L3 libcomm subsystem
--- (running on core1 with FreeRTOS, handles PIO/CAN hardware).
+-- L2.inner channel 0x40xx — slave management (Pi-driven topology).
 op_dispatch[2] = function()
-    se_event_case(OP_BUS_RS485_SEND, function()
+    se_event_case(OP_SLAVE_REGISTER, function()
         se_chain_flow(function()
-            local c = o_call("handle_bus_rs485_send"); end_call(c)
+            local c = o_call("handle_slave_register"); end_call(c)
             se_return_pipeline_reset()
         end)
     end)
 end
 op_dispatch[3] = function()
-    se_event_case(OP_BUS_CAN_SEND, function()
+    se_event_case(OP_SLAVE_UNREGISTER, function()
         se_chain_flow(function()
-            local c = o_call("handle_bus_can_send"); end_call(c)
+            local c = o_call("handle_slave_unregister"); end_call(c)
             se_return_pipeline_reset()
         end)
     end)
 end
 op_dispatch[4] = function()
-    se_event_case(OP_SLAVE_COMMISSION_BEGIN, function()
-        se_chain_flow(function()
-            local c = o_call("handle_slave_commission_begin"); end_call(c)
-            se_return_pipeline_reset()
-        end)
-    end)
-end
-op_dispatch[5] = function()
     se_event_case(OP_SLAVE_LIST_QUERY, function()
         se_chain_flow(function()
             local c = o_call("handle_slave_list_query"); end_call(c)
@@ -133,7 +131,24 @@ op_dispatch[5] = function()
         end)
     end)
 end
+-- L2.inner channel 0x20xx — router-specific app shell (bus config).
+op_dispatch[5] = function()
+    se_event_case(OP_BUS_RS485_BAUDRATE, function()
+        se_chain_flow(function()
+            local c = o_call("handle_bus_rs485_baudrate"); end_call(c)
+            se_return_pipeline_reset()
+        end)
+    end)
+end
 op_dispatch[6] = function()
+    se_event_case(OP_BUS_CAN_BITRATE, function()
+        se_chain_flow(function()
+            local c = o_call("handle_bus_can_bitrate"); end_call(c)
+            se_return_pipeline_reset()
+        end)
+    end)
+end
+op_dispatch[7] = function()
     se_event_case(OP_BUS_STATS_QUERY, function()
         se_chain_flow(function()
             local c = o_call("handle_bus_stats_query"); end_call(c)
@@ -141,24 +156,26 @@ op_dispatch[6] = function()
         end)
     end)
 end
--- Router-specific internal events (slave joined/dropped on downstream bus)
-op_dispatch[7] = function()
+-- Router-specific internal events (slave joined/dropped on downstream bus
+-- via canonical libcomm L3 JOIN_REQ/timeout protocol). Trigger an
+-- OP_SLAVE_STATUS s2m unsolicited frame so Pi knows.
+op_dispatch[8] = function()
     se_event_case(EV_SLAVE_JOINED, function()
         se_chain_flow(function()
-            local c = o_call("notify_slave_joined"); end_call(c)  -- emits s2m
-            se_return_pipeline_reset()
-        end)
-    end)
-end
-op_dispatch[8] = function()
-    se_event_case(EV_SLAVE_TIMEOUT, function()
-        se_chain_flow(function()
-            local c = o_call("notify_slave_timeout"); end_call(c) -- emits s2m
+            local c = o_call("notify_slave_joined"); end_call(c)  -- emits OP_SLAVE_STATUS
             se_return_pipeline_reset()
         end)
     end)
 end
 op_dispatch[9] = function()
+    se_event_case(EV_SLAVE_TIMEOUT, function()
+        se_chain_flow(function()
+            local c = o_call("notify_slave_timeout"); end_call(c) -- emits OP_SLAVE_STATUS
+            se_return_pipeline_reset()
+        end)
+    end)
+end
+op_dispatch[10] = function()
     se_event_case('default', function()
         se_chain_flow(function() se_return_pipeline_halt() end)
     end)

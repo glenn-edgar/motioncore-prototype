@@ -29,10 +29,17 @@ local OP_PING           = 0x0104
 local OP_COMMISSION_SET = 0x0105
 local OP_COMMISSION_CLEAR = 0x0106
 
--- Wired-bus opcodes (shared with rp2350_router_v1, same hash on the wire)
-local OP_BUS_RS485_SEND     = 0x0180
-local OP_BUS_CAN_SEND       = 0x0181
-local OP_SLAVE_COMMISSION_BEGIN = 0x0184
+-- Slave management (L2.inner channel 0x40xx — Pi-driven). Shared with
+-- rp2350_router_v1, same opcode values; wireless slaves use the same
+-- channel but carry an aux blob with their wireless creds.
+local OP_SLAVE_REGISTER     = 0x4000
+local OP_SLAVE_UNREGISTER   = 0x4001
+local OP_SLAVE_LIST_QUERY   = 0x4002
+
+-- Router app shell (L2.inner channel 0x20xx)
+local OP_BUS_RS485_BAUDRATE = 0x2080
+local OP_BUS_CAN_BITRATE    = 0x2081
+local OP_BUS_STATS_QUERY    = 0x2082
 
 -- ESP32-C6-specific wireless opcodes (m2s, 0x01C0+)
 local OP_WIFI_SCAN          = 0x01C0  -- {channel_mask:u16, scan_ms:u16}
@@ -105,20 +112,21 @@ op_dispatch[1] = function()
     end)
 end
 
--- Wired-bus opcodes (shared with rp2350_router_v1 — same names, ESP-IDF
--- specific C bodies for TWAI vs PIO)
+-- Slave management (L2.inner 0x40xx — Pi-driven topology). Same as
+-- rp2350_router_v1 but the C bodies handle wireless slaves too (BLE/
+-- Thread/WiFi instance_id-based addressing) via the aux blob.
 op_dispatch[2] = function()
-    se_event_case(OP_BUS_RS485_SEND, function()
+    se_event_case(OP_SLAVE_REGISTER, function()
         se_chain_flow(function()
-            local c = o_call("handle_bus_rs485_send"); end_call(c)
+            local c = o_call("handle_slave_register"); end_call(c)
             se_return_pipeline_reset()
         end)
     end)
 end
 op_dispatch[3] = function()
-    se_event_case(OP_BUS_CAN_SEND, function()
+    se_event_case(OP_SLAVE_UNREGISTER, function()
         se_chain_flow(function()
-            local c = o_call("handle_bus_can_send_twai"); end_call(c)  -- HW TWAI
+            local c = o_call("handle_slave_unregister"); end_call(c)
             se_return_pipeline_reset()
         end)
     end)

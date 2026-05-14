@@ -485,6 +485,49 @@ lunar_rover_v2 = {
 - Multi-bus slaves — a slave reachable via multiple comm options (e.g., BLE + Thread) is not in v1. Pick one comm per slave instance.
 - Physics-model integration — `physics_model` field links to existing `physics_config.json` machinery in the reference. Implementer should preserve that linkage; we don't redesign physics here.
 
+### 7.8 Slave registration is Pi-driven (added 2026-05-13)
+
+**Principle:** The Pi (Linux host's chain-tree subtree) is the single source of truth for network topology. Dongles do NOT autonomously discover slaves — their slave_map is populated entirely by Pi commands via the **L2.inner channel 0x40xx slave-management opcodes** (see the four-layer routing model in continue.md or `memory/dongle_class_identity_2026-05-13.md`).
+
+| Opcode | Dir | Purpose |
+|---|---|---|
+| `0x4000` OP_SLAVE_REGISTER | m2s | Pi adds a slave to dongle's slave_map |
+| `0x4001` OP_SLAVE_UNREGISTER | m2s | Pi removes a slave |
+| `0x4002` OP_SLAVE_LIST_QUERY | m2s | Debug query |
+| `0x4003` OP_SLAVE_LIST_REPLY | s2m | Response to query (fragmented if > 128 B) |
+| `0x4004` OP_SLAVE_STATUS | s2m unsolicited | Dongle reports slave online/offline transitions |
+
+**Routing channel `0x40xx` is supported only on router dongles** (RP2350, ESP32-C6). Leaf dongles (SAMD21, RA4M1) NAK with `status=err_unsupported_cmd`. Mandatory declared in dongle manifest.
+
+**Dongle slave_map is RAM-only.** After reboot, slave_map is empty; Pi re-pushes registrations after seeing the next OP_REGISTER. Recovery is deterministic — Pi config is the canonical state.
+
+**Pi-side behavior in chain-tree subtree** (extends the L1 dongle-matching flow already specified above):
+
+```lua
+-- Pseudocode for the host-side flow:
+on_register_frame(register) do
+  slot = find_matching_slot(register.class_id, register.instance_id)
+  if not slot then return log_not_mine(register) end
+
+  bind_dongle_to_role(slot.role, register)
+
+  -- NEW: auto-push slave registrations
+  for _, slave in ipairs(robot_config.slaves) do
+    if slave.via_dongle_role == slot.role then
+      local payload = build_slave_register_payload(slave)
+      comm_submit(register.handle, OP_SLAVE_REGISTER, payload)
+      -- wait for reply, log err_no_resources if it happens
+    end
+  end
+end
+```
+
+**Resource bounding:** dongle manifest declares `max_slaves` per dongle class (e.g., 32 for RP2350, 256 for ESP32-C6, 0 for leaves). kb_build's instance-config validation ensures `count of slaves assigned to each dongle role <= dongle_class.max_slaves`. Build-time error, not runtime NAK.
+
+**Cross-references:**
+- L2.inner `0x40xx` channel: full opcode catalog in `memory/dongle_class_identity_2026-05-13.md`
+- aux_blob format per comm option (BLE chars/UUIDs, Thread credentials, etc.): TBD by implementer in section 8 below.
+
 ---
 
 ## 8. Questions, future work, TBDs
