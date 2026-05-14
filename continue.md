@@ -1090,7 +1090,20 @@ The smaller final size is because removing `.get_time = engine_get_time` from th
 
 ### Plan for the next session (Phase 2h — Track B manifest OR Track C RA4M1)
 
-Track A is closed. Track B (OP_GET_MANIFEST + stub CBOR) and Track C (RA4M1 firmware port) are still open. User has indicated they have ideas for Track B that should be dialoged before execution. **Next session: open with "What are the manifest ideas?" before any code.**
+Track A is closed. Track B was reshaped during this session's design dialog — **CBOR is dropped**, manifest moves to packed-struct + FNV-1a schema hash (per canonical avro_dsl pattern). A new two-tier identity system (class_id + instance_id with commissioning) was designed and is fully captured in `memory/dongle_class_identity_2026-05-13.md`.
+
+**Cross-repo handoff:** the catalog side of the new identity system (`dongle_classes.lua`, `kb_build` codegen, robot-class `required_dongles` field, instance-config `dongles[]` array, robot-side chain-tree matching) lives in `~/knowledge_base_assembly/luajit_programs_and_containers/nano_data_center_base/commissioning_software/`. A future AI session in that repo will fold it in. The full design + implementation breakdown is in the memory file.
+
+**Next session's motioncore-prototype work (Phase 2h):**
+1. Wait for `class_ids.h` to be generated from the other-AI's kb_build extension (or stub it locally for unblocked dongle work)
+2. Update `OP_REGISTER` payload to v2 (38 B with class_id + instance_id + commissioning_state)
+3. Add SAMD21 flash storage abstraction for instance_id (NVMCTRL last-page reservation, dual-bank atomic write)
+4. Add `OP_COMMISSION_SET = 0x0105` / `OP_COMMISSION_REPLY = 0x0006` / `OP_COMMISSION_CLEAR = 0x0106` wire opcodes
+5. Add `EV_COMMISSION_SET = 0xFE01` engine-internal event (sibling pattern to EV_HOST_REATTACH)
+6. Add `handle_commissioning` m_call sibling in `register_dongle_v2.lua` (or extend `handle_internal_events` to switch on event_id — design call at implementation time)
+7. Build + flash + test commissioning end-to-end (host can OP_COMMISSION_SET an instance_id, dongle stores in flash, REGISTER frames now carry it, OP_COMMISSION_CLEAR resets to 0)
+
+Track C (RA4M1 firmware port) remains future work — the identity system makes RA4M1 cleaner because all the class+instance machinery is universal.
 
 Side observations from this session worth carrying:
 - The `[CDC] DTR ...` diag logs in main.c proved useful and are low-frequency. Consider keeping them long-term as operational signal. Possibly add a verbosity flag if they ever become noise.
