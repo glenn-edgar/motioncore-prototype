@@ -1,4 +1,4 @@
-# Cross-Repo Handoff: Dongle Class Catalog + kb_build Codegen
+# Cross-Repo Handoff: Dongle + Slave Class Catalogs + kb_build Codegen
 
 **Audience:** the AI session that picks up the catalog/commissioning side of the new dongle class+instance identity system. You are working in **`~/knowledge_base_assembly/luajit_programs_and_containers/nano_data_center_base/commissioning_software/`**, NOT in the `motioncore-prototype/` repo where this document lives.
 
@@ -366,7 +366,128 @@ If you find yourself touching `motioncore-prototype/`, **stop** — that's a cro
 
 ---
 
-## 7. Questions, future work, TBDs
+## 7. Slave class catalog (added 2026-05-13)
+
+Slaves are devices that live behind dongles (on a downstream bus, or directly on a leaf dongle's GPIO). A robot's complete topology = dongles + slaves + the binding between them via comm options.
+
+### 7.1 New file — `catalogs/slave_classes.lua`
+
+```lua
+-- catalogs/slave_classes.lua
+-- Site-wide slave CLASS catalog. slave_class_id = fnv1a(name) at codegen time.
+-- Same naming-bump rule as robot/dongle classes (_v1 -> _v2 = compat break).
+return {
+  cwc_v1 = {
+    description    = "Car window controller — stationary motor + limit switches",
+    supports_comm  = { "rs485", "can_classic" },
+    state_size_b   = 64,
+    physics_model  = "cwc_window_v1",
+  },
+  stepper_v2 = {
+    description    = "Stepper motor controller, 4-phase",
+    supports_comm  = { "can_classic" },
+    state_size_b   = 32,
+    physics_model  = "stepper_motor_v2",
+  },
+  leak_sensor_v1 = {
+    description    = "Leak detection sensor with battery monitor",
+    supports_comm  = { "ble", "thread" },
+    state_size_b   = 16,
+    physics_model  = "binary_sensor_v1",
+  },
+}
+```
+
+Codegen emits `slave_class_ids.{h,lua,json}` parallel to the dongle class artifacts.
+
+### 7.2 Shared enum — `catalogs/comm_options.lua`
+
+```lua
+return {
+  direct      = "Peripheral directly on a leaf dongle (no separate bus)",
+  rs485       = "RS-485 auto-direction UART, SLIP + CRC-8",
+  can_classic = "Classic 11/29-bit CAN, custom 29-bit fragmentation",
+  can_fd      = "CAN-FD (reserved — no current chip supports without ext SPI)",
+  ble         = "BLE 5",
+  thread      = "IEEE 802.15.4 Thread",
+  wifi_udp    = "WiFi 6 UDP",
+  wifi_tcp    = "WiFi 6 TCP",
+}
+```
+
+Codegen emits `comm_options.h` (C enum) and `comm_options.lua` (table). Used as a closed-set value type in both dongle and slave catalogs.
+
+### 7.3 Dongle catalog gains `supports_comm`
+
+```lua
+samd21_shell_v1   = { ..., supports_comm = { "direct" } },
+ra4m1_analytic_v1 = { ..., supports_comm = { "direct" } },
+rp2350_router_v1  = { ..., supports_comm = { "rs485", "can_classic", "direct" } },
+esp32c6_router_v1 = { ..., supports_comm = { "rs485", "can_classic", "ble",
+                                              "thread", "wifi_udp", "wifi_tcp", "direct" } },
+```
+
+Validation: `slave.comm` must appear in BOTH the slave's `supports_comm` AND the via-dongle's `supports_comm`.
+
+### 7.4 Robot class gains `required_slaves`
+
+```lua
+lunar_rover_v2 = {
+  description       = "...",
+  capabilities      = { ... },
+  required_dongles  = { ... },        -- existing
+  required_slaves   = {               -- NEW: class names from slave_classes.lua
+    "cwc_v1", "stepper_v2", "leak_sensor_v1",
+  },
+}
+```
+
+### 7.5 Instance config gains `slaves[]`
+
+```json
+{
+  "robot_id":    "rover_1",
+  "robot_class": "lunar_rover_v2",
+  "dongles": [ ... ],
+  "slaves": [
+    { "role": "front_window", "type": "cwc_v1",         "comm": "rs485",
+      "via_dongle_role": "imu_bus",     "bus_addr": 1 },
+    { "role": "drive_motor",  "type": "stepper_v2",     "comm": "can_classic",
+      "via_dongle_role": "imu_bus",     "bus_addr": 16 },
+    { "role": "leak_main",    "type": "leak_sensor_v1", "comm": "ble",
+      "via_dongle_role": "wireless_gw", "instance_id": "0xABCD1234" }
+  ]
+}
+```
+
+| Field | Type | When required |
+|---|---|---|
+| `role` | string | always |
+| `type` | string (slave_class name) | always |
+| `comm` | enum from comm_options | always |
+| `via_dongle_role` | string (matches a `dongles[].role` in this robot) | always |
+| `bus_addr` | uint8 (0x01..0xFC) | when comm ∈ {rs485, can_classic} |
+| `instance_id` | hex uint32 | when comm ∈ {ble, thread, wifi_*} (slave's wireless commissioning id) |
+
+### 7.6 Additional kb_build validation (per slave)
+
+1. `slave.type` exists in `slave_classes.lua`
+2. `slave.comm` is in `comm_options`
+3. `slave.via_dongle_role` matches a role in this robot's `dongles[]`
+4. The via-dongle's class supports `slave.comm` (cross-check via `dongle_classes.lua.supports_comm`)
+5. The slave class supports `slave.comm` (via `slave_classes.lua.supports_comm`)
+6. `bus_addr` present iff comm is wired-bus; `instance_id` present iff comm is wireless
+7. Every type in robot class's `required_slaves` appears at least once in instance's `slaves[]`
+
+### 7.7 Out of scope (for now)
+
+- Slave firmware bring-up — slaves with their own MCUs (CWC has a Pico-class MCU per `cwc_class_spec_2026-05-10.md`) will get their own s_engine chains and class identity. That's its own future Phase. The catalog declares slave classes; firmware comes later.
+- Multi-bus slaves — a slave reachable via multiple comm options (e.g., BLE + Thread) is not in v1. Pick one comm per slave instance.
+- Physics-model integration — `physics_model` field links to existing `physics_config.json` machinery in the reference. Implementer should preserve that linkage; we don't redesign physics here.
+
+---
+
+## 8. Questions, future work, TBDs
 
 These are flagged in `dongle_class_identity_2026-05-13.md` and should be resolved during your implementation OR escalated:
 
@@ -374,5 +495,7 @@ These are flagged in `dongle_class_identity_2026-05-13.md` and should be resolve
 2. **commissioning authentication** — host-signed commissioning payload? (Recommendation: defer past bench phase.)
 3. **OP_COMMISSION_CLEAR policy** — host-callable factory-reset, or only via physical bootloader reflash? (Recommendation: host-callable.)
 4. **build_date vs fw_version redundancy** — REGISTER payload v2 has both; pick one and drop the other, or document the distinction.
+5. **slave_class catalog scope** — does `slave_classes.lua` live in the same `catalogs/` directory as the other two, or in a parallel `slave_catalogs/` to emphasize the protocol-layer separation (slaves speak L3, not L2)? Recommendation: same directory — simpler discovery, the L2/L3 distinction is documented elsewhere.
+6. **comm_options registry** — separate file (`catalogs/comm_options.lua`) or top-level constant inside `slave_classes.lua`? Recommendation: separate file — dongle catalog needs it too, separation avoids circular reads.
 
 Coordinate via the design memory or by editing this handoff doc with your decisions.
