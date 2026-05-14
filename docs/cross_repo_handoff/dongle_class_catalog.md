@@ -417,17 +417,93 @@ return {
 
 Codegen emits `comm_options.h` (C enum) and `comm_options.lua` (table). Used as a closed-set value type in both dongle and slave catalogs.
 
-### 7.3 Dongle catalog gains `supports_comm`
+### 7.3 Dongle catalog gains `supports_comm` (MAP shape with sub-attributes)
+
+**Revised 2026-05-13: supports_comm is a MAP keyed by comm_type, each value is a table of sub-attributes describing that comm capability.** Existence of the key = supports the comm; sub-attributes describe specifics (max baudrate, # connections, feature flags). This lets the Pi validate slave requirements against dongle capabilities at build time.
 
 ```lua
-samd21_shell_v1   = { ..., supports_comm = { "direct" } },
-ra4m1_analytic_v1 = { ..., supports_comm = { "direct" } },
-rp2350_router_v1  = { ..., supports_comm = { "rs485", "can_classic", "direct" } },
-esp32c6_router_v1 = { ..., supports_comm = { "rs485", "can_classic", "ble",
-                                              "thread", "wifi_udp", "wifi_tcp", "direct" } },
+samd21_shell_v1 = {
+  ...,
+  max_slaves    = 0,
+  supports_comm = {
+    direct = {
+      pin_count = 11, adc_channels = 10, adc_bits = 12,
+      dac_channels = 1, dac_bits = 10, pwm_channels = 6,
+      counter_channels = 4, quad_channels = 2,
+    },
+  },
+}
+
+ra4m1_analytic_v1 = {
+  ...,
+  max_slaves    = 0,
+  supports_comm = {
+    direct = {
+      pin_count = 11, adc_channels = 9, adc_bits = 14, dac_channels = 1, dac_bits = 12,
+      pwm_channels = 6, counter_channels = 2, cmsis_dsp = true,
+      dsp_features = { "goertzel", "fft_block", "biquad", "welford", "cross_corr" },
+    },
+  },
+}
+
+rp2350_router_v1 = {
+  ...,
+  max_slaves    = 32,
+  supports_comm = {
+    direct = { pin_count = 26, adc_channels = 4, adc_bits = 12, pwm_channels = 16 },
+    rs485 = {
+      max_baud_rate = 1_000_000, min_baud_rate = 9600, duplex = "half",
+      transceiver = "auto_direction", max_addresses = 252, physical_layer = "PIO_uart",
+    },
+    can_classic = {
+      max_bit_rate = 1_000_000, min_bit_rate = 125_000,
+      standard_ids = true, extended_ids = true,
+      controller = "can2040_pio", max_addresses = 252,
+      fragmentation = "custom_29bit_6frame",
+    },
+  },
+}
+
+esp32c6_router_v1 = {
+  ...,
+  max_slaves    = 256,
+  supports_comm = {
+    direct = { pin_count = 22, adc_channels = 5, adc_bits = 12, pwm_channels = 6 },
+    rs485 = { max_baud_rate = 5_000_000, min_baud_rate = 9600, duplex = "half",
+              transceiver = "auto_direction", max_addresses = 252, physical_layer = "hw_uart" },
+    can_classic = { max_bit_rate = 1_000_000, min_bit_rate = 125_000,
+                    standard_ids = true, extended_ids = true,
+                    controller = "hw_twai", max_addresses = 252 },
+    ble = { version = "5.0", max_connections = 8,
+            supports_peripheral = true, supports_central = true, supports_observer = true },
+    thread = { version = "1.3", ftd = true, mtd = true, supports_router_role = true },
+    wifi_udp = { standard = "802.11ax", bands = { "2.4GHz" },
+                 max_throughput_mbps = 50, supports_softap = true, supports_station = true },
+    wifi_tcp = { standard = "802.11ax", bands = { "2.4GHz" },
+                 max_throughput_mbps = 50 },
+  },
+}
 ```
 
-Validation: `slave.comm` must appear in BOTH the slave's `supports_comm` AND the via-dongle's `supports_comm`.
+**Slave_class catalog also uses the map shape**, with `requires_*` fields for capabilities it needs:
+
+```lua
+cwc_v1 = {
+  ...,
+  supports_comm = {
+    rs485       = { requires_baud_rate_min = 115200 },
+    can_classic = { requires_bit_rate_min = 250_000, extended_ids = true },
+  },
+}
+```
+
+**Catalog = envelope; manifest = current state.** Catalog declares what the chip CAN do (max baudrate, max connections, supported features). The dongle's runtime manifest reports what it's CURRENTLY doing (active baudrate, current slave count, connection state). Pi consults catalog at build time, manifest at runtime.
+
+**kb_build validation now does (per slave in instance config):**
+1. `slave.comm` exists in both `slave_class.supports_comm` AND `via_dongle.supports_comm` (the keys exist — already covered)
+2. Sub-attribute compatibility: every `slave_reqs.requires_X` ≤ `dongle_caps.X` (for numeric envelopes like baud rates)
+3. Sub-attribute compatibility: every `slave_reqs.extended_ids = true` ⇒ `dongle_caps.extended_ids = true` (for boolean feature flags)
+4. Future: any other capability check the implementer designs as comm-type-specific
 
 ### 7.4 Robot class gains `required_slaves`
 
