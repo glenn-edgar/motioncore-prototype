@@ -15,16 +15,19 @@ local ChainTreeMaster = require("chain_tree_master")
 local function add_header(json_file)
     local ct = ChainTreeMaster.new(json_file)
 
+    -- Time fields ending in _ms hold CLOCK_MONOTONIC milliseconds (int64
+    -- range, stored in Lua double — 53-bit mantissa is enough for 285k years).
+    -- Wire ts values use os.time() epoch seconds; not held on the blackboard.
     ct:define_blackboard("connection_state")
-        ct:bb_field("state",                  "string", "connecting")
-        ct:bb_field("register_attempt",       "int32",  0)
-        ct:bb_field("seq",                    "int32",  0)
-        ct:bb_field("last_heartbeat_seen",    "float",  0)
-        ct:bb_field("disconnect_threshold_s", "float",  3.0)
-        ct:bb_field("controller_id",          "string", "")
-        ct:bb_field("ack_ts",                 "float",  0)
-        ct:bb_field("backoff_until",          "float",  0)
-        ct:bb_field("shutdown_requested",     "bool",   false)
+        ct:bb_field("state",                   "string", "connecting")
+        ct:bb_field("register_attempt",        "int32",  0)
+        ct:bb_field("seq",                     "int32",  0)
+        ct:bb_field("last_heartbeat_seen_ms",  "float",  0)
+        ct:bb_field("disconnect_threshold_ms", "int32",  3000)
+        ct:bb_field("controller_id",           "string", "")
+        ct:bb_field("ack_ts",                  "int32",  0)
+        ct:bb_field("backoff_until_ms",        "float",  0)
+        ct:bb_field("shutdown_requested",      "bool",   false)
     ct:end_blackboard()
 
     return ct

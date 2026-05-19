@@ -2,11 +2,14 @@
 
 ## Status (2026-05-19)
 
-**Design phase complete. First code landed; end-to-end smoke test green.**
+**Design phase complete + connection KB fully implemented end-to-end.**
 
-The connection lifecycle's `connecting` state is fully implemented (real register RPC against `bench_manager` stub); `ack'd` / `namespace_up` / `operating` / `disconnected` are stubs that log and advance, so the chain_tree pump is observable end-to-end. Fleshing them out is the next-session work.
+All five states of the connection state machine are real (no stubs):
+`connecting` → `ack'd` → `namespace_up` → `operating` → on disconnect → `disconnected` → back to `connecting`. Smoke-tested through the happy path, kill-mid-run disconnect detection, and recovery on bench_manager restart.
 
-History: design dialog opened 2026-05-18 (26 base decisions); extended 2026-05-19 with amendments #27–#32 — see `memory.md` top section.
+Two-clock model in place: `CLOCK_MONOTONIC` ms for elapsed-time math (timeouts, backoff, heartbeat cadence) and `CLOCK_REALTIME` for wire `ts` fields + wall-clock boundary events. main.lua's pump emits `CFL_{SECOND,MINUTE,HOUR,DAY,MONTH,YEAR}_EVENT` to the chain_tree on boundary crossings, with a clock-jump guard for Pi Zero 2 NTP-step cascades. Verified: a 90 s run captured `CFL_MINUTE_EVENT @ 2026-05-19 20:16:00 UTC` at the exact minute boundary.
+
+History: design dialog opened 2026-05-18 (26 base decisions); extended 2026-05-19 with amendments #27–#33 — see `memory.md` top section.
 
 ## What this directory is
 
@@ -112,24 +115,27 @@ External world (operator dashboards, fleet ops, analytics, KB consumers)
 30. **ACK wire shape: Zenoh RPC on `fleet/admin/register`** — synchronous `cli:call(...)`, JSON request `{class, instance, chip_uid, fw_version, capabilities, ts}`, reply `{ok, controller_id, ts, echo_chip_uid}`. Uses existing `zenoh_rpc.lua` binding.
 31. **Namespace setup: core leaves + `on_namespace_up` class hook.** Publishers (`state`, `heartbeat`, `capabilities`, `hardware`), subscriber (`desired_state`). Initial publish sequence on entry to `namespace_up`: capabilities → hardware → state=ready → class hook → operating → start 1 Hz heartbeat KB. Each class ships its own `class_spec.lua`. Token-name rule: `fleet/admin/<verb>[_<object>]`.
 32. **Disconnect detection via passive controller heartbeat** on `fleet/admin/heartbeat` (1 Hz `{seq, ts}`). 3 s threshold (3 missed heartbeats) → `EV_DISCONNECTED` → close session, reopen, restart from `announced`. Non-blocking; symmetric with robot heartbeat.
+33. **Two-clock model: monotonic ms + wall-clock REALTIME.** Both live in `lib/clock.lua`. `now_ms()` (CLOCK_MONOTONIC) for elapsed-time math (timeouts, backoff, heartbeat cadence; blackboard fields end in `_ms`). `wall_now()` (CLOCK_REALTIME + `os.date("!*t")`) for wire `ts` fields and boundary-event emission. main.lua's pump emits `CFL_SECOND/MINUTE/HOUR/DAY/MONTH/YEAR_EVENT` on field changes between consecutive ticks; suppressed on any tick where `|wall_delta - mono_delta| > 1 s` (Pi-Zero-2 NTP-step guard). Class-specific KBs use boundary events for cron-style scheduling; connection KB ignores them.
 
 ## Open work after 2026-05-19
 
-**Design phase is complete (Q1–Q4 all locked).** Remaining items are implementation or downstream design.
+**Design phase is complete (decisions #27–#33 all locked).** Connection KB is fully implemented and smoke-tested. Remaining items are downstream:
 
-### Connection KB — state handlers to flesh out
+### Connection KB
 
-Currently `connecting` is real; `ack'd` / `namespace_up` / `operating` / `disconnected` are stubs that log and advance. To flesh out:
-
-- **`ack'd`** — publish `capabilities`, `hardware`, `state="ready"`; subscribe to `<class>/<instance>/desired_state` and `fleet/admin/heartbeat`; advance to `namespace_up`. ~30 lines.
-- **`namespace_up`** — invoke `class_spec.on_namespace_up(ps, id, bb)`; advance to `operating`. ~10 lines.
-- **`operating`** — 1 Hz heartbeat publish to `<class>/<instance>/heartbeat`; track `last_heartbeat_seen` from incoming `fleet/admin/heartbeat` messages; on `now - last > 3s` advance to `disconnected`. ~50 lines.
-- **`disconnected`** — close + reopen pubsub and RPC sessions; reset `register_attempt`, `backoff_until`; advance to `connecting`. ~20 lines.
+- ✓ All five state handlers real (was the next-session work; landed same day)
+- ✓ Two-clock model in place; boundary events emitted by pump
+- Clock-jump guard untested under a synthetic NTP step (would need `date -s` or VM pause/resume to exercise; logic is straightforward, low risk)
 
 ### Bench convenience
 
 - **`run.sh` launcher** for both `fake_robot/` and `bench_manager/` baking in `LUA_CPATH` / `LUA_PATH` / `LD_LIBRARY_PATH` — current bench dev requires typing them every smoke run.
 - **`docker compose`** entry for the local `eclipse/zenoh` peer so `make smoke` does the whole loop.
+
+### Class-specific work (next real KB)
+
+- `class_spec.lua` for `fake_robot` still has a stub `on_namespace_up`; first real class spec will declare class-specific pubs/subs (e.g., `fake_counter` publisher) and demonstrate consuming a wall-clock boundary event for a scheduled task.
+- First real Linux robot class (likely `car_window_controller` per CWC spec) — when this lands, `fake_robot/lib/` graduates to a shared location (decision #26 was directional, concrete path TBD).
 
 ### Server container internals (Path 1 — still open from 2026-05-18)
 
@@ -160,6 +166,8 @@ Currently `connecting` is real; `ack'd` / `namespace_up` / `operating` / `discon
 - ~~Q2 ACK wire shape~~ — locked as decision #30 (RPC on `fleet/admin/register`)
 - ~~Q3 namespace setup~~ — locked as decision #31 (core leaves + class hook)
 - ~~Q4 disconnect detection~~ — locked as decision #32 (passive controller heartbeat)
+- ~~Time-source~~ — locked as decision #33 (two-clock model: monotonic ms + wall-clock REALTIME)
+- ~~Connection KB state handlers~~ — all five fully implemented and smoke-tested
 
 ## Cross-references
 
@@ -221,18 +229,18 @@ LUA_PATH="$DSL_DIR/?.lua;;" luajit fake_robot/chains/connection.lua fake_robot/c
 
 ## Resume here tomorrow (state at end of 2026-05-19)
 
-**Where we ended:** Design phase complete (Q1–Q4 locked as decisions #27–#32). First code landed and smoke-tested end-to-end. `connecting` state of the connection KB does a real register RPC against `bench_manager` and advances cleanly to `operating` (via stub advances through `ack'd` and `namespace_up`).
+**Where we ended:** Connection KB is fully real end-to-end. Decisions #27–#33 locked. Two-clock model in place with wall-clock boundary events feeding the chain_tree. Smoke-tested through happy path + disconnect/recovery + a captured `CFL_MINUTE_EVENT` at the exact wall-clock boundary.
 
 **Next concrete work — pick one:**
 
 | Path | What | Why |
 |---|---|---|
-| **(a) Flesh out `ack'd`** | Publish capabilities + hardware + state="ready"; subscribe `desired_state` + `fleet/admin/heartbeat`; advance. ~30 lines. | Smallest next step; first real namespace publishes on the wire. |
-| **(b) Flesh out `ack'd` + `namespace_up` + `operating` together** | Complete the steady-state flow; observable heartbeats both directions; disconnect-detection plumbed. | Closes the steady-state milestone in one push. |
-| **(c) Write `run.sh` launcher first** | Bake `LUA_CPATH` / `LUA_PATH` / `LD_LIBRARY_PATH` into a runnable script for both `fake_robot/` and `bench_manager/`. | Quality-of-life; future smoke runs become `./run.sh` instead of a 5-line env preamble. |
-| **(d) Read more chain_tree builtins** | If we need state-machine builtins, watchdog, or heartbeat nodes for ack'd/operating, learn them first instead of hand-rolling everything in user fns. | Optional preview — current stub approach already works. |
+| **(a) `run.sh` launcher** for `fake_robot/` and `bench_manager/` | Bake `LUA_CPATH` / `LUA_PATH` / `LD_LIBRARY_PATH` into a runnable script; add a `make smoke` that also spins up `docker run eclipse/zenoh`. | Quality-of-life; current bench iteration requires a 5-line env preamble per run. |
+| **(b) First real class spec** — flesh out `class_spec.lua`'s `on_namespace_up` with a class-specific publisher and one scheduled task consuming a wall-clock boundary event | Exercises the `on_namespace_up` hook + chain_tree boundary-event consumption end-to-end. Proves the foundational chains carry through to class-specific work. |
+| **(c) Migrate `chains/` to a shared location** for the first real Linux robot class (likely `car_window_controller` per CWC spec) | Decision #26 was directional — this turns it into a concrete path. |
+| **(d) Server container** (Path 1 from 2026-05-18) | Begin the real fleet_manager replacement for bench_manager. Move out of bench-only into the 5-layer container. | Larger scope; not blocking Path 2 but the next major piece if we want to retire `bench_manager`. |
 
-Lean: **(a) → (b)** in order, with **(c)** as a quick parallel task. **(d)** only if (a)/(b) needs primitives we can't easily hand-roll.
+Lean: **(a)** first — small, isolates bench convenience from product code. Then **(b)** to prove the foundational chains carry through to class-specific consumers. **(c)/(d)** are larger and lower-priority for now.
 
 **Reference paths bookmarked:**
 - chain_tree_luajit runtime: `~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/chain_tree_luajit/runtime_dict/`

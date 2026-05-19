@@ -73,6 +73,7 @@ local builtins    = require("ct_builtins")
 local ct_runtime  = require("ct_runtime")
 local ct_engine   = require("ct_engine")
 local defs        = require("ct_definitions")
+local clock       = require("clock")
 
 local ir_path = script_dir .. "chains/connection.json"
 local ir = ct_loader.load(ir_path)
@@ -109,12 +110,72 @@ io.stderr:flush()
 -- Event pump
 -- ---------------------------------------------------------------------------
 
+-- Pub/sub draining happens inside the operating state handler (it owns
+-- the subscriptions). main.lua's pump injects two kinds of events into
+-- the chain_tree event queue per tick:
+--   1. CFL_TIMER_EVENT — every tick, for each active KB
+--   2. CFL_{SECOND,MINUTE,HOUR,DAY,MONTH,YEAR}_EVENT — on each wall-clock
+--      boundary crossing, for each active KB. Suppressed on the first tick
+--      and on any tick where the wall clock jumped (|wall_delta -
+--      monotonic_delta| > 1 s) — protects against Pi-Zero-2-style NTP-step
+--      cascades that would otherwise fire every boundary at once.
+
+local CLOCK_JUMP_GUARD_MS = 1000
+local boundary_events = {
+    { field = "second", id = defs.CFL_SECOND_EVENT, name = "SECOND" },
+    { field = "minute", id = defs.CFL_MINUTE_EVENT, name = "MINUTE" },
+    { field = "hour",   id = defs.CFL_HOUR_EVENT,   name = "HOUR"   },
+    { field = "day",    id = defs.CFL_DAY_EVENT,    name = "DAY"    },
+    { field = "month",  id = defs.CFL_MONTH_EVENT,  name = "MONTH"  },
+    { field = "year",   id = defs.CFL_YEAR_EVENT,   name = "YEAR"   },
+}
+
+local prev_wc = nil
+local prev_mono_ms = clock.now_ms()
+local second_event_count = 0
+local last_summary_ms = prev_mono_ms
+
 while not handle.blackboard.shutdown_requested do
-    local msgs = ps:poll_all()
-    for _, m in ipairs(msgs) do
-        io.stderr:write(string.format(
-            "FAKE_ROBOT [%s]: pubsub recv %s: %s\n",
-            id.namespace, m.topic, m.payload))
+    local cur_mono_ms = clock.now_ms()
+    local cur_wc      = clock.wall_now()
+    local mono_delta  = cur_mono_ms - prev_mono_ms
+
+    local emit_boundaries = false
+    if prev_wc then
+        local wall_delta_ms = (cur_wc.epoch_s - prev_wc.epoch_s) * 1000
+        if math.abs(wall_delta_ms - mono_delta) < CLOCK_JUMP_GUARD_MS then
+            emit_boundaries = true
+        else
+            io.stderr:write(string.format(
+                "FAKE_ROBOT [%s]: wall-clock jump (wall_delta=%.0fms mono_delta=%dms) — boundary events skipped this tick\n",
+                id.namespace, wall_delta_ms, mono_delta))
+        end
+    end
+
+    if emit_boundaries then
+        for _, b in ipairs(boundary_events) do
+            if cur_wc[b.field] ~= prev_wc[b.field] then
+                for kb_name, _ in pairs(handle.active_tests) do
+                    local kb = handle.kb_table[kb_name]
+                    if kb then
+                        table.insert(handle.event_queue, {
+                            node_id    = kb.root_node,
+                            event_id   = b.id,
+                            event_data = cur_wc,
+                        })
+                    end
+                end
+                if b.name == "SECOND" then
+                    second_event_count = second_event_count + 1
+                else
+                    io.stderr:write(string.format(
+                        "FAKE_ROBOT [%s]: CFL_%s_EVENT @ %04d-%02d-%02d %02d:%02d:%02d UTC\n",
+                        id.namespace, b.name,
+                        cur_wc.year, cur_wc.month, cur_wc.day,
+                        cur_wc.hour, cur_wc.minute, cur_wc.second))
+                end
+            end
+        end
     end
 
     for kb_name, _ in pairs(handle.active_tests) do
@@ -131,6 +192,18 @@ while not handle.blackboard.shutdown_requested do
         local ev = table.remove(handle.event_queue, 1)
         ct_engine.execute_event(handle, ev.node_id, ev.event_id, ev.event_data)
     end
+
+    -- 10 s observability summary for SECOND events (quiet otherwise)
+    if cur_mono_ms - last_summary_ms >= 10000 then
+        io.stderr:write(string.format(
+            "FAKE_ROBOT [%s]: pump alive — %d SECOND events in last 10s\n",
+            id.namespace, second_event_count))
+        second_event_count = 0
+        last_summary_ms = cur_mono_ms
+    end
+
+    prev_wc = cur_wc
+    prev_mono_ms = cur_mono_ms
 
     if handle.active_test_count == 0 then break end
     ffi.C.usleep(TICK_US)

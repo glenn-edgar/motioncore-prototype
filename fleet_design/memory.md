@@ -83,29 +83,51 @@ Active-probe options (RPC ping) were considered and rejected — `:call` is bloc
 
 **First-heartbeat-after-register:** start the no-heartbeat timer at register-success time; same 3 s window applies.
 
+### #33 — Two-clock model: monotonic ms + wall-clock REALTIME
+
+Both clocks live in `fake_robot/lib/clock.lua`. Different jobs, different primitives:
+
+- **`clock.now_ms()`** — `CLOCK_MONOTONIC`, integer milliseconds. For elapsed-time math: disconnect-watch, backoff, heartbeat-publish cadence. Immune to NTP/manual/VM clock jumps. Lua double holds int64 ms without precision loss for ~285k years. Blackboard fields end in `_ms`.
+- **`clock.wall_now()`** — `CLOCK_REALTIME` + `os.date("!*t")` gmtime breakout. Same shape as C `cfl_time_info_t`: `{year, month, day, dow (Mon=0..Sun=6), doy, hour, minute, second, epoch_s (fractional double)}`. For ts fields on the wire AND boundary-event emission.
+
+**Boundary events emitted by main.lua's pump.** Each tick, the pump compares current `wall_now()` to previous-tick `wall_now()` and pushes `CFL_SECOND_EVENT` / `CFL_MINUTE_EVENT` / `CFL_HOUR_EVENT` / `CFL_DAY_EVENT` / `CFL_MONTH_EVENT` / `CFL_YEAR_EVENT` (event IDs 5–11 from `ct_definitions.lua`) for each changed field, with `event_data` carrying the wall snapshot. Connection KB ignores these (only handles `CFL_TIMER_EVENT`); class-specific KBs use them for cron-style scheduling.
+
+**Clock-jump guard.** On any tick where `|wall_delta_ms - mono_delta_ms| > 1000`, boundary events are suppressed with a one-line warning. Protects against Pi Zero 2 NTP-step cascades (clock jumping from 1970 to current year would otherwise fire every boundary at once).
+
+**Why the split:**
+- `CLOCK_REALTIME` alone is wrong for elapsed-time math (jumps wedge timeouts).
+- `CLOCK_MONOTONIC` alone is wrong for scheduled tasks (no calendar awareness).
+- Precedent: `libcomm/comm.c:118 comm_now_ms()` uses `CLOCK_MONOTONIC`; `ct_builtins.lua:1160 wall_timestamp()` uses `CLOCK_REALTIME`. Two-clock honors both.
+
 ### Code landed (2026-05-19)
 
 ```
 fake_robot/
-  main.lua                              chain_tree pump (10 Hz default)
+  main.lua                              chain_tree pump (10 Hz default) +
+                                        wall-clock boundary event emission
   class_spec.lua                        generic fake_robot spec (stub on_namespace_up)
   chains/
     connection.lua                      DSL: blackboard + 1-col KB
-    connection_user_functions.lua       `connecting` state fully implemented;
-                                        `ack'd`/`namespace_up`/`operating`/
-                                        `disconnected` are stubs that log+advance
-    connection.json                     compiled IR (12 KB, 15 nodes)
+                                        (timing fields end in _ms, monotonic)
+    connection_user_functions.lua       FULL state machine — connecting / ack'd /
+                                        namespace_up / operating / disconnected all real
+    connection.json                     compiled IR (15 nodes)
   lib/
     identity.lua                        env+file identity load (decision #27)
     zenoh_session.lua                   thin wrapper over libzenoh_pubsub
     zenoh_rpc_session.lua               thin wrapper over libzenoh_rpc client
+    clock.lua                           POSIX two-clock readers (decision #33)
 bench_manager/
   main.lua                              throwaway stub controller:
                                           RPC queryable on fleet/admin/register
                                           publisher on fleet/admin/heartbeat @1 Hz
 ```
 
-End-to-end smoke test verified: `fake_robot` registered with `bench_manager`, state machine transitioned through `connecting → ack'd → namespace_up → operating` (latter three via stub advances).
+End-to-end smoke tests verified:
+- Happy path through all five states with real publishes/subscribes
+- bench_manager kill → 3 s disconnect detection → session reopen → register retry with backoff
+- bench_manager restart → register recovery → back to operating
+- 90 s wall-clock-boundary run captured `CFL_MINUTE_EVENT @ 2026-05-19 20:16:00 UTC` at the exact minute boundary; 10 SECOND events per 10 s confirmed
 
 ### First chain_tree KB shape — connection state machine
 
