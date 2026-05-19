@@ -10,12 +10,10 @@
 --   ZENOH_LOCATOR                 optional, default tcp/127.0.0.1:7447
 --   FAKE_ROBOT_TICK_HZ            optional, default 10
 --
--- Caller env (LUA_CPATH / LUA_PATH / LD_LIBRARY_PATH) must already expose:
---   - LuaJIT cjson (5.1 ABI)
---   - chain_tree_luajit/runtime_dict/  (ct_*, including ct_loader)
---   - ros_planner_ii/runtime/          (fn_registry)
---   - knowledge_base/zenoh/lib/        (zenoh_pubsub, zenoh_rpc, zenoh_token)
---   - libzenoh_pubsub.so + libzenoh_rpc.so + libzenoh_token.so + libzenohpico.so
+-- Launch via ./run.sh — it sets LUA_CPATH (system 5.1 cjson),
+-- LUA_PATH (repo-relative paths only, picking Lua-side runtime out of
+-- ../vendor/lua/), and LD_LIBRARY_PATH (currently external bench paths
+-- for the zenoh .so files; deploy will swap to ../vendor/lib-aarch64/).
 
 local ffi = require("ffi")
 

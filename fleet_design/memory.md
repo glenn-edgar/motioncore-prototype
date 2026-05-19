@@ -135,11 +135,28 @@ States: `disconnected → connecting → announced → ack'd → namespace_up �
 
 **This is NOT a commissioning state machine** — commissioning is gone (decision #27).
 
-### Bench env-load gotchas (until a `run.sh` lands)
+### Vendor pattern (2026-05-19)
 
-- `LUA_CPATH="/usr/local/lib/lua/5.1/?.so;;"` — user's `~/.luarocks/lib/lua/5.4/cjson.so` is wrong ABI for LuaJIT
-- `LUA_PATH` must include: `chain_tree_luajit/runtime_dict/?.lua` + `ros_planner_ii/runtime/?.lua` (for fn_registry) + `knowledge_base/zenoh/lib/?.lua`
-- `LD_LIBRARY_PATH` must include: `knowledge_base/zenoh/` + `~/src/zenoh-pico/lib-combined/`
+Pi Zero 2 will receive a partial-repo pull and must not depend on any
+upstream `~/knowledge_base_assembly/` paths at runtime. Lua-side runtime
+files are vendored into `fleet_design/vendor/lua/` (11 files, ~164 KB):
+
+- 7 from `chain_tree_luajit/runtime_dict/` (ct_loader, ct_runtime, ct_engine, ct_builtins, ct_definitions, ct_common, ct_walker)
+- 1 from `ros_planner_ii/runtime/` (fn_registry)
+- 3 from `knowledge_base/zenoh/lib/` (zenoh_pubsub, zenoh_rpc, zenoh_token)
+
+DSL builder (`chain_tree_luajit/lua_dsl/`) stays external — it's a build-time
+tool for regenerating `connection.json` and never runs on the Pi.
+
+Native `.so` files (libzenoh_pubsub, _rpc, _token, libzenohpico) remain
+external in bench dev with TODO Pi-deploy comments in the `run.sh`
+scripts; they'll be cross-compiled and copied into `vendor/lib-aarch64/`
+when Pi deploy work begins.
+
+See `vendor/PROVENANCE.md` for the file-by-file source map and refresh
+guidance. `fake_robot/run.sh` and `bench_manager/run.sh` are the
+canonical launchers — they bake in repo-relative `LUA_PATH` and
+`LUA_CPATH` so no upstream env-setup is needed.
 
 ### Token-only binding constraint (noted, no design impact)
 

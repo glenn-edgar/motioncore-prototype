@@ -198,7 +198,9 @@ cat continue.md     # this file — current state + open work + resume instructi
 
 ## Bench smoke-test recipe
 
-End-to-end loop: docker zenohd + bench_manager + fake_robot. Verify the `connecting → ack'd → namespace_up → operating` transitions.
+End-to-end loop: docker zenohd + bench_manager + fake_robot. The `run.sh`
+launchers bake in `LUA_CPATH` / `LUA_PATH` (repo-relative, picking out of
+`vendor/lua/`) and the bench-only `LD_LIBRARY_PATH` for native `.so` files.
 
 ```bash
 # 1. Start zenohd if not already running
@@ -207,25 +209,24 @@ docker run -d --rm --name zenoh-smoke \
     eclipse/zenoh:latest \
     --listen tcp/0.0.0.0:7447 --listen udp/0.0.0.0:7447
 
-# 2. Set env (until run.sh lands)
-ZENOH_LIB=~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/knowledge_base/zenoh
-RUNTIME_DICT=~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/chain_tree_luajit/runtime_dict
-ROS_RT=~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/ros_planner_ii/runtime
-export LUA_CPATH="/usr/local/lib/lua/5.1/?.so;;"
-export LUA_PATH="$RUNTIME_DICT/?.lua;$ROS_RT/?.lua;$ZENOH_LIB/lib/?.lua;;"
-export LD_LIBRARY_PATH="$ZENOH_LIB:$HOME/src/zenoh-pico/lib-combined"
+# 2. Bench manager (terminal A)
+ZENOH_LOCATOR=tcp/127.0.0.1:17447 ./bench_manager/run.sh
 
-# 3. Bench manager (terminal A)
-ZENOH_LOCATOR=tcp/127.0.0.1:17447 luajit bench_manager/main.lua
-
-# 4. fake_robot (terminal B)
+# 3. fake_robot (terminal B)
 ROBOT_CLASS=fake_robot ROBOT_INSTANCE=alpha IDENTITY_DIR=/tmp/fake_alpha \
-ZENOH_LOCATOR=tcp/127.0.0.1:17447 luajit fake_robot/main.lua
+ZENOH_LOCATOR=tcp/127.0.0.1:17447 ./fake_robot/run.sh
 
-# 5. DSL recompile (if you edit chains/connection.lua)
-DSL_DIR=~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/chain_tree_luajit/lua_dsl
+# 4. DSL recompile (if you edit chains/connection.lua) — build-time only,
+#    needs the external chain_tree DSL builder (not vendored; never runs
+#    on Pi). Path is intentionally external.
+DSL_DIR=$HOME/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/chain_tree_luajit/lua_dsl
 LUA_PATH="$DSL_DIR/?.lua;;" luajit fake_robot/chains/connection.lua fake_robot/chains/connection.json
 ```
+
+The `run.sh` launchers point `LD_LIBRARY_PATH` at external bench locations
+for the four zenoh `.so` files (libzenoh_pubsub / _rpc / _token + libzenohpico).
+These will be replaced by `vendor/lib-aarch64/` once we cross-compile for Pi.
+Override `LD_LIBRARY_PATH` in the caller env to bypass the bench default.
 
 ## Resume here tomorrow (state at end of 2026-05-19)
 
@@ -242,12 +243,18 @@ LUA_PATH="$DSL_DIR/?.lua;;" luajit fake_robot/chains/connection.lua fake_robot/c
 
 Lean: **(a)** first — small, isolates bench convenience from product code. Then **(b)** to prove the foundational chains carry through to class-specific consumers. **(c)/(d)** are larger and lower-priority for now.
 
-**Reference paths bookmarked:**
-- chain_tree_luajit runtime: `~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/chain_tree_luajit/runtime_dict/`
-- chain_tree_luajit DSL: `~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/chain_tree_luajit/lua_dsl/`
+**Reference paths bookmarked (dev-machine orientation only — NOT used at runtime):**
+
+The runtime now uses `fleet_design/vendor/lua/` exclusively (see `vendor/PROVENANCE.md`).
+The paths below are upstream-source bookmarks for when you need to read the
+canonical version of a vendored file, refresh a vendor copy, or run the
+build-time DSL builder.
+
+- chain_tree_luajit DSL (build-time only): `~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/chain_tree_luajit/lua_dsl/`
+- chain_tree_luajit runtime (source for `vendor/lua/ct_*.lua`): `~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/chain_tree_luajit/runtime_dict/`
 - mqtt_robot precedent: `~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/ros_planner_ii_mqtt_robot/`
-- Zenoh LuaJIT bindings: `~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/knowledge_base/zenoh/`
-- libzenohpico: `~/src/zenoh-pico/lib-combined/`
+- Zenoh bindings (source for `vendor/lua/zenoh_*.lua` + bench `.so` files): `~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/knowledge_base/zenoh/`
+- libzenohpico (bench `.so`; pending aarch64 cross-compile to `vendor/lib-aarch64/`): `~/src/zenoh-pico/lib-combined/`
 
 ## What NOT to do in next session
 
