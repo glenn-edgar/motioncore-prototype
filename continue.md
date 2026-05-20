@@ -1294,6 +1294,37 @@ chip layer is new.
 for SAMD21) — get the toolchain + USB-CDC enumerating before porting the
 engine. Then layer the engine + chain + shell on top.
 
+---
+
+### RA4M1 progress — 2026-05-20 (toolchain de-risked)
+
+Full bring-up findings in `memory/ra4m1_bringup_2026-05-20.md` — read that first.
+Headlines:
+
+- Board confirmed: **Seeed XIAO RA4M1** (R7FA4M1AB, Cortex-M4 + FPU, 256 KB / 32 KB).
+- TinyUSB + Renesas FSP vendored at `ra4m1/vendor/tinyusb/` (per-chip copy).
+- `xiao_ra4m1` board created in the vendored `hw/bsp/ra/boards/` — copy of
+  `uno_r4` with flash origin moved to 0x4000 (Arduino DFU bootloader reserves
+  the low 16 KB). uno_r4 clock/USB config works unchanged.
+- **DFU flashing solved**: enter via 1200-baud touch (`stty -F /dev/ttyACM0 1200`),
+  NOT the BOOT button. It's a **plain-DFU** device — `dfu-util -a 0 -D file.bin`
+  with NO `-s` address. Needs **dfu-util 0.11** (built from source; Debian's 0.9
+  has DfuSe bugs). Tap RESET after download to launch the app.
+- Pipeline proven: stock `cdc_msc` built for `BOARD=xiao_ra4m1`, DFU-flashed,
+  runs + enumerates CDC on the real board.
+
+**Resume here:** the next task is the custom `hello_cdc` + the RA4M1 app build
+structure. Open decision (see ra4m1_bringup memory "app structure" section):
+the TinyUSB example build system can't build an app outside its own tree
+(`SRC_C` must be TOP-relative), so a clean `ra4m1/apps/hello_cdc/` needs a
+hand-rolled Makefile (~30 FSP+TinyUSB sources, ~14 include dirs — use the
+RA `family.mk` + `xiao_ra4m1/board.mk` as the exact reference, and
+`samd21/apps/register_dongle/Makefile` as the structural template). That
+Makefile becomes the template for the RA4M1 register_dongle too.
+
+Bench note: the XIAO RA4M1 is on the bench; commission/dongle work also needs
+it kept on a USB tree without power-hungry peers (the SSD-brownout gotcha).
+
 ### Cold-start reading order for the RA4M1 session
 
 1. `memory/MEMORY.md` — index
