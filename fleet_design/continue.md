@@ -294,7 +294,7 @@ ROBOT_CLASS=fake_robot ROBOT_INSTANCE=bench01 \
 
 ## Plan for tomorrow
 
-KB0 is done. The rest of "build the fake robot out", in order:
+KB0 is done. Tomorrow finishes the fake-robot side and opens the controller side:
 
 **1. Throwaway application KB — close the loop (START HERE).**
 - KB0's `SPAWN_APP_KBS` already iterates `class_spec.app_kbs` and calls
@@ -320,6 +320,15 @@ identity, and the app layer compose for a real robot class beyond the throwaway.
 **4. zenoh-transport full-recovery test.** Bounce `zenohd` mid-run; confirm
 `verify(TEST_ZENOH_CONNECTION)` fails → outer column `CFL_RESET` → back through
 `wait_for_event("ZENOH_CONNECTED")` → full re-bringup.
+
+**5. Start the robot controller — begin getting off the test bench.** Stand up
+`fleet_design/server/` (currently empty) — the real fleet controller that will
+replace the throwaway `bench_manager` stub. It's intended as a multi-layer
+server. Scaffold it and reproduce the `bench_manager` contract as its first
+working layer (RPC queryable on `fleet/admin/register`, heartbeat publisher on
+`fleet/admin/heartbeat`) so `fake_robot` registers against the real controller;
+then retire `bench_manager`. This is the start of moving off the bench-only
+setup toward a real deployment shape.
 
 **First action:** read this file + the `chain_tree_dsl_runtime_model.md` memory
 (now carries the practical KB-build lessons), then design the `fake_counter`
