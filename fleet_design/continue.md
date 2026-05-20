@@ -292,12 +292,38 @@ ROBOT_CLASS=fake_robot ROBOT_INSTANCE=bench01 \
   LUA_CPATH="/usr/local/lib/lua/5.1/?.so;;" fake_robot/run.sh
 ```
 
-**Next:**
-1. A throwaway **application KB** for `fake_robot` — declared in
-   `class_spec.app_kbs`, spawned by `SPAWN_APP_KBS`. Closes the loop end-to-end.
-2. The container + base architecture (the unfinished part of "build the fake
-   robot out").
-3. Exercise the zenoh-transport full-recovery path (bounce `zenohd`).
+## Plan for tomorrow
+
+KB0 is done. The rest of "build the fake robot out", in order:
+
+**1. Throwaway application KB — close the loop (START HERE).**
+- KB0's `SPAWN_APP_KBS` already iterates `class_spec.app_kbs` and calls
+  `ct_runtime.add_test`. Today it spawns nothing (the list is empty).
+- Write a minimal app KB — e.g. `fake_counter`: a column that loops
+  `one_shot(PUBLISH_COUNTER) → wait_time(1.0) → reset`, publishing an
+  incrementing value on `<namespace>/counter` via `bb._pubsub`.
+- Add it to the build: a second `start_test("fake_counter")…end_test()` in the
+  `connection.lua` build script (so one IR carries both KBs); declare
+  `"fake_counter"` in `class_spec.app_kbs`; add its user fns to the registry.
+- Smoke-test: KB0 spawns it after `operating`; on controller loss
+  `ERROR_CONTROLLER_LOST`'s `kill_app_kbs` sweeps it (watch "killed N app KB(s)"
+  go to 1). Validates multi-KB operation — KB0 + a class KB concurrently,
+  spawn + sweep.
+
+**2. Container.** Package `fake_robot` as a container (Dockerfile + vendored
+`vendor/lua/` + `lib/`). The Pi Zero 2 runs the bare process; the container is
+the non-Pi deployment form.
+
+**3. Base architecture.** Work out how class-specific KBs, `class_spec`,
+identity, and the app layer compose for a real robot class beyond the throwaway.
+
+**4. zenoh-transport full-recovery test.** Bounce `zenohd` mid-run; confirm
+`verify(TEST_ZENOH_CONNECTION)` fails → outer column `CFL_RESET` → back through
+`wait_for_event("ZENOH_CONNECTED")` → full re-bringup.
+
+**First action:** read this file + the `chain_tree_dsl_runtime_model.md` memory
+(now carries the practical KB-build lessons), then design the `fake_counter`
+app KB.
 
 **Reference paths (dev-machine orientation only — NOT used at runtime):**
 The runtime uses `fleet_design/vendor/lua/` exclusively (see `vendor/PROVENANCE.md`).
