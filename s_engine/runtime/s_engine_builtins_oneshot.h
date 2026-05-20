@@ -1,3 +1,5 @@
+#include <string.h>   // memset
+#include <stdio.h>    // snprintf
 //
 // ============================================================================
 // ONESHOT IMPLEMENTATIONS

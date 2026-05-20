@@ -1,3 +1,5 @@
+#include <string.h>   // memset
+#include <math.h>     // fmodf, sqrtf, powf, sinf, cosf, tanf, expf, logf, fabsf
 // ============================================================================
 // SE_QUAD - Three-address instruction: dest = op(src1, src2)
 // params[0] = opcode (uint)
