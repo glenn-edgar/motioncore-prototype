@@ -228,50 +228,92 @@ for the four zenoh `.so` files (libzenoh_pubsub / _rpc / _token + libzenohpico).
 These will be replaced by `vendor/lib-aarch64/` once we cross-compile for Pi.
 Override `LD_LIBRARY_PATH` in the caller env to bypass the bench default.
 
-## Resume here tomorrow (state at end of 2026-05-20)
+## Resume here (KB0 built — 2026-05-20)
 
-**Where we ended:** A long chain_tree teaching session with Glenn (the engine's author). He walked the full `dsl_tests` corpus; the resulting mental model is captured in auto-memory **`chain_tree_dsl_runtime_model.md`** — READ THAT FIRST tomorrow.
+**KB0 — the connection manager — is built, compiled, and smoke-tested live.**
+It is the shared, class-independent connection lifecycle for every robot.
 
-**Key outcome — the connection design is now KB-decomposed, not single-KB:**
+**Files (committed this session):**
+- `fake_robot/chains/connection.lua` — build-time DSL for KB0.
+- `fake_robot/chains/connection.json` — compiled IR, 34 nodes.
+  Rebuild: `luajit chains/connection.lua chains/connection.json`.
+- `fake_robot/chains/connection_user_functions.lua` — `ct_*` user fns.
+- `fake_robot/main.lua` — runtime contract: drains zenoh, advances
+  `handle.timestamp`, posts `ZENOH_CONNECTED`, maintains
+  `handle.zenoh_connected` / `handle.controller_last_beat`.
 
-- **KB 0** — Zenoh connection manager (foundational, runs forever): state machine `connecting → register → operating`, heartbeat watchdog. On `register` success → spawns KB 1. On heartbeat loss → sweeps `handle.active_tests`, terminates every KB except itself, re-establishes.
-- **KB 1** — bringup (spawned by KB 0): namespace publish, slave-dongle init, spawns app KBs. Reusable.
-- **KB 2…N** — class-specific application KBs (spawned by KB 1).
+**KB0 structure as built:**
 
-This **supersedes** the current single `chains/connection.lua` — that file is wrong-shape and gets rewritten into the KB0/KB1/KBN split. Survives unchanged: `lib/identity.lua`, `lib/clock.lua`, `lib/zenoh_session.lua`, `lib/zenoh_rpc_session.lua`, `vendor/`, `bench_manager/`, two-clock model (#33).
+```
+outer column
+  wait_for_event("ZENOH_CONNECTED")    HALT-gate — blocks until transport up
+  verify(TEST_ZENOH_CONNECTION)        CFL_CONTINUE; fail → CFL_RESET outer column (FULL recovery)
+  state_machine "protocol_sm"
+    "wait_for_ack"      ANNOUNCE_REGISTRATION → wait REGISTRATION_ACK (retry-backoff) →
+                        PUBLISH_NAMESPACE → NAMESPACE_UP_HOOK → SPAWN_APP_KBS
+    "verify_controller_heartbeat"  verify(TEST_CONTROLLER_HEARTBEAT) + delay + reset;
+                        fail → ERROR_CONTROLLER_LOST → back to wait_for_ack (NARROW recovery)
+  asm_halt()           terminal — KB0 runs forever
+```
 
-**Tomorrow's plan (per Glenn):** build the fake robot out, start the container, work out the base architecture.
+**Decisions locked this session:**
+- Runtime variant = **`ct_*`** (dict-based). RESOLVED — no longer open.
+  User-fn signatures: `one_shot(handle,node)`,
+  `boolean(handle,node,event_id,event_data)`,
+  `main(handle,bool_fn,node,event_id,event_data)`. Canonical reference:
+  `chain_tree_luajit/dsl_tests/incremental_binary/user_functions_dict.lua`.
+- Two layers, two recovery scopes: transport (`wait_for_zenoh` + `verify(zenoh)`)
+  vs controller (`protocol_sm`). Transport loss resets the outer column (full);
+  controller-heartbeat loss re-runs only the protocol SM (narrow, zenoh stays up).
+- Bringup (namespace publish + on_namespace_up hook + app-KB spawn) is folded
+  into KB0's protocol sequence. There is NO separate "KB1 = bringup". KB1…N are
+  purely class-specific application KBs. (Supersedes the earlier KB0/KB1/KBN split.)
 
-**First task — resolve the runtime-variant question.** There are two runtime ports: `cfl_*` (`runtime/`, index-based — what Glenn taught with) and `ct_*` (`runtime_dict/`, dict-based — what's currently vendored per decision #26). Concepts identical, APIs differ. Confirm with Glenn which fake_robot uses; re-vendor if it should be `cfl_*`. See the `chain_tree_dsl_runtime_model.md` memo's "Two runtime variants" section.
+**Smoke test — verified live** against `bench_manager` + a `zenohd` router:
+connect → register → namespace → operate → controller-loss → narrow recovery →
+retry-backoff → re-register → operate. NOT yet exercised: zenoh-*transport*
+full recovery (needs bouncing `zenohd`).
 
-**Then:** write the KB0/KB1 DSL + user fns, recompile, smoke-test against `bench_manager`, then move to the container + base architecture.
+**Zenoh transport — IMPORTANT.** The vendored bindings (`zenoh_pubsub`,
+`zenoh_rpc`) are **client-mode + zenohd-router only**. There is no working
+peer / no-router path — `connect()` blocks on a dead locator, and the RPC
+binding has no `listen_locators`. Bench tests need a `zenohd` router:
+`docker run -d --name fleet-zenohd -p 7447:7447/tcp -p 7447:7447/udp eclipse/zenoh --listen tcp/0.0.0.0:7447 --listen udp/0.0.0.0:7447`
+Pi Zero 2 deploy (no containers) is an unsolved, separate problem.
 
-Deferred quality-of-life items still open: `run.sh` launcher polish, `make smoke`.
+**Run the smoke test** (the shell may preset a Lua-5.4 `LUA_CPATH`; override it):
 
-**Reference paths bookmarked (dev-machine orientation only — NOT used at runtime):**
+```
+# 1. router (docker run … above)
+# 2. controller:
+LUA_CPATH="/usr/local/lib/lua/5.1/?.so;;" bench_manager/run.sh &
+# 3. robot:
+ROBOT_CLASS=fake_robot ROBOT_INSTANCE=bench01 \
+  LUA_CPATH="/usr/local/lib/lua/5.1/?.so;;" fake_robot/run.sh
+```
 
-The runtime now uses `fleet_design/vendor/lua/` exclusively (see `vendor/PROVENANCE.md`).
-The paths below are upstream-source bookmarks for when you need to read the
-canonical version of a vendored file, refresh a vendor copy, or run the
-build-time DSL builder.
+**Next:**
+1. A throwaway **application KB** for `fake_robot` — declared in
+   `class_spec.app_kbs`, spawned by `SPAWN_APP_KBS`. Closes the loop end-to-end.
+2. The container + base architecture (the unfinished part of "build the fake
+   robot out").
+3. Exercise the zenoh-transport full-recovery path (bounce `zenohd`).
 
-- chain_tree_luajit DSL (build-time only): `~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/chain_tree_luajit/lua_dsl/`
-- chain_tree_luajit runtime (source for `vendor/lua/ct_*.lua`): `~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/chain_tree_luajit/runtime_dict/`
-- mqtt_robot precedent: `~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/ros_planner_ii_mqtt_robot/`
-- Zenoh bindings (source for `vendor/lua/zenoh_*.lua` + bench `.so` files): `~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/knowledge_base/zenoh/`
-- libzenohpico (bench `.so`; pending aarch64 cross-compile to `vendor/lib-aarch64/`): `~/src/zenoh-pico/lib-combined/`
+**Reference paths (dev-machine orientation only — NOT used at runtime):**
+The runtime uses `fleet_design/vendor/lua/` exclusively (see `vendor/PROVENANCE.md`).
 
-## What NOT to do in next session
+- chain_tree DSL (build-time): `~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/chain_tree_luajit/lua_dsl/`
+- chain_tree runtime (`vendor/lua/ct_*.lua` source): `…/chain_tree_luajit/runtime_dict/`
+- chain_tree test corpus: `…/chain_tree_luajit/dsl_tests/incremental_binary/`
+- Zenoh bindings (`vendor/lua/zenoh_*.lua` + bench `.so` source): `~/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/knowledge_base/zenoh/`
 
-- Don't redesign the namespace structure. It's locked across multiple decisions (#1–#10, #31).
-- Don't introduce a central schema file. Firmware is the schema (#9, reinforced by #20).
-- Don't expose Zenoh to external apps. That's the encapsulation boundary (#1).
-- Don't reach for ROS or VDA 5050 patterns. Wrong reference model (microservices / OOP encapsulation).
-- Don't implement persistence yet. Deferred until standalone works (#17).
-- Don't muddle s_engine and chain_tree. They are **distinct engines**: s_engine = ARM 32K dongles only (Track 3 internal); chain_tree = everything in fleet_design (LuaJIT for Linux, C for MCU).
-- **Don't re-add Zenoh commissioning round-trips.** Decision #23's runtime over-Zenoh commissioning model is rescinded (decision #27). Identity is operator-set out-of-band via env+file.
-- Don't extend `bench_manager/`. It's deliberately throwaway. Real fleet_manager lives in `server/` (still empty).
-- Don't propose chain_tree DSL structure from API primitives — study the `dsl_tests` corpus + `chain_tree_dsl_runtime_model.md` memo first. Glenn is the engine's author; ask him when genuinely ambiguous.
-- Don't keep the single `chains/connection.lua` shape — it's superseded by the KB0/KB1/KBN decomposition.
+## What NOT to do
 
-**NOTE on the `cfl_*` vs `ct_*` line above:** the earlier 2026-05-18 decision said "use `ct_*` (runtime_dict)". But Glenn's 2026-05-20 chain_tree teaching used `cfl_*` (runtime/) throughout. This is unresolved — confirm with Glenn next session before building. See `chain_tree_dsl_runtime_model.md`.
+- Don't redesign the namespace structure — locked (#1–#10, #31).
+- Don't introduce a central schema file — firmware is the schema (#9, #20).
+- Don't expose Zenoh to external apps — that's the encapsulation boundary (#1).
+- Don't reach for ROS / VDA 5050 patterns — wrong reference model.
+- Don't muddle s_engine and chain_tree — distinct engines (s_engine = ARM dongles; chain_tree = fleet_design).
+- Don't re-add Zenoh commissioning round-trips — #23 rescinded by #27; identity is env+file.
+- Don't extend `bench_manager/` — throwaway; the real controller lives in `server/`.
+- Don't propose chain_tree DSL from API primitives — study `dsl_tests/` + the `chain_tree_dsl_runtime_model.md` memo first.

@@ -61,6 +61,10 @@ rpc:open()
 io.stderr:write(string.format(
     "FAKE_ROBOT [%s]: zenoh sessions open (locator=%s)\n", id.namespace, LOCATOR))
 
+-- The runtime owns the controller-heartbeat subscription; the chain_tree only
+-- consumes. Drained each pump tick — see the event pump below.
+ps:subscribe("fleet/admin/heartbeat", { kind = "ctrl_heartbeat" })
+
 -- ---------------------------------------------------------------------------
 -- Chain_tree wire-up: load compiled IR, register fns, activate KB
 -- ---------------------------------------------------------------------------
@@ -95,9 +99,29 @@ handle.blackboard._pubsub     = ps
 handle.blackboard._rpc        = rpc
 handle.blackboard.shutdown_requested = false
 
+-- Runtime-maintained fields the KB0 booleans read (see the "Runtime contract"
+-- header in connection_user_functions.lua). handle.timestamp is advanced in
+-- the pump from CLOCK_MONOTONIC.
+handle.zenoh_connected      = true   -- sessions opened above
+handle.controller_last_beat = nil    -- stamped on the first drained heartbeat
+
 ct_engine.init_test(handle, "connection")
 handle.active_tests["connection"] = true
 handle.active_test_count = 1
+
+-- Post a named event to a KB's root node (resolves the IR event-string id).
+local function post_kb_event(kb_name, event_name, event_data)
+    local kb  = handle.kb_table[kb_name]
+    local eid = handle.event_strings and handle.event_strings[event_name]
+    if kb and eid then
+        table.insert(handle.event_queue, {
+            node_id = kb.root_node, event_id = eid, event_data = event_data,
+        })
+    else
+        io.stderr:write("FAKE_ROBOT: WARN — cannot post event "
+            .. tostring(event_name) .. " (kb/eid missing)\n")
+    end
+end
 
 io.stderr:write(string.format(
     "FAKE_ROBOT [%s]: chain_tree connection KB activated, entering pump @%d Hz\n",
@@ -108,15 +132,17 @@ io.stderr:flush()
 -- Event pump
 -- ---------------------------------------------------------------------------
 
--- Pub/sub draining happens inside the operating state handler (it owns
--- the subscriptions). main.lua's pump injects two kinds of events into
--- the chain_tree event queue per tick:
---   1. CFL_TIMER_EVENT — every tick, for each active KB
---   2. CFL_{SECOND,MINUTE,HOUR,DAY,MONTH,YEAR}_EVENT — on each wall-clock
---      boundary crossing, for each active KB. Suppressed on the first tick
---      and on any tick where the wall clock jumped (|wall_delta -
---      monotonic_delta| > 1 s) — protects against Pi-Zero-2-style NTP-step
---      cascades that would otherwise fire every boundary at once.
+-- Each tick the pump:
+--   * advances handle.timestamp (CLOCK_MONOTONIC seconds) for the builtins;
+--   * drains the zenoh pub/sub session, stamping handle.controller_last_beat
+--     on each controller heartbeat;
+--   * posts ZENOH_CONNECTED once (sessions open at boot);
+--   * injects CFL_TIMER_EVENT for each active KB;
+--   * injects CFL_{SECOND,MINUTE,HOUR,DAY,MONTH,YEAR}_EVENT on wall-clock
+--     boundary crossings — suppressed on the first tick and on any tick
+--     where the wall clock jumped (|wall_delta - monotonic_delta| > 1 s),
+--     guarding against Pi-Zero-2 NTP-step cascades;
+--   * drains the chain_tree event queue.
 
 local CLOCK_JUMP_GUARD_MS = 1000
 local boundary_events = {
@@ -130,6 +156,8 @@ local boundary_events = {
 
 local prev_wc = nil
 local prev_mono_ms = clock.now_ms()
+local start_mono_ms = prev_mono_ms
+local zenoh_announced = false
 local second_event_count = 0
 local last_summary_ms = prev_mono_ms
 
@@ -137,6 +165,26 @@ while not handle.blackboard.shutdown_requested do
     local cur_mono_ms = clock.now_ms()
     local cur_wc      = clock.wall_now()
     local mono_delta  = cur_mono_ms - prev_mono_ms
+
+    -- Runtime clock: chain_tree builtins (CFL_WAIT_TIME, CFL_VERIFY_*) read
+    -- handle.timestamp in seconds. Drive it off CLOCK_MONOTONIC.
+    handle.timestamp = (cur_mono_ms - start_mono_ms) / 1000
+
+    -- Drain the zenoh pub/sub session — the runtime feeds the chain_tree.
+    -- A controller heartbeat stamps handle.controller_last_beat, read by the
+    -- TEST_CONTROLLER_HEARTBEAT boolean.
+    for _, m in ipairs(ps:poll_all()) do
+        if m.user and m.user.kind == "ctrl_heartbeat" then
+            handle.controller_last_beat = handle.timestamp
+        end
+    end
+
+    -- Announce the zenoh transport once — the sessions opened at boot, so
+    -- KB0's wait_for_event("ZENOH_CONNECTED") clears on the first tick.
+    if not zenoh_announced then
+        zenoh_announced = true
+        post_kb_event("connection", "ZENOH_CONNECTED", nil)
+    end
 
     local emit_boundaries = false
     if prev_wc then

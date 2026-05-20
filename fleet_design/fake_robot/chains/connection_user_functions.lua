@@ -1,64 +1,91 @@
--- chains/connection_user_functions.lua — user fns for the connection KB.
+-- chains/connection_user_functions.lua — ct_* user functions for KB0.
 --
--- Full state machine per decisions #30, #31, #32:
---   connecting    register RPC on fleet/admin/register (sync, 2 s timeout, backoff retry)
---   ack'd         subscribe fleet/admin/heartbeat + <ns>/desired_state
---   namespace_up  publish capabilities + hardware + state=ready, run class hook,
---                 prime heartbeat-watch timestamp
---   operating     1 Hz heartbeat publish on <ns>/heartbeat; drain pubsub queue;
---                 update last_heartbeat_seen on each fleet/admin/heartbeat;
---                 if > disconnect_threshold_s with no heartbeat → disconnected
---   disconnected  drop subs, close+reopen sessions, reset counters → connecting
+-- ct_* (dict runtime) signatures:
+--   one_shot : function(handle, node)                       -- fires on init
+--   boolean  : function(handle, node, event_id, event_data) -- fed the event stream
+-- Per-node config travels in node.node_dict; per-node state via ct_common.
 --
--- Caller (main.lua) attaches context to the blackboard before activating:
+-- main.lua attaches context to the blackboard before activating KB0:
 --   bb._identity, bb._class_spec, bb._pubsub, bb._rpc
+--
+-- ===== Runtime contract (main.lua's pump must provide) =====
+-- The chain_tree only consumes; the runtime feeds the event queue and a few
+-- handle fields:
+--   * handle.timestamp            seconds, advanced by delta_time each tick
+--   * CFL_TIMER_EVENT / CFL_SECOND_EVENT   emitted each tick / second boundary
+--   * event "ZENOH_CONNECTED"     posted when the zenoh transport comes up
+--   * event "REGISTRATION_ACK"    posted when the controller acks (see note in
+--                                 ANNOUNCE_REGISTRATION — currently posted by
+--                                 that one-shot off the RPC reply)
+--   * handle.zenoh_connected      bool — current zenoh transport liveness
+--   * handle.controller_last_beat seconds (handle.timestamp scale) — stamped
+--                                 each time a controller heartbeat is drained
 
-local cjson = require("cjson")
-local defs  = require("ct_definitions")
-local clock = require("clock")
+local common = require("ct_common")
+local defs   = require("ct_definitions")
+local cjson  = require("cjson")
+local clock  = require("clock")
 
-local now_ms = clock.now_ms
+local M = { main = {}, one_shot = {}, boolean = {} }
 
--- Wall-clock epoch seconds (fractional double) for ts fields on the wire.
+-- KB0's own name — every other active KB is an application KB.
+local KB0_NAME = "connection"
+
+-- Wall-clock epoch seconds (fractional) for ts fields on the wire.
 local function wall_s() return clock.wall_now().epoch_s end
 
-local M = {}
-M.main     = {}
-M.one_shot = {}
-M.boolean  = {}
-
 -- ---------------------------------------------------------------------------
--- Lifecycle one-shots
+-- Helpers
 -- ---------------------------------------------------------------------------
 
-M.one_shot.CONNECTION_INIT = function(h, node)
-    local bb = h.blackboard
-    bb.state                  = "connecting"
-    bb.register_attempt       = 0
-    bb.seq                    = 0
-    bb.last_heartbeat_seen_ms = 0
-    bb.controller_id          = ""
-    bb.ack_ts                 = 0
-    bb.backoff_until_ms       = 0
-    io.stderr:write(string.format(
-        "CONNECTION_KB [%s]: init → state=connecting\n",
-        bb._identity.namespace))
+-- Kill every application KB — every active KB except KB0 itself. Collect
+-- first: delete_test mutates handle.active_tests.
+local function kill_app_kbs(handle)
+    local ct_runtime = require("ct_runtime")
+    local victims = {}
+    for kb_name in pairs(handle.active_tests or {}) do
+        if kb_name ~= KB0_NAME then victims[#victims + 1] = kb_name end
+    end
+    for _, kb_name in ipairs(victims) do
+        pcall(ct_runtime.delete_test, handle, kb_name)
+    end
+    return #victims
 end
 
-M.one_shot.CONNECTION_TERM = function(h, node)
-    io.stderr:write("CONNECTION_KB: term\n")
+-- Post a named event onto KB0's event queue (targets KB0's root so it walks
+-- down to whatever node is waiting on it).
+local function post_event(handle, event_name, event_data)
+    local kb  = handle.kb_table and handle.kb_table[KB0_NAME]
+    local eid = handle.event_strings and handle.event_strings[event_name]
+    if not (kb and eid) then return false end
+    table.insert(handle.event_queue, {
+        node_id    = kb.root_node,
+        event_id   = eid,
+        event_data = event_data,
+    })
+    return true
+end
+
+-- From a verify node inside a state machine, resolve the SM node id:
+-- verify node -> parent (state column) -> parent (SM node).
+local function parent_sm_id(handle, verify_node)
+    local state_col_id = common.get_parent_id(verify_node)
+    local state_col    = state_col_id and handle.nodes[state_col_id]
+    return state_col and common.get_parent_id(state_col) or nil
 end
 
 -- ---------------------------------------------------------------------------
--- Per-state handlers (dispatched by CONNECTION_MAIN)
+-- One-shots
 -- ---------------------------------------------------------------------------
 
-local state_handlers = {}
-
-state_handlers.connecting = function(h, bb)
-    if now_ms() < bb.backoff_until_ms then return end
-
-    bb.register_attempt = bb.register_attempt + 1
+-- Announce registration to the controller and, on a positive ack, post the
+-- REGISTRATION_ACK event so the wait_for_event node advances.
+-- NOTE: bench_manager exposes an RPC queryable on fleet/admin/register, so the
+-- ack is synchronous here; we convert the RPC reply into the chain_tree event.
+-- If registration moves to pub + a separate ack subscription, this one-shot
+-- becomes a plain publish and the runtime posts REGISTRATION_ACK instead.
+M.one_shot.ANNOUNCE_REGISTRATION = function(handle, node)
+    local bb  = handle.blackboard
     local id  = bb._identity
     local cs  = bb._class_spec
     local rpc = bb._rpc
@@ -71,52 +98,30 @@ state_handlers.connecting = function(h, bb)
         capabilities = cs.capabilities,
         ts           = wall_s(),
     })
-
     io.stderr:write(string.format(
-        "CONNECTION_KB [%s]: register attempt #%d on fleet/admin/register (timeout=2s)\n",
-        id.namespace, bb.register_attempt))
+        "KB0 [%s]: announcing registration on fleet/admin/register\n", id.namespace))
 
     local reply, err = rpc:call("fleet/admin/register", req, 2000)
     if reply then
-        local ok2, dec = pcall(cjson.decode, reply)
-        if ok2 and dec and dec.ok then
+        local ok, dec = pcall(cjson.decode, reply)
+        if ok and dec and dec.ok then
             bb.controller_id = tostring(dec.controller_id or "")
-            bb.ack_ts        = tonumber(dec.ts) or wall_s()
-            bb.state         = "ack'd"
             io.stderr:write(string.format(
-                "CONNECTION_KB [%s]: registered (controller_id=%s, ts=%d) → state=ack'd\n",
-                id.namespace, bb.controller_id, bb.ack_ts))
+                "KB0 [%s]: controller ack (controller_id=%s)\n",
+                id.namespace, bb.controller_id))
+            post_event(handle, "REGISTRATION_ACK", dec)
             return
         end
-        io.stderr:write(string.format(
-            "CONNECTION_KB [%s]: malformed register reply (%s), retry in 1s\n",
-            id.namespace, tostring(reply)))
-    else
-        io.stderr:write(string.format(
-            "CONNECTION_KB [%s]: register failed: %s — retry in 1s\n",
-            id.namespace, tostring(err)))
     end
-
-    bb.backoff_until_ms = now_ms() + 1000
-end
-
-state_handlers["ack'd"] = function(h, bb)
-    local id = bb._identity
-    local ps = bb._pubsub
-    bb._sub_heartbeat     = ps:subscribe("fleet/admin/heartbeat",
-                                          { kind = "ctrl_heartbeat" })
-    bb._sub_desired_state = ps:subscribe(id.namespace .. "/desired_state",
-                                          { kind = "desired_state" })
     io.stderr:write(string.format(
-        "CONNECTION_KB [%s]: subscribed (fleet/admin/heartbeat, %s/desired_state) → state=namespace_up\n",
-        id.namespace, id.namespace))
-    bb.state = "namespace_up"
+        "KB0 [%s]: registration not acked (%s) — wait_for_event will time out and retry\n",
+        id.namespace, tostring(err or reply)))
 end
 
-state_handlers.namespace_up = function(h, bb)
-    local id = bb._identity
-    local cs = bb._class_spec
-    local ps = bb._pubsub
+-- Publish the standard namespace leaves (decision #31).
+M.one_shot.PUBLISH_NAMESPACE = function(handle, node)
+    local bb = handle.blackboard
+    local id, cs, ps = bb._identity, bb._class_spec, bb._pubsub
 
     ps:publish(id.namespace .. "/capabilities", cjson.encode(cs.capabilities))
     ps:publish(id.namespace .. "/hardware", cjson.encode({
@@ -125,111 +130,96 @@ state_handlers.namespace_up = function(h, bb)
         first_seen = id.first_seen,
     }))
     ps:publish(id.namespace .. "/state", cjson.encode({
-        state = "ready",
-        ts    = wall_s(),
+        state = "ready", ts = wall_s(),
     }))
-
-    local ok, err = pcall(cs.on_namespace_up, ps, id, bb)
-    if not ok then
-        io.stderr:write(string.format(
-            "CONNECTION_KB [%s]: on_namespace_up hook errored: %s\n",
-            id.namespace, tostring(err)))
-    end
-
-    -- Prime the heartbeat-watch clock at register-success time
-    bb.last_heartbeat_seen_ms = now_ms()
-    bb._last_hb_pub_ms = 0
-
     io.stderr:write(string.format(
-        "CONNECTION_KB [%s]: published core leaves + ran class hook → state=operating\n",
-        id.namespace))
-    bb.state = "operating"
+        "KB0 [%s]: namespace leaves published\n", id.namespace))
 end
 
-state_handlers.operating = function(h, bb)
-    local id      = bb._identity
-    local ps      = bb._pubsub
-    local t_now   = now_ms()
-
-    -- 1 Hz heartbeat publish on <namespace>/heartbeat
-    if t_now - (bb._last_hb_pub_ms or 0) >= 1000 then
-        bb._last_hb_pub_ms = t_now
-        bb.seq = bb.seq + 1
-        ps:publish(id.namespace .. "/heartbeat", cjson.encode({
-            seq = bb.seq, ts = wall_s(),
-        }))
-    end
-
-    -- Drain incoming pub/sub queues
-    local msgs = ps:poll_all()
-    for _, m in ipairs(msgs) do
-        if m.user and m.user.kind == "ctrl_heartbeat" then
-            bb.last_heartbeat_seen_ms = now_ms()
-        elseif m.user and m.user.kind == "desired_state" then
+-- Run the class-specific on_namespace_up hook (decision #32).
+M.one_shot.NAMESPACE_UP_HOOK = function(handle, node)
+    local bb = handle.blackboard
+    local id, cs = bb._identity, bb._class_spec
+    if type(cs.on_namespace_up) == "function" then
+        local ok, err = pcall(cs.on_namespace_up, bb._pubsub, id, bb)
+        if not ok then
             io.stderr:write(string.format(
-                "CONNECTION_KB [%s]: desired_state recv: %s\n",
-                id.namespace, m.payload))
-        else
-            io.stderr:write(string.format(
-                "CONNECTION_KB [%s]: unexpected msg on %s: %s\n",
-                id.namespace, m.topic, m.payload))
+                "KB0 [%s]: on_namespace_up hook errored: %s\n",
+                id.namespace, tostring(err)))
         end
     end
+end
 
-    -- Disconnect-watch
-    local since_ms = now_ms() - bb.last_heartbeat_seen_ms
-    if since_ms > bb.disconnect_threshold_ms then
+-- Spawn the class-specific application KB(s). class_spec.app_kbs lists KB
+-- names that exist in the loaded IR. fake_robot declares none yet => no-op.
+M.one_shot.SPAWN_APP_KBS = function(handle, node)
+    local ct_runtime = require("ct_runtime")
+    local kbs = (handle.blackboard._class_spec or {}).app_kbs or {}
+    for _, kb_name in ipairs(kbs) do
+        local ok = pcall(ct_runtime.add_test, handle, kb_name)
         io.stderr:write(string.format(
-            "CONNECTION_KB [%s]: no controller heartbeat for %dms → state=disconnected\n",
-            id.namespace, since_ms))
-        bb.state = "disconnected"
+            "KB0: spawn app KB '%s' — %s\n", kb_name, ok and "ok" or "FAILED"))
+    end
+    if #kbs == 0 then
+        io.stderr:write("KB0: no app KBs declared by class_spec — nothing to spawn\n")
     end
 end
 
-state_handlers.disconnected = function(h, bb)
-    local id  = bb._identity
-    local ps  = bb._pubsub
-    local rpc = bb._rpc
-
-    if bb._sub_heartbeat then
-        pcall(function() ps:unsubscribe(bb._sub_heartbeat) end)
-        bb._sub_heartbeat = nil
-    end
-    if bb._sub_desired_state then
-        pcall(function() ps:unsubscribe(bb._sub_desired_state) end)
-        bb._sub_desired_state = nil
-    end
-
-    pcall(function() ps:close() end)
-    pcall(function() rpc:close() end)
-    ps:open()
-    rpc:open()
-
-    bb.register_attempt = 0
-    bb.backoff_until_ms = 0
+-- verify(TEST_ZENOH_CONNECTION) error handler — zenoh transport lost.
+-- Full recovery: kill every app KB. The verify's CFL_RESET then resets the
+-- outer column structurally (back to wait_for_event("ZENOH_CONNECTED")).
+-- The runtime owns re-opening the zenoh session.
+M.one_shot.ERROR_ZENOH_LOST = function(handle, node)
+    local n = kill_app_kbs(handle)
     io.stderr:write(string.format(
-        "CONNECTION_KB [%s]: sessions reopened → state=connecting\n",
-        id.namespace))
-    bb.state = "connecting"
+        "KB0: zenoh transport lost — killed %d app KB(s); outer column resets to wait_for_zenoh\n", n))
 end
 
--- ---------------------------------------------------------------------------
--- Main fn: per-tick dispatch
--- ---------------------------------------------------------------------------
+-- verify(TEST_CONTROLLER_HEARTBEAT) error handler — controller heartbeat lost.
+-- Narrow recovery: kill app KBs and drive the protocol SM back to
+-- wait_for_ack. Zenoh is untouched. Replicates the CFL_CHANGE_STATE builtin
+-- (resolve the SM node state, set new_state; the SM main applies it).
+M.one_shot.ERROR_CONTROLLER_LOST = function(handle, node)
+    local n = kill_app_kbs(handle)
+    io.stderr:write(string.format(
+        "KB0: controller heartbeat lost — killed %d app KB(s); re-handshaking\n", n))
 
-M.main.CONNECTION_MAIN = function(h, bool_fn, node, event_id, event_data)
-    if event_id ~= defs.CFL_TIMER_EVENT then return defs.CFL_CONTINUE end
-    local bb = h.blackboard
-    if bb.shutdown_requested then return defs.CFL_DISABLE end
-
-    local handler = state_handlers[bb.state]
-    if handler then
-        handler(h, bb)
+    local sm_id = parent_sm_id(handle, node)
+    local sm_ns = sm_id and common.get_node_state(handle, sm_id)
+    if sm_ns and sm_ns.state_name_to_index then
+        sm_ns.new_state = sm_ns.state_name_to_index["wait_for_ack"] or 0
     else
-        io.stderr:write("CONNECTION_KB: unknown state '" .. tostring(bb.state) .. "'\n")
+        io.stderr:write("KB0: WARN — could not resolve protocol SM for state change\n")
     end
-    return defs.CFL_CONTINUE
 end
+
+-- ---------------------------------------------------------------------------
+-- Booleans  (fed every event by verify; return true = pass / connection ok)
+-- ---------------------------------------------------------------------------
+
+-- Zenoh transport guard. The runtime maintains handle.zenoh_connected; nil is
+-- treated as connected (the KB only reaches this verify after ZENOH_CONNECTED).
+M.boolean.TEST_ZENOH_CONNECTION = function(handle, node, event_id, event_data)
+    if event_id == defs.CFL_INIT_EVENT then return true end
+    if event_id == defs.CFL_TERMINATE_EVENT then return false end
+    return handle.zenoh_connected ~= false
+end
+
+-- Controller heartbeat guard. Fresh if a controller heartbeat was drained
+-- within threshold_s. threshold_s comes from the verify's fn data
+-- ({ threshold_s = 3.5 } in connection.lua).
+M.boolean.TEST_CONTROLLER_HEARTBEAT = function(handle, node, event_id, event_data)
+    if event_id == defs.CFL_INIT_EVENT then return true end
+    if event_id == defs.CFL_TERMINATE_EVENT then return false end
+    local nd      = node.node_dict or {}
+    local fn_data = nd.fn_data or nd.user_data or {}
+    local threshold = tonumber(fn_data.threshold_s) or 3.5
+    local now  = handle.timestamp or 0
+    local last = handle.controller_last_beat or now   -- nil => assume fresh
+    return (now - last) < threshold
+end
+
+-- ---------------------------------------------------------------------------
 
 M.registry = {
     main     = M.main,

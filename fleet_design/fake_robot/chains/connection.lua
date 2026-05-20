@@ -1,45 +1,113 @@
--- chains/connection.lua — DSL for the fake_robot connection KB.
+-- chains/connection.lua — build-time DSL for KB0, the connection manager.
 --
--- The connection KB is foundational (shared by all Linux robots per decision
--- #26). One column with a single main fn (CONNECTION_MAIN) that dispatches
--- per-tick based on bb.state — see connection_user_functions.lua for the
--- per-state handlers.
+-- KB0 is the shared connection lifecycle — identical for every robot class.
+-- Structure (locked in the 2026-05-20 design dialog):
 --
--- Build:
+--   outer column "kb0_outer"
+--     [1] wait_for_event("ZENOH_CONNECTED")  HALTs the outer column — blocks
+--                                            every younger sibling until the
+--                                            runtime reports the zenoh
+--                                            transport is up.
+--     [2] verify(TEST_ZENOH_CONNECTION)      CFL_CONTINUE while up — passes
+--                                            events through to the protocol
+--                                            SM. On loss the verify CFL_RESETs
+--                                            the OUTER column => full reconnect.
+--     [3] state_machine "protocol_sm"
+--           state "wait_for_ack"             announce registration, await the
+--                                            controller ack (retry on
+--                                            timeout), publish the namespace,
+--                                            run the class hook, spawn app KBs.
+--           state "verify_controller_heartbeat"
+--                                            verify the controller heartbeat;
+--                                            on loss kill app KBs + return to
+--                                            wait_for_ack (zenoh stays up =
+--                                            narrow recovery).
+--     [4] asm_halt()                         terminal element — keeps the
+--                                            outer column permanently enabled
+--                                            so KB0 never auto-completes.
+--
+-- The protocol SM is a younger sibling of the verify node (the DSL adds
+-- nodes as siblings within a column). Behaviourally identical to nesting it
+-- as verify's child: verify healthy => CFL_CONTINUE => the walker reaches the
+-- SM; verify failed => CFL_RESET on the outer column tears the SM down before
+-- the walker gets there.
+--
+-- Build (dev machine only):
 --   luajit chains/connection.lua chains/connection.json
---
--- Requires chain_tree_luajit/lua_dsl/ on package.path.
+
+-- lua_dsl is build-time only and never ships to the Pi. Point package.path
+-- at the upstream DSL builder (see continue.md "Reference paths").
+local _dsl = (os.getenv("HOME") or "")
+    .. "/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/chain_tree_luajit/lua_dsl/"
+package.path = _dsl .. "?.lua;" .. _dsl .. "lua_support/?.lua;" .. package.path
 
 local ChainTreeMaster = require("chain_tree_master")
 
-local function add_header(json_file)
-    local ct = ChainTreeMaster.new(json_file)
+-- KB name — main.lua activates this KB at boot; the user fns reference it
+-- when sweeping app KBs on connection loss.
+local KB0_NAME = "connection"
 
-    -- Time fields ending in _ms hold CLOCK_MONOTONIC milliseconds (int64
-    -- range, stored in Lua double — 53-bit mantissa is enough for 285k years).
-    -- Wire ts values use os.time() epoch seconds; not held on the blackboard.
-    ct:define_blackboard("connection_state")
-        ct:bb_field("state",                   "string", "connecting")
-        ct:bb_field("register_attempt",        "int32",  0)
-        ct:bb_field("seq",                     "int32",  0)
-        ct:bb_field("last_heartbeat_seen_ms",  "float",  0)
-        ct:bb_field("disconnect_threshold_ms", "int32",  3000)
-        ct:bb_field("controller_id",           "string", "")
-        ct:bb_field("ack_ts",                  "int32",  0)
-        ct:bb_field("backoff_until_ms",        "float",  0)
-        ct:bb_field("shutdown_requested",      "bool",   false)
-    ct:end_blackboard()
-
-    return ct
-end
-
-local function build_connection_kb(ct, kb_name)
+local function build_kb0(ct, kb_name)
     ct:start_test(kb_name)
-    local col = ct:define_column("connection_main", nil, nil, nil, nil, {}, true)
-        ct:asm_one_shot_handler("CONNECTION_INIT", {})
-        ct:define_column_link("CONNECTION_MAIN", "CFL_NULL",
-            "CFL_NULL", "CONNECTION_TERM", {}, "EXEC")
-    ct:end_column(col)
+
+    -- The first element of a KB must be a column.
+    local outer = ct:define_column("kb0_outer", nil, nil, nil, nil, {}, true)
+
+        -- [1] Wait for the zenoh transport. timeout 0 => pure HALT until the
+        -- runtime posts ZENOH_CONNECTED. The HALT blocks [2]/[3]/[4].
+        ct:asm_log_message("KB0: waiting for zenoh transport")
+        ct:asm_wait_for_event("ZENOH_CONNECTED", 1, false, 0, nil, nil, {})
+
+        -- [2] Transport guard. reset=true => on loss CFL_RESET resets this
+        -- node's column (the outer column) => everything below is torn down
+        -- and the KB restarts at wait_for_event("ZENOH_CONNECTED").
+        ct:asm_log_message("KB0: zenoh transport up — entering protocol layer")
+        ct:asm_verify("TEST_ZENOH_CONNECTION", {}, true, "ERROR_ZENOH_LOST", {})
+
+        -- [3] Protocol state machine — runs only while the verify CONTINUEs.
+        local protocol_sm = ct:define_state_machine(
+            "protocol_sm", "protocol_sm",
+            { "wait_for_ack", "verify_controller_heartbeat" },
+            "wait_for_ack", true)
+
+            -- state: wait_for_ack — controller handshake, then the bringup
+            -- sequence. The handshake retries via wait_for_event's timeout:
+            -- on a 3 s timeout (counted in CFL_SECOND_EVENTs) reset=true loops
+            -- this state's column, re-running ANNOUNCE_REGISTRATION.
+            local st_ack = ct:define_state("wait_for_ack", nil)
+                ct:asm_log_message("protocol: announcing registration")
+                ct:asm_one_shot_handler("ANNOUNCE_REGISTRATION", {})
+                ct:asm_wait_for_event("REGISTRATION_ACK", 1, true, 3,
+                    nil, "CFL_SECOND_EVENT", {})
+                ct:asm_log_message("protocol: ack received — running bringup sequence")
+                ct:asm_one_shot_handler("PUBLISH_NAMESPACE", {})
+                ct:asm_one_shot_handler("NAMESPACE_UP_HOOK", {})
+                ct:asm_one_shot_handler("SPAWN_APP_KBS", {})
+                ct:change_state(protocol_sm, "verify_controller_heartbeat")
+                ct:asm_halt()
+            ct:end_column(st_ack)
+
+            -- state: verify_controller_heartbeat — steady-state monitor.
+            -- verify + delay + reset loops the column so the verify is a
+            -- durable guard. reset=true is required: with reset=false a
+            -- failure CFL_TERMINATEs the column and nothing re-enables it.
+            -- On failure ERROR_CONTROLLER_LOST kills app KBs and drives the
+            -- SM back to wait_for_ack — zenoh is untouched (narrow recovery).
+            local st_hb = ct:define_state("verify_controller_heartbeat", nil)
+                ct:asm_log_message("protocol: operating — monitoring controller heartbeat")
+                ct:asm_verify("TEST_CONTROLLER_HEARTBEAT", { threshold_s = 3.5 },
+                    true, "ERROR_CONTROLLER_LOST", {})
+                ct:asm_wait_time(3.0)
+                ct:asm_reset()
+            ct:end_column(st_hb)
+
+        ct:end_state_machine(protocol_sm, "protocol_sm")
+
+        -- [4] Terminal halt — a permanently enabled node so the outer column
+        -- never auto-completes. KB0 runs forever.
+        ct:asm_halt()
+
+    ct:end_column(outer)
     ct:end_test()
 end
 
@@ -49,9 +117,11 @@ if is_cli then
         print("Usage: luajit chains/connection.lua <json_file>")
         os.exit(1)
     end
-    local ct = add_header(arg[1])
-    build_connection_kb(ct, "connection")
+    local ct = ChainTreeMaster.new(arg[1])
+    build_kb0(ct, KB0_NAME)
     ct:check_and_generate()
     print("Wrote: " .. arg[1])
     print("Total nodes: " .. ct.ctb:get_total_node_count())
 end
+
+return { build_kb0 = build_kb0, KB0_NAME = KB0_NAME }
