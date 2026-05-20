@@ -35,8 +35,12 @@ extern const s_engine_rom_t register_dongle_v2_module_rom;
 // Opcodes (mirror register_dongle_v2.lua). m2s opcodes must avoid the engine-
 // reserved event_id values: SE_EVENT_TICK=4, SE_EVENT_INIT=0xfffe,
 // SE_EVENT_TERMINATE=0xfffd. We allocate m2s in 0x0100+.
-#define OP_REGISTER_ACK  0x0103
-#define OP_PING          0x0104
+#define OP_REGISTER_ACK      0x0103
+#define OP_PING              0x0104
+#define OP_COMMISSION_SET    0x0105   // L0 (deferred); used here to exercise the
+                                      // err_unsupported_cmd NAK branch.
+#define OP_GET_MANIFEST      0x0107
+#define OP_OPERATIONAL_BEGIN 0x0108
 
 // Engine-internal events (never on the wire). Range 0xFE00+.
 // Pushed from main_rom.c (Linux harness) or main.c (SAMD21 firmware) when
@@ -103,10 +107,15 @@ static s_expr_result_t tick_and_drain(s_expr_tree_instance_t* tree) {
 
 int main(int argc, char* argv[]) {
     (void)argc; (void)argv;
-    printf("\n=== register_dongle_v2 Linux prototype (state-machine, M-port ROM path) ===\n");
-    printf("Chain: io_call(send_register) ; se_state_machine{BOOT, OPERATIONAL}\n");
-    printf("  BOOT:        event_dispatch{OP_REGISTER_ACK -> set state=OPERATIONAL}\n");
-    printf("  OPERATIONAL: fork{heartbeat, LED, event_dispatch{OP_PING -> send_pong}}\n");
+    printf("\n=== register_dongle_v2 Linux prototype (four-layer-sync, M-port ROM path) ===\n");
+    printf("Chain: se_state_machine{BOOT, L1_DONE, OPERATIONAL}\n");
+    printf("  BOOT:        fork{retry send_register, dispatch{OP_REGISTER_ACK->L1_DONE; default->NAK}}\n");
+    printf("  L1_DONE:     dispatch{OP_GET_MANIFEST->send_manifest_reply;\n");
+    printf("                        OP_OPERATIONAL_BEGIN->OPERATIONAL;\n");
+    printf("                        default->NAK}\n");
+    printf("  OPERATIONAL: fork{heartbeat, LED, dispatch{OP_PING->send_pong;\n");
+    printf("                                              OP_GET_MANIFEST->send_manifest_reply;\n");
+    printf("                                              default->NAK}}\n");
     printf("Tick rate: 250 ms (4 Hz)  •  Heartbeat: every 4 ticks (1 Hz)\n");
     printf("Bump buffer: %d B static\n\n", BUMP_BUFFER_SIZE);
 
@@ -132,23 +141,38 @@ int main(int argc, char* argv[]) {
         &module, REGISTER_DONGLE_V2_HASH, 0);
     if (!tree) { printf("FATAL: create tree\n"); return 1; }
 
-    // Schedule of injected events (tick index, opcode, label). Phase 2g
-    // adds EV_HOST_REATTACH at tick 35: after the dongle is in OPERATIONAL
-    // and exchanging heartbeats/pongs, fake a host reset. Expect:
-    // OP_REGISTERs resume at 1 Hz until a second ACK arrives at tick 50.
+    // Injection schedule walks the full four-layer-sync ladder, plus a few
+    // negative cases:
+    //   tick  8: PING in BOOT          -> expect NAK err_state
+    //   tick 12: OP_REGISTER_ACK       -> BOOT → L1_DONE
+    //   tick 14: OP_GET_MANIFEST       -> send_manifest_reply (no state change)
+    //   tick 16: OP_PING in L1_DONE    -> expect NAK err_state
+    //   tick 18: OP_OPERATIONAL_BEGIN  -> L1_DONE → OPERATIONAL
+    //   tick 24: OP_PING               -> send_pong
+    //   tick 28: OP_GET_MANIFEST       -> send_manifest_reply (refresh in OPER)
+    //   tick 32: OP_COMMISSION_SET     -> NAK err_unsupported_cmd (deferred)
+    //   tick 38: EV_HOST_REATTACH      -> back to BOOT; retries resume
+    //   tick 50: OP_REGISTER_ACK       -> BOOT → L1_DONE again
+    //   tick 53: OP_OPERATIONAL_BEGIN  -> L1_DONE → OPERATIONAL (full re-sync)
     struct { int tick; uint16_t op; const char* label; } injections[] = {
-        { 18, OP_REGISTER_ACK, "OP_REGISTER_ACK" },
-        { 26, OP_PING,         "OP_PING #1" },
-        { 32, OP_PING,         "OP_PING #2" },
-        { 35, EV_HOST_REATTACH,"EV_HOST_REATTACH (simulated host reset)" },
-        { 50, OP_REGISTER_ACK, "OP_REGISTER_ACK (post-reattach)" },
+        {  8, OP_PING,              "OP_PING (illegal in BOOT)"            },
+        { 12, OP_REGISTER_ACK,      "OP_REGISTER_ACK"                      },
+        { 14, OP_GET_MANIFEST,      "OP_GET_MANIFEST (L1_DONE)"            },
+        { 16, OP_PING,              "OP_PING (illegal in L1_DONE)"         },
+        { 18, OP_OPERATIONAL_BEGIN, "OP_OPERATIONAL_BEGIN"                 },
+        { 24, OP_PING,              "OP_PING #1 (operational)"             },
+        { 28, OP_GET_MANIFEST,      "OP_GET_MANIFEST (refresh in OPER)"    },
+        { 32, OP_COMMISSION_SET,    "OP_COMMISSION_SET (deferred)"         },
+        { 38, EV_HOST_REATTACH,     "EV_HOST_REATTACH (simulated host reset)" },
+        { 50, OP_REGISTER_ACK,      "OP_REGISTER_ACK (post-reattach)"      },
+        { 53, OP_OPERATIONAL_BEGIN, "OP_OPERATIONAL_BEGIN (post-reattach)" },
     };
     const int N_INJ = (int)(sizeof(injections) / sizeof(injections[0]));
     int next_inj = 0;
 
-    const int TICKS = 60;
+    const int TICKS = 64;
     printf("Running %d ticks @ 250 ms each (~%.1f s real time)\n", TICKS, TICKS * 0.25);
-    printf("Expected: REGISTER once -> idle ~5 ticks in BOOT -> ACK -> HEARTBEATs + LED + 3x PONG\n\n");
+    printf("Expected ladder: REGISTER retries -> ACK -> GET_MANIFEST -> OPERATIONAL_BEGIN -> heartbeats\n\n");
 
     for (int i = 0; i < TICKS; i++) {
         // Inject any scheduled host events BEFORE the tick (they will be popped

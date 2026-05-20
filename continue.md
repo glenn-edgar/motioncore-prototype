@@ -1090,6 +1090,8 @@ The smaller final size is because removing `.get_time = engine_get_time` from th
 
 ### Plan for the next session (Phase 2h — Track B manifest OR Track C RA4M1)
 
+> **SUPERSEDED 2026-05-16** — the four-layer sync dialog reshaped Phase 2h. REGISTER v2 payload work below still applies but now lands inside a 3-message sync flow. See "2026-05-16 design dialog" section above + the updated "How to start tomorrow" section for the current plan. Historical Phase 2h plan retained for context.
+
 Track A is closed. Track B was reshaped during this session's design dialog — **CBOR is dropped**, manifest moves to packed-struct + FNV-1a schema hash (per canonical avro_dsl pattern). A new two-tier identity system (class_id + instance_id with commissioning) was designed and is fully captured in `memory/dongle_class_identity_2026-05-13.md`.
 
 **Cross-repo handoff:** the catalog side of the new identity system (`dongle_classes.lua`, `kb_build` codegen, robot-class `required_dongles` field, instance-config `dongles[]` array, robot-side chain-tree matching) lives in `~/knowledge_base_assembly/luajit_programs_and_containers/nano_data_center_base/commissioning_software/`. A future AI session in that repo will fold it in. The full design + implementation breakdown is in the memory file.
@@ -1111,82 +1113,192 @@ Side observations from this session worth carrying:
 
 ---
 
+### 2026-05-16 design dialog — four-layer protocol + RS-485 slave wire
+
+Big design session. The "four-layer routing model" that's been a phantom reference since 2026-05-13 (catalog doc line 566) is now actually written down. Plus a full custom RS-485 protocol spec for slave↔router-dongle communication. Two new memory files; this section is the high-level index.
+
+**Memory files (load-bearing — read before any Phase 2h work):**
+- `memory/four_layer_protocol_2026-05-16.md` — universal L0/L1/L2/L3 sync model
+- `memory/rs485_slave_protocol_2026-05-16.md` — router dongle ↔ slave wire protocol
+
+**Headline locks (~22 decisions across the dialog):**
+
+- **Four-layer model is universal.** L0 commissioning, L1 identity, L2 manifest, L3 topology. Applies symmetrically to dongle↔Linux AND slave↔router-dongle (carrier differs per role; layers are semantic, same on both sides).
+- **3-message initial sync.** Host drives every transition with explicit advance opcodes. Dongle NAKs anything inappropriate (`err_state` / `err_unsupported_cmd`). L0 is a pre-state, not part of the 3-message ladder.
+- **Drop OP_MANIFEST_ACK; one generic OP_NAK** for all state/permission errors.
+- **L0 rides existing OP_REGISTER** — `commissioning_state` byte in v2 payload distinguishes L0 vs L1 routing on host side. No separate L0 opcode.
+- **Two-step re-commissioning:** CLEAR then SET, never combined. Both trigger reboot.
+- **Slaves commissioned via USB-CDC only.** Dual-personality firmware: uncommissioned slave boots in USB-CDC libcomm mode (commissions via same OP_COMMISSION_SET opcode as dongles), commissioned slave operates RS-485 (with USB-CDC kept active for diagnostics + recovery). **Eliminates** all RS-485 commissioning-collision concerns.
+- **Per-class tick rates revised:**
+
+  | Chip | Dongle build | Slave build |
+  |---|---|---|
+  | SAMD21 | 10 ms | 10 ms (ISR handles bus → tick decouples from bus speed) |
+  | RA4M1 | 10 ms | 10 ms (same) |
+  | RP2350 | 1 ms | (not a slave class) |
+  | ESP32-C6 | 1 ms | (not a slave class) |
+
+- **RS-485 protocol** (custom, not Modbus):
+  - 9-bit MPCM addressing: 9th bit = "address frame" flag, value is 8-bit. **256-value address space** (0x00 broadcast, 0xFF flash sentinel only, 0x01-0xFE assignable = 254 slots).
+  - ISR handles RX/TX + framing + auto-ACK; complex work deferred to chain via engine event queue.
+  - Implicit-token bus arbitration: most-recently-addressed slave owns the quiet window. Hardware idle-line interrupt ends the window.
+  - TCP class (ack-required, dongle-side ack-table) vs UDP class (fire-and-forget).
+  - **Slaves only send UDP**, including ACKs. ACK frame carries original message's sequence ID; dongle reconciles against ack-table.
+  - Source address in payload byte 0 (1 byte; hardware filter consumes the 9-bit address byte for destination only).
+  - Slave-to-slave is UDP-only (no ack state on slaves).
+- **kb_build emits per-slave bus_addr** alongside instance_id (in nano_data_center cross-repo handoff scope).
+
+**Phase 2h plan is reshaped** by the new sync model — see the updated "How to start tomorrow" section at the bottom for the current next-steps.
+
+**Three message-protocol stacks** (clarified separation; don't conflate in docs):
+1. Linux ↔ dongle: libcomm over USB-CDC, full-duplex, 4-layer L0/L1/L2/L3 sync
+2. Router dongle ↔ slaves (SAMD21/RA4M1): custom RS-485, half-duplex, 9-bit addressed, TCP/UDP, ack-table on dongle
+3. Router dongle ↔ canonical-bus slaves (CAN, BLE, Thread): future; separate stacks each
+
+---
+
 ## How to start tomorrow
 
-### Step 1 — minute-zero verification
+### Step 1 — minute-zero verification (unchanged from Phase 2g)
 
 ```bash
 ssh robot
 lsusb | grep 2886
 # Expected: "ID 2886:802f Seeed Technology Co., Ltd. register_dongle"
-# Dongle is still running Phase 2g firmware (host-reattach + OP_DBG_LOG enabled)
+# Phase 2g firmware still running.
 
 timeout 5 luajit /home/pi/dongle_console/dongle_console.lua --frame
-# Expected: stream of OP_HEARTBEAT frames at 1 Hz (dongle is in OPERATIONAL
-# from the last session's ACK). If you see OP_REGISTER instead, the dongle
-# rebooted and is in BOOT waiting for ACK — fine, --send-ack to advance.
+# Expected: stream of OP_HEARTBEAT frames at 1 Hz (OPERATIONAL).
+# If you see OP_REGISTER instead, --send-ack to advance.
 ```
 
-### Step 2 — required cold-start reading (in order, ~10 minutes)
+### Step 2 — required cold-start reading (in order, ~15 minutes)
 
-1. **`memory/feedback_design_dialog_style.md`** — MANDATORY. The locked dialog discipline (one concern at a time, push back is value-add, stay in dialog before pre-executing).
-2. **This file's "Phase 2g closure" section** above — what landed last session.
-3. **`memory/dongle_class_identity_2026-05-13.md`** — load-bearing. The full Phase 2h design lives here.
-4. **`docs/dongle_classes/README.md` + skim `samd21_shell_v1.lua`** — the chain shape Phase 2h modifies.
-5. **`docs/cross_repo_handoff/dongle_class_catalog.md`** — only the parts that affect motioncore-prototype (sections 3 ABI contract + 7.8 Pi-side flow); skip the kb_build catalog details, that's the other AI session.
+1. **`memory/feedback_design_dialog_style.md`** — MANDATORY. Dialog discipline (one concern at a time, push back is value-add, stay in dialog before pre-executing).
+2. **`memory/four_layer_protocol_2026-05-16.md`** — load-bearing. The new universal sync model.
+3. **`memory/rs485_slave_protocol_2026-05-16.md`** — load-bearing if any slave / RS-485 work this session.
+4. **This file's "2026-05-16 design dialog" section** above — what was locked.
+5. **`memory/dongle_class_identity_2026-05-13.md`** — REGISTER v2 payload schema (still valid; now lands inside the new sync flow, not as a spike).
+6. **`memory/s_engine_dsl_composition_rules.md`** — required for any chain edits.
 
-### Step 3 — decide the day's track
+### Step 3 — the day's track
 
-**Two viable directions:**
+The 2026-05-16 dialog locked design but no firmware yet. **Phase 2h is now "implement the 3-message sync"** — a discrete, well-scoped delivery on the dongle side:
 
-| Track | Description | Blocking? |
-|---|---|---|
-| **A** | Phase 2h motioncore-prototype side: REGISTER v2 payload + SAMD21 flash storage + OP_COMMISSION_* opcodes + handle_commissioning user fn + chain edit | **Unblocked** — can stub `class_ids.h` locally with a placeholder hash (`#define MY_CLASS_ID 0x12345678U`). Real value plugs in later when kb_build emits the file. |
-| **B** | Wait for the kb_build / nano_data_center AI session to ship `class_ids.h` first | Blocked on external coordination. Not recommended — we can do Track A in parallel with stubbed constants. |
-| **C** | Other work — RA4M1 toolchain bring-up, more secondary cleanup (build_date vs fw_version, etc.), or simplify/audit existing code | Unblocked, smaller scope |
+| # | Deliverable |
+|---|---|
+| 1 | Sketch `common/spec/four_layer_sync.md` — opcode numbers + payload layouts for `OP_GET_MANIFEST`, `OP_MANIFEST_REPLY`, `OP_OPERATIONAL_BEGIN`, generic `OP_NAK` |
+| 2 | Update SAMD21 `send_register` to emit OP_REGISTER v2 (the original Phase 2h step — still applies; `class_id` stubbed `0xDEADBEEF` until kb_build delivers `class_ids.h`) |
+| 3 | Add `OP_GET_MANIFEST` + `OP_MANIFEST_REPLY` handlers (stub manifest payload: version + opcode list; defer fancy FNV-1a schema) |
+| 4 | Add `OP_OPERATIONAL_BEGIN` handler + state transition (`L1_DONE → OPERATIONAL`); heartbeat starts only after this |
+| 5 | Wire generic `OP_NAK` responses for out-of-state opcodes |
+| 6 | Update `dongle_console.lua` to walk the 3-message sync from host side (replace current single-step `--send-ack`) |
+| 7 | Verify on real SAMD21 — full sync flow + heartbeat starts after `OP_OPERATIONAL_BEGIN` |
 
-**Recommend: Track A.** Phase 2h has clear scope, all the design is locked, the firmware path through bootloader+flash is well-trodden. Stub class_ids.h with `#define MY_CLASS_ID 0xDEADBEEF` initially; replace when the real hash is available.
+L0 commissioning work (SAMD21 flash + `OP_COMMISSION_SET/CLEAR/REPLY`) is its own follow-on milestone, not blocking step 1–7. L3 (slave topology) is router-only and stays deferred.
 
-### Step 4 — first concrete action of Track A
+### Open design TBDs (lock via dialog before firmware lands)
 
-Edit `samd21/apps/register_dongle/user_functions.c`'s `send_register` user fn to emit the REGISTER v2 payload (38 B):
+- Opcode numbers for `OP_GET_MANIFEST` / `OP_MANIFEST_REPLY` / `OP_OPERATIONAL_BEGIN` / `OP_NAK`
+- Manifest payload schema (packed-struct + FNV-1a hash per `dongle_class_identity_2026-05-13`, not yet detailed)
+- Whether `OP_OPERATIONAL_BEGIN` carries any payload
+- Generic `OP_NAK` payload (reason byte + optional opcode-being-rejected)
 
-```c
-// v2 payload — see memory/dongle_class_identity_2026-05-13.md
-#define DONGLE_PROTO_VERSION  2
-#define MY_CLASS_ID           0xDEADBEEFU   // STUB until kb_build emits class_ids.h
-extern uint32_t g_instance_id;               // set from flash at boot, 0 if uncommissioned
-extern uint8_t  g_commissioning_state;       // 0=UNCOMMISSIONED, 1=COMMISSIONED
-
-#pragma pack(push, 1)
-typedef struct {
-    uint8_t  version;
-    uint32_t class_id;
-    uint32_t instance_id;
-    uint8_t  commissioning_state;
-    uint8_t  chip_uid[16];
-    uint16_t vid, pid;
-    uint32_t fw_version;
-    uint32_t build_date;
-} op_register_payload_v2_t;
-#pragma pack(pop)
-_Static_assert(sizeof(op_register_payload_v2_t) == 38, "OP_REGISTER v2 must be 38 B");
-```
-
-That's the spike. Build, flash, observe — host sees v2 REGISTER frames with the stub class_id. Then build out the rest of Phase 2h piece by piece per `memory/dongle_class_identity_2026-05-13.md`'s "What the dongle firmware side needs" table.
-
-### Key TBDs to keep in mind (don't rabbit-hole)
-
-- friendly_name in commissioning (defer until needed)
-- commissioning authentication (defer past bench phase)
-- aux_blob format per comm option (only matters for routers, not Phase 2h)
-- build_date vs fw_version redundancy (pick one, document briefly)
+Plus RS-485-side TBDs (only if router work this session): frame byte layout, sequence ID width + uniqueness scope, max payload size, TCP retransmit timeout values, idle-line bit-count for quiet-window detection.
 
 ### If the dongle isn't responding
 
-The host-reattach mechanism from Phase 2g means re-plug usually works. If stuck:
+Same Phase 2g recovery story:
 1. Power cycle (unplug + replug)
 2. Bootloader entry: double-short reset pads
 3. Re-flash last known good UF2: `/home/pi/motioncore-prototype/samd21/apps/register_dongle/build/register_dongle.uf2`
 
-12 commits ahead of origin as of session end — see `git log --oneline -12` for the trail.
+12 commits ahead of origin as of Phase 2g session end — see `git log --oneline -12` for the trail.
+
+---
+
+## 2026-05-19 → 2026-05-20 — SAMD21 dongle: protocol + functional HIL complete
+
+Big stretch of work. The SAMD21 dongle went from "Phase 2g sync spike" to a
+feature-complete functional-HIL dongle. Each milestone has a dedicated memory
+file (see `memory/MEMORY.md`); this section is the index + handoff.
+
+### What got built (all hardware-verified on real SAMD21)
+
+| Milestone | Memory file | Result |
+|---|---|---|
+| Four-layer sync protocol spec | `four_layer_protocol_2026-05-16` + `common/spec/four_layer_sync.md` | L0/L1/L2/L3 model written down |
+| Phase 2h — 3-message sync ladder | `phase_2h_four_layer_sync_done_2026-05-19` | BOOT→L1_DONE→OPERATIONAL live; OP_GET_MANIFEST/OP_MANIFEST_REPLY/OP_OPERATIONAL_BEGIN/OP_NAK |
+| L0 commissioning | `l0_commissioning_done_2026-05-19` | NVMCTRL dual-slot flash storage; `commission.lua` standalone tool; survives reboot |
+| App-shell general layer | `app_shell_general_layer_done_2026-05-20` | OP_SHELL_EXEC/REPLY + binary-message framing + dispatch table + CMD_ECHO |
+| CMD_SYSINFO | `cmd_sysinfo_done_2026-05-20` | runtime flash/ram/bump/uptime/clock dump |
+| GPIO commands | `gpio_specific_layer_done_2026-05-20` | config/write/read; `chip_commands_table()` extension pattern; 8-slot shell payload queue fix |
+| DAC + ADC commands | `dac_adc_specific_layer_done_2026-05-20` | dac_write / adc_read / dac_waveform (TC3 + sine LUT) / dac_stop / adc_capture; analog loopback D0→D1 verified |
+| PWM + counter | `pwm_counter_done_2026-05-20` | pwm config/set/teardown + counter setup/reset/read/stop; D1→D2 jumper loopback verified |
+
+### Current SAMD21 firmware state
+
+- App: `samd21/apps/register_dongle/` — see its `README.md` (written 2026-05-20)
+- 15-command shell catalog (2 general + 13 SAMD21-specific). Full four-layer
+  protocol + L0 commissioning.
+- ~37.8 KB flash (15%), ~5.5 KB RAM (17%). Ample headroom.
+- Last-good UF2: `samd21/apps/register_dongle/build/register_dongle.uf2`
+
+### Bench infrastructure learned
+
+- **USB power contention** — a bus-powered SSD on the Pi hub browned out the
+  dongle and caused hours of phantom debugging. Captured in
+  `memory/bench_hardware_status.md`. Keep hungry peripherals off the dongle's
+  USB tree.
+- **Chain tick-batching** — shell events process in 250 ms tick batches; host
+  inter-command delays need to be ≥ ~one tick to translate to precise
+  on-dongle timing.
+
+### How to start tomorrow — RA4M1 port (second chip family)
+
+Per `four_chip_dongle_pivot_2026-05-11` ordering: SAMD21 → (Linux
+dongle-manager) → **RA4M1** → RP2350 → ESP32-C6.
+
+RA4M1 (Arduino Uno R4 / Xiao RA4M1, Renesas ARM Cortex-M4) is the portability
+litmus test: the s_engine M-port + libcomm + the register_dongle_v2 chain +
+the general shell layer should all compile and run **unchanged**; only the
+chip layer is new.
+
+**What ports as-is (no change expected):**
+- s_engine M-port runtime
+- libcomm framing (`vendor/libcomm/`)
+- `register_dongle_v2` chain + DSL
+- `shell_commands.{c,h}` general layer (echo, sysinfo* — *sysinfo's
+  `firmware_get_sysinfo` is chip-specific, needs an RA4M1 impl)
+- `user_functions.c` chain handlers (mostly; `samd21_read_uid`, flash
+  storage, sysinfo accessor are chip-specific)
+
+**What's new for RA4M1:**
+- Renesas FSP HAL (vendor download — equivalent of TinyUSB for SAMD21)
+- RA4M1 USB-CDC driver (RA4M1 has hardware USB)
+- `ra4m1_commands.c` — the chip-specific shell command set, parallel to
+  `samd21_commands.c`. Same `chip_commands_table()` / `chip_commands_count()`
+  exports. RA4M1 is the **analytical HIL** chip: 14-bit ADC, 12-bit DAC,
+  CMSIS-DSP. Its command set will differ from SAMD21's (higher-res ADC/DAC,
+  plus `signal.*` DSP commands per `four_chip_dongle_pivot_2026-05-11`).
+- `flash_storage` equivalent — RA4M1 has a dedicated Data Flash region
+- chip UID read, `firmware_get_sysinfo` RA4M1 impl
+- Makefile + linker script + startup for RA4M1
+
+**Prerequisites to gather first:**
+- Renesas FSP HAL download (analogous to how TinyUSB was vendored)
+- RA4M1 Xiao board file / pin map
+- arm-none-eabi-gcc already present on the Pi
+
+**First concrete step:** hello-CDC on RA4M1 (the equivalent of `hello_cdc`
+for SAMD21) — get the toolchain + USB-CDC enumerating before porting the
+engine. Then layer the engine + chain + shell on top.
+
+### Cold-start reading order for the RA4M1 session
+
+1. `memory/MEMORY.md` — index
+2. `memory/feedback_design_dialog_style.md` — dialog discipline
+3. `memory/four_chip_dongle_pivot_2026-05-11.md` — RA4M1 role + ordering
+4. `memory/app_shell_general_layer_done_2026-05-20.md` — the `chip_commands_table()` extension pattern RA4M1 plugs into
+5. `samd21/apps/register_dongle/README.md` — the reference implementation to mirror
+6. `memory/gpio_specific_layer_done_2026-05-20.md` + `dac_adc_specific_layer_done_2026-05-20.md` + `pwm_counter_done_2026-05-20.md` — what the chip command layer looks like

@@ -31,6 +31,7 @@
 
 #include "bsp/board_api.h"
 #include "tusb.h"
+#include "samd21.h"     // CMSIS: NVIC_SystemReset (inline)
 
 #include "s_engine_types.h"
 #include "s_engine_module.h"
@@ -42,6 +43,24 @@
 
 #include "frame.h"
 #include "opcodes.h"
+#include "flash_storage.h"
+#include "shell_commands.h"  // firmware_sysinfo_t
+
+// Implemented in user_functions.c.
+extern void     register_dongle_load_commissioning(void);
+extern uint32_t g_pending_commission_instance_id;
+extern bool     shell_pending_push(const uint8_t* payload, uint8_t len);
+
+// Deferred-reboot plumbing: handle_commission_set/clear sets the reboot time;
+// the main loop waits for TX to drain (~200 ms), then triggers NVIC_SystemReset
+// so the OP_COMMISSION_REPLY frame and any other in-flight bytes actually
+// reach the host before USB renegotiates.
+static volatile uint32_t g_reboot_at_ms = 0;   // 0 = no reboot pending
+
+void firmware_request_reboot(uint32_t delay_ms) {
+    g_reboot_at_ms = board_millis() + delay_ms;
+    if (g_reboot_at_ms == 0) g_reboot_at_ms = 1;   // 0 reserved as sentinel
+}
 
 extern const s_engine_rom_t register_dongle_v2_module_rom;
 
@@ -71,6 +90,39 @@ static void* bump_malloc(void* ctx, size_t size) {
 
 static void bump_free(void* ctx, void* ptr) {
     (void)ctx; (void)ptr;
+}
+
+// ----------------------------------------------------------------------------
+// firmware_get_sysinfo — SAMD21G18A implementation. Called by CMD_SYSINFO
+// shell handler. Linker symbols are provided by seeeduino_xiao.ld.
+//
+// Flash layout: app starts at 0x2000 (8 KB bootloader reserved). _etext is
+// end of code+rodata. The .data initializer follows _etext in flash and is
+// copied to _srelocate..._erelocate in RAM at startup.
+// ----------------------------------------------------------------------------
+extern char _etext[];        // end of text+rodata in flash
+extern char _srelocate[];    // start of .data in RAM
+extern char _erelocate[];    // end   of .data in RAM
+extern char _sbss[];         // start of .bss in RAM
+extern char _ebss[];         // end   of .bss in RAM
+extern char _sstack[];       // start of stack region in RAM
+extern char _estack[];       // top of stack
+
+#define SAMD21G18A_FLASH_TOTAL_KB  256u
+#define SAMD21G18A_RAM_TOTAL_KB    32u
+#define SAMD21_APP_FLASH_ORIGIN    0x2000u
+
+void firmware_get_sysinfo(firmware_sysinfo_t* out) {
+    out->flash_total_kb   = SAMD21G18A_FLASH_TOTAL_KB;
+    out->flash_text_b     = (uint32_t)((uintptr_t)_etext - SAMD21_APP_FLASH_ORIGIN);
+    out->flash_data_b     = (uint32_t)((uintptr_t)_erelocate - (uintptr_t)_srelocate);
+    out->ram_total_kb     = SAMD21G18A_RAM_TOTAL_KB;
+    out->ram_bss_b        = (uint32_t)((uintptr_t)_ebss - (uintptr_t)_sbss);
+    out->ram_stack_b      = (uint32_t)((uintptr_t)_estack - (uintptr_t)_sstack);
+    out->bump_capacity_b  = (uint32_t)BUMP_BUFFER_SIZE;
+    out->bump_peak_b      = (uint32_t)g_bump_peak;
+    out->uptime_ms        = (uint32_t)board_millis();
+    out->cpu_clock_hz     = SystemCoreClock;
 }
 
 // Skips the double-precision math in se_log* — board_millis() returns
@@ -165,9 +217,30 @@ static void rx_drain_to_event_queue(s_expr_tree_instance_t* tree) {
         frame_decode_result_t r =
             frame_decoder_feed(&g_rx_decoder, g_rx_buf[i], &meta, g_rx_payload);
         if (r == FRAME_DECODE_FRAME_READY) {
-            // Push as a "tick"-type event so the chain dispatchers see a
-            // regular event_id (matches how se_queue_event behaves internally).
-            s_expr_event_push(tree, SE_EVENT_TICK, meta.cmd, NULL);
+            // OP_COMMISSION_SET carries a u32 new_instance_id. Stage it into
+            // a single-producer/single-consumer global so the chain handler
+            // can read it; libcomm's one-in-flight rule keeps this race-free.
+            if (meta.cmd == OP_COMMISSION_SET && meta.payload_len >= 4) {
+                g_pending_commission_instance_id =
+                    (uint32_t)g_rx_payload[0] |
+                    ((uint32_t)g_rx_payload[1] <<  8) |
+                    ((uint32_t)g_rx_payload[2] << 16) |
+                    ((uint32_t)g_rx_payload[3] << 24);
+            }
+            // OP_SHELL_EXEC carries a variable-length binary message that
+            // outlives a single rx_drain pass. Queue it; only push the engine
+            // event if the queue accepted it, otherwise the handler would
+            // replay an older payload (was the request_id-cluster bug).
+            if (meta.cmd == OP_SHELL_EXEC) {
+                if (meta.payload_len <= COMM_PAYLOAD_MAX
+                    && shell_pending_push(g_rx_payload, meta.payload_len)) {
+                    s_expr_event_push(tree, SE_EVENT_TICK, meta.cmd, NULL);
+                }
+                // else: queue full or oversize — drop. Host's request times out.
+            } else {
+                // All non-shell opcodes: just push (event_data NULL).
+                s_expr_event_push(tree, SE_EVENT_TICK, meta.cmd, NULL);
+            }
         }
         // BAD_CRC / BAD_LEN / OVERFLOW: decoder auto-resets; nothing to do
         // here — a host-side retry will re-sync on the next leading END.
@@ -189,6 +262,10 @@ int main(void) {
 
     frame_ring_init(&g_tx_ring, g_tx_ring_buf, TX_RING_SIZE);
     frame_decoder_init(&g_rx_decoder, FRAME_DIR_M2S);
+
+    // L0: read commissioning blob from flash before engine starts.
+    // Factory-fresh dongles read nothing; defaults to UNCOMMISSIONED.
+    register_dongle_load_commissioning();
 
     s_expr_allocator_t alloc = {
         .malloc      = bump_malloc,
@@ -267,6 +344,15 @@ int main(void) {
                 tud_cdc_write(buf, n);
                 tud_cdc_write_flush();
             }
+        }
+
+        // Deferred reboot for L0 commissioning. Wait until the requested time
+        // has passed AND the TX ring is empty so the OP_COMMISSION_REPLY frame
+        // (and any logs) actually leave the dongle before USB renegotiates.
+        if (g_reboot_at_ms != 0 && (int32_t)(board_millis() - g_reboot_at_ms) >= 0) {
+            tud_cdc_write_flush();
+            NVIC_SystemReset();
+            // not reached
         }
     }
 }

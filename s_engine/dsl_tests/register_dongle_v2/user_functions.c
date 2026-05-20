@@ -24,7 +24,10 @@ void send_register(
 ) {
     (void)inst; (void)params; (void)param_count;
     (void)event_type; (void)event_id; (void)event_data;
-    printf("[REGISTER] chip_uid=0123456789ABCDEF0011223344556677  vid:pid=2886:802F  fw=0.0.1\n");
+    // Mirrors the SAMD21 v2 payload — class_id stubbed until kb_build delivers class_ids.h.
+    printf("[REGISTER] v=2 class_id=0xDEADBEEF instance_id=0 state=UNCOMMISSIONED "
+           "chip_uid=0123456789ABCDEF0011223344556677 vid:pid=2886:802F "
+           "fw=0x00010000 (v1.0.0) build_date=20260519\n");
     fflush(stdout);
 }
 
@@ -61,6 +64,70 @@ void send_pong(
     (void)inst; (void)params; (void)param_count;
     (void)event_type; (void)event_id; (void)event_data;
     printf("[PONG]      seq=%u  (responding to OP_PING)\n", g_pong_seq++);
+    fflush(stdout);
+}
+
+// ----------------------------------------------------------------------------
+// o_call inside L1_DONE/OPERATIONAL event_dispatch — fires on OP_GET_MANIFEST.
+// Mocks the byte-level work: emits a single printed line summarizing what the
+// SAMD21 firmware would have put on the wire.
+// ----------------------------------------------------------------------------
+static const char MANIFEST_SCHEMA_STR[] =
+    "manifest_v1:schema_hash:u32,firmware_version:u32,m2s_count:u8,m2s_ops:u16[]";
+
+static uint32_t manifest_schema_hash(void) {
+    static uint32_t cached = 0;
+    static uint8_t  computed = 0;
+    if (!computed) {
+        uint32_t h = 0x811C9DC5U;
+        for (const char* p = MANIFEST_SCHEMA_STR; *p; p++) {
+            h ^= (uint32_t)(uint8_t)*p;
+            h *= 0x01000193U;
+        }
+        cached = h;
+        computed = 1;
+    }
+    return cached;
+}
+
+void send_manifest_reply(
+    s_expr_tree_instance_t* inst,
+    const s_expr_param_t* params,
+    uint16_t param_count,
+    s_expr_event_type_t event_type,
+    uint16_t event_id,
+    void* event_data
+) {
+    (void)inst; (void)params; (void)param_count;
+    (void)event_type; (void)event_id; (void)event_data;
+    printf("[MANIFEST]  schema_hash=0x%08X  fw=0x00010000 (v1.0.0)  m2s=[0x0103,0x0104,0x0107,0x0108]\n",
+           manifest_schema_hash());
+    fflush(stdout);
+}
+
+// ----------------------------------------------------------------------------
+// o_call default action of every event_dispatch — emits NAK with rejected_cmd.
+// Same filter rules as the SAMD21 implementation.
+// ----------------------------------------------------------------------------
+void send_nak(
+    s_expr_tree_instance_t* inst,
+    const s_expr_param_t* params,
+    uint16_t param_count,
+    s_expr_event_type_t event_type,
+    uint16_t event_id,
+    void* event_data
+) {
+    (void)inst; (void)params; (void)param_count;
+    (void)event_type; (void)event_data;
+    if (event_id < 0x0100u) return;          // SE_EVENT_TICK + s2m range
+    if (event_id >= 0xFE00u) return;         // internal events + SE_EVENT_INIT/TERMINATE
+    const char* reason;
+    if (event_id == 0x0105u || event_id == 0x0106u) {
+        reason = "err_unsupported_cmd";
+    } else {
+        reason = "err_state";
+    }
+    printf("[NAK]       reason=%s rejected_cmd=0x%04X\n", reason, event_id);
     fflush(stdout);
 }
 

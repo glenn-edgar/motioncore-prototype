@@ -91,6 +91,9 @@ APP_SRCS := \
   $(HERE)/main.c \
   $(HERE)/usb_descriptors.c \
   $(HERE)/user_functions.c \
+  $(HERE)/flash_storage.c \
+  $(HERE)/shell_commands.c \
+  $(HERE)/samd21_commands.c \
   $(HERE)/register_dongle_v2_module_rom.c
 
 LIBCOMM_SRCS := \
