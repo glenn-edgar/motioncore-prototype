@@ -1436,11 +1436,34 @@ git; rsync'd from WSL). To build an RA4M1 app: rsync the app dir to
 `ssh robot 'cd … && make BOARD=xiao_ra4m1'`; flash via raflash (Renesas boot
 mode = hold BOOT during USB power-up).
 
-### ⚠ Session TODO (2026-05-21) — before wrapping tonight
+### Dongle commissioning + registry — 2026-05-21
 
-**Flash both SAMD21 register_dongle chips** with rebuilt firmware. Their
-`class_id` stub was changed `0xDEADBEEF` → `0x5E588873` (FNV-1a-32 of
-"motioncore.dongle.register.samd21.v1") so SAMD21 vs RA4M1 dongles are
-distinguishable on the wire. The edit is in
-`samd21/apps/register_dongle/user_functions.c`; needs a SAMD21 rebuild +
-UF2 reflash of both dongles.
+Both SAMD21 register_dongle dongles reflashed (new `class_id 0x5E588873`); all
+three dongles now commissioned to unique identities:
+
+| chip_uid | class_id | instance_id |
+|---|---|---|
+| `0B26…574B` RA4M1  | `0x281A0BA4` | 1 |
+| `508880F7…` SAMD21 | `0x5E588873` | 1 |
+| `2667118A…` SAMD21 | `0x5E588873` | 2 |
+
+Identity is the **(class_id, instance_id) pair** — instance numbering is
+per-class, so the two `instance_id=1`s (RA4M1 + a SAMD21) do not collide.
+
+**`commission.lua` v2** (`linux/usb_commission/`):
+- `--class <id>` selection — scans ACM ports, reads `OP_REGISTER`, matches
+  class_id. PID-agnostic (works across chip families); assumes ≤1 dongle per
+  class_id on the bus.
+- registry read/write — `--set`/`--clear` keep the registry in sync;
+  `--registry PATH` (default: next to the script).
+- uniqueness guard — `--set` refuses a duplicate `(class_id, instance_id)`
+  unless `--force`.
+
+**`linux/dongle_registry.lua`** — new: the instance roster, `chip_uid`-keyed,
+machine-maintained by commission.lua; the Linux driver loads it to recognise an
+attached dongle from its `OP_REGISTER`.
+
+Bench note: `commission.lua` + its registry run on the Pi at `~/usb_commission/`
+(rsync'd from `linux/`). The two SAMD21 USB serials are a hardcoded dummy
+(`0123456789ABCDEF`) — future fix in the SAMD21 `usb_descriptors.c` to read the
+real chip UID, as the RA4M1 already does.

@@ -9,15 +9,22 @@
 -- issuer.
 --
 -- Usage:
---   luajit commission.lua --status                  # show current state from REGISTER
---   luajit commission.lua --set 42                  # commission with instance_id=42
---   luajit commission.lua --clear                   # factory reset (instance_id=0)
+--   luajit commission.lua --class <id> --status    # show REGISTER + registry state
+--   luajit commission.lua --class <id> --set N     # commission with instance_id=N
+--   luajit commission.lua --class <id> --clear     # factory reset (instance_id=0)
+--
+-- The dongle is selected by class_id (--class). class_id is carried in
+-- OP_REGISTER, so selection works regardless of chip family / USB PID. This
+-- assumes at most one dongle per class_id is on the bus. --port / --serial /
+-- --vid-pid remain for explicit selection. See --help.
+--
+-- --set and --clear keep dongle_registry.lua (the instance roster) in sync,
+-- and --set refuses a duplicate (class_id, instance_id) unless --force.
 --
 -- Both --set and --clear trigger a dongle reboot. The tool waits for the
 -- OP_COMMISSION_REPLY frame and exits; the dongle re-enumerates within ~2 s.
--- Re-run --status after re-enumeration to verify.
 --
--- Re-commissioning is two-step per spec: CLEAR, then re-attach, then SET.
+-- Re-commissioning is two-step per spec: --clear, then --set.
 -- ============================================================================
 
 local ffi = require("ffi")
@@ -315,42 +322,160 @@ local function wait_for(fd, predicate, timeout_ms)
 end
 
 -- ============================================================================
+-- Dongle registry — the instance roster (chip_uid -> {class_id,instance_id,role}).
+-- Loaded/regenerated as a plain Lua data file. --set upserts a row, --clear
+-- drops one. Machine-maintained: the file is rewritten whole, sorted by
+-- chip_uid, so it never drifts from what the tool actually committed.
+-- ============================================================================
+local REGISTRY_HEADER = [[-- dongle_registry.lua — motioncore dongle instance registry
+--
+-- Roster of physical dongles known to the Linux side: one row per commissioned
+-- dongle, keyed by chip_uid (the immutable 32-hex factory unique id).
+--
+-- MACHINE-MAINTAINED by commission.lua — --set adds/updates a row, --clear
+-- removes one. Do not hand-edit; re-run the tool instead.
+--
+-- Row fields:  class_id (u32)   instance_id (u32)   role (string)
+
+return {
+]]
+
+-- Load the registry table from a Lua data file. Missing/garbage file -> {}.
+-- The chunk runs in an empty environment — it is pure data, no globals needed.
+local function registry_load(path)
+    local f = io.open(path, "r")
+    if not f then return {} end
+    local src = f:read("*a"); f:close()
+    local chunk = loadstring(src, "@" .. path)
+    if not chunk then return {} end
+    setfenv(chunk, {})
+    local ok, tbl = pcall(chunk)
+    if not ok or type(tbl) ~= "table" then return {} end
+    return tbl
+end
+
+-- Rewrite the registry file from the in-memory table, rows sorted by chip_uid.
+local function registry_save(path, tbl)
+    local keys = {}
+    for k in pairs(tbl) do keys[#keys + 1] = k end
+    table.sort(keys)
+    local parts = { REGISTRY_HEADER }
+    for _, uid in ipairs(keys) do
+        local row = tbl[uid]
+        parts[#parts + 1] = string.format(
+            '  [%q] = { class_id = 0x%s, instance_id = %d, role = %q },\n',
+            uid, bit.tohex(row.class_id):upper(), row.instance_id, row.role or "bench")
+    end
+    parts[#parts + 1] = "}\n"
+    local f = io.open(path, "w")
+    if not f then die("cannot write registry: %s", path) end
+    f:write(table.concat(parts))
+    f:close()
+end
+
+-- Return the conflicting chip_uid if (class_id, instance_id) is already held by
+-- a DIFFERENT chip, else nil.
+local function registry_conflict(tbl, class_id, instance_id, self_uid)
+    for uid, row in pairs(tbl) do
+        if uid ~= self_uid and row.class_id == class_id
+           and row.instance_id == instance_id then
+            return uid
+        end
+    end
+    return nil
+end
+
+-- ============================================================================
+-- class_id-based discovery. class_id is only on the wire (OP_REGISTER), not in
+-- the USB descriptor — so scan every ACM port, read one REGISTER, match. The
+-- "one dongle per class_id on the bus" rule makes the match unambiguous.
+-- ============================================================================
+local function discover_by_class(target_class)
+    local found = {}
+    for _, p in ipairs(list_acm()) do
+        local fd = C.open(p, bit.bor(O_RDWR, O_NOCTTY))
+        if fd >= 0 then
+            local tio = ffi.new("struct termios")
+            if C.tcgetattr(fd, tio) == 0 then
+                C.cfmakeraw(tio)
+                C.cfsetspeed(tio, B115200)
+                tio.c_cc[VMIN], tio.c_cc[VTIME] = 0, 0
+                if C.tcsetattr(fd, TCSANOW, tio) == 0 then
+                    local rf = wait_for(fd, function(f) return f.cmd == OP_REGISTER end, 1500)
+                    if rf then
+                        local reg = parse_register(rf.payload)
+                        if reg and reg.class_id == target_class then
+                            found[#found + 1] = { path = p, reg = reg }
+                        end
+                    end
+                end
+            end
+            C.close(fd)
+        end
+    end
+    return found
+end
+
+-- ============================================================================
 -- Argument parsing
 -- ============================================================================
+local function script_dir()
+    local p = arg[0] or ""
+    return p:match("^(.*)/") or "."
+end
+
 local function parse_args(argv)
     local opts = { vid = "2886", pid = "802f", action = nil }
     local i = 1
     while i <= #argv do
         local a = argv[i]
-        if     a == "--port"    then i = i + 1; opts.port = argv[i]
-        elseif a == "--serial"  then i = i + 1; opts.serial = argv[i]
-        elseif a == "--vid-pid" then
+        if     a == "--port"     then i = i + 1; opts.port = argv[i]
+        elseif a == "--serial"   then i = i + 1; opts.serial = argv[i]
+        elseif a == "--vid-pid"  then
             i = i + 1
             local v, p = (argv[i] or ""):match("^(%x+):(%x+)$")
             if not v then die("--vid-pid expects VVVV:PPPP") end
             opts.vid, opts.pid = v:lower(), p:lower()
-        elseif a == "--set"     then
+        elseif a == "--class"    then
+            i = i + 1
+            local c = tonumber(argv[i] or "")
+            if not c then die("--class expects a class_id (e.g. 0x5E588873)") end
+            opts.class = bit.bor(c, 0)   -- normalise to parse_register's 32-bit form
+        elseif a == "--registry" then i = i + 1; opts.registry = argv[i]
+        elseif a == "--role"     then i = i + 1; opts.role = argv[i]
+        elseif a == "--force"    then opts.force = true
+        elseif a == "--set"      then
             i = i + 1
             opts.action = "set"
             opts.instance_id = tonumber(argv[i])
             if not opts.instance_id or opts.instance_id < 1 or opts.instance_id > 0xFFFFFFFF then
                 die("--set expects a non-zero u32 instance_id")
             end
-        elseif a == "--clear"   then opts.action = "clear"
-        elseif a == "--status"  then opts.action = "status"
+        elseif a == "--clear"    then opts.action = "clear"
+        elseif a == "--status"   then opts.action = "status"
         elseif a == "--help" or a == "-h" then
             io.write([[
 commission.lua — L0 commissioning tool for motioncore dongles
 
 Usage:
-  luajit commission.lua --status                  # show current REGISTER state
-  luajit commission.lua --set N                   # commission with instance_id=N
-  luajit commission.lua --clear                   # factory reset
+  luajit commission.lua --class <id> --status     # show REGISTER + registry state
+  luajit commission.lua --class <id> --set N      # commission with instance_id=N
+  luajit commission.lua --class <id> --clear      # factory reset
 
-Options:
+Dongle selection (one required; --class is preferred):
+  --class <id>        select the attached dongle by class_id (e.g. 0x5E588873).
+                      Assumes at most one dongle per class_id on the bus.
   --port PATH         explicit ACM path
   --serial SERIAL     match by USB serial string
-  --vid-pid VVVV:PPPP  override VID:PID filter (default 2886:802f)
+  --vid-pid VVVV:PPPP match by USB VID:PID (default 2886:802f)
+
+Registry:
+  --registry PATH     dongle registry file (default: dongle_registry.lua next
+                      to this script). --set / --clear keep it in sync.
+  --role STR          role tag for the registry row on --set (default "bench";
+                      an existing row's role is kept if --role is omitted).
+  --force             allow --set even if (class_id, instance_id) is already
+                      held by another chip in the registry.
 ]])
             os.exit(0)
         else
@@ -359,22 +484,56 @@ Options:
         i = i + 1
     end
     if not opts.action then die("one of --status / --set N / --clear is required") end
+    opts.registry = opts.registry or (script_dir() .. "/dongle_registry.lua")
     return opts
 end
 
 -- ============================================================================
 -- Action handlers
 -- ============================================================================
-local function action_status(fd)
-    io.write("Waiting for OP_REGISTER (3 s timeout)...\n")
+
+-- Read one OP_REGISTER off an open fd (the dongle emits it in BOOT, and a fresh
+-- host attach resets it to BOOT). Dies if none arrives.
+local function read_register(fd, what)
     local frame, err = wait_for(fd, function(f) return f.cmd == OP_REGISTER end, 3000)
-    if not frame then die("no REGISTER frame: %s", err) end
+    if not frame then die("no OP_REGISTER frame%s: %s", what and (" " .. what) or "", err) end
     local r, perr = parse_register(frame.payload)
     if not r then die(perr) end
-    io.write("REGISTER:  " .. fmt_register(r) .. "\n")
+    return r
 end
 
-local function action_set(fd, instance_id)
+local function action_status(fd, opts)
+    io.write("Waiting for OP_REGISTER (3 s timeout)...\n")
+    local r = read_register(fd)
+    io.write("REGISTER:  " .. fmt_register(r) .. "\n")
+    local row = registry_load(opts.registry)[r.chip_uid]
+    if row then
+        io.write(string.format("registry:  listed — class 0x%s instance_id %d role %q\n",
+            bit.tohex(row.class_id):upper(), row.instance_id, row.role or "?"))
+        if row.instance_id ~= r.instance_id then
+            io.write("           WARNING: registry instance_id differs from the dongle\n")
+        end
+    else
+        io.write("registry:  not listed\n")
+    end
+end
+
+local function action_set(fd, opts)
+    local instance_id = opts.instance_id
+    -- Identify the dongle (chip_uid, class_id) before committing anything.
+    io.write("Reading OP_REGISTER...\n")
+    local r = read_register(fd, "before --set")
+    io.write("  " .. fmt_register(r) .. "\n")
+
+    -- Uniqueness guard: refuse a (class_id, instance_id) already held elsewhere.
+    local reg_tbl = registry_load(opts.registry)
+    local clash = registry_conflict(reg_tbl, r.class_id, instance_id, r.chip_uid)
+    if clash and not opts.force then
+        die("instance_id %d is already held by class 0x%s on chip %s\n" ..
+            "         re-commission that dongle, choose another instance_id, or pass --force",
+            instance_id, bit.tohex(r.class_id):upper(), clash)
+    end
+
     io.write(string.format("Sending OP_COMMISSION_SET instance_id=%d...\n", instance_id))
     send_m2s(fd, OP_COMMISSION_SET, {
         bit.band(instance_id, 0xFF),
@@ -389,42 +548,90 @@ local function action_set(fd, instance_id)
     if not frame then die("no reply: %s", err) end
     if frame.cmd == OP_NAK then
         local n = parse_nak(frame.payload)
+        if n.reason == 1 then
+            die("NAK err_state — the dongle is already COMMISSIONED; run --clear first")
+        end
         die("NAK reason=%s(%d) rejected_cmd=0x%04X", NAK_REASONS[n.reason] or "?", n.reason, n.rejected_cmd)
     end
-    local r = parse_commission_reply(frame.payload)
+    local rep = parse_commission_reply(frame.payload)
     io.write(string.format("COMMISSION_REPLY:  stored_instance_id=%d (0x%s)  status=%d (%s)\n",
-        r.stored_instance_id, bit.tohex(r.stored_instance_id):upper(),
-        r.status, r.status == 0 and "ok" or "flash_write_failed"))
-    io.write("Dongle is rebooting. Re-attach in ~2 s; then run --status to verify.\n")
+        rep.stored_instance_id, bit.tohex(rep.stored_instance_id):upper(),
+        rep.status, rep.status == 0 and "ok" or "flash_write_failed"))
+    if rep.status ~= 0 then die("dongle flash write failed — registry NOT updated") end
+
+    -- Commit succeeded — upsert the registry row.
+    local existing = reg_tbl[r.chip_uid]
+    local role = opts.role or (existing and existing.role) or "bench"
+    reg_tbl[r.chip_uid] = { class_id = r.class_id, instance_id = instance_id, role = role }
+    registry_save(opts.registry, reg_tbl)
+    io.write(string.format("registry:  %s -> class 0x%s instance_id %d role %q  (%s)\n",
+        r.chip_uid, bit.tohex(r.class_id):upper(), instance_id, role, opts.registry))
+    io.write("Dongle is rebooting. Re-attach in ~2 s; --status to verify.\n")
 end
 
-local function action_clear(fd)
+local function action_clear(fd, opts)
+    -- Identify the dongle first so the right registry row is dropped.
+    io.write("Reading OP_REGISTER...\n")
+    local r = read_register(fd, "before --clear")
+    io.write("  " .. fmt_register(r) .. "\n")
+
     io.write("Sending OP_COMMISSION_CLEAR (factory reset)...\n")
     send_m2s(fd, OP_COMMISSION_CLEAR, {})
     io.write("Waiting for OP_COMMISSION_REPLY (5 s timeout)...\n")
     local frame, err = wait_for(fd, function(f) return f.cmd == OP_COMMISSION_REPLY end, 5000)
     if not frame then die("no reply: %s", err) end
-    local r = parse_commission_reply(frame.payload)
+    local rep = parse_commission_reply(frame.payload)
     io.write(string.format("COMMISSION_REPLY:  stored_instance_id=%d  status=%d (%s)\n",
-        r.stored_instance_id, r.status, r.status == 0 and "ok" or "flash_write_failed"))
-    io.write("Dongle is rebooting. Re-attach in ~2 s; then run --status to verify.\n")
+        rep.stored_instance_id, rep.status, rep.status == 0 and "ok" or "flash_write_failed"))
+    if rep.status ~= 0 then die("dongle flash write failed — registry NOT updated") end
+
+    -- Commit succeeded — drop the registry row.
+    local reg_tbl = registry_load(opts.registry)
+    if reg_tbl[r.chip_uid] then
+        reg_tbl[r.chip_uid] = nil
+        registry_save(opts.registry, reg_tbl)
+        io.write(string.format("registry:  dropped %s  (%s)\n", r.chip_uid, opts.registry))
+    end
+    io.write("Dongle is rebooting. Re-attach in ~2 s; --status to verify.\n")
 end
 
 -- ============================================================================
 -- Entry
 -- ============================================================================
 local opts = parse_args(arg)
-local matches = discover(opts)
-if #matches == 0 then die("no dongle matches filter (vid:pid=%s:%s)", opts.vid, opts.pid) end
-if #matches > 1 then die("%d devices match — specify --port or --serial", #matches) end
 
-local info = matches[1]
-io.write(string.format("commission: opening %s (vid:pid=%s:%s serial=%s)\n",
-    info.path, info.idVendor or "?", info.idProduct or "?", info.serial or "?"))
-local fd = open_raw(info.path)
+local port
+if opts.class then
+    io.write(string.format("scanning ACM ports for class_id 0x%s...\n",
+        bit.tohex(opts.class):upper()))
+    local found = discover_by_class(opts.class)
+    if #found == 0 then
+        die("no dongle reporting class_id 0x%s found on any ACM port",
+            bit.tohex(opts.class):upper())
+    end
+    if #found > 1 then
+        local ps = {}
+        for _, m in ipairs(found) do ps[#ps + 1] = m.path end
+        die("%d dongles report class_id 0x%s (%s) — only one per class_id allowed on the bus",
+            #found, bit.tohex(opts.class):upper(), table.concat(ps, ", "))
+    end
+    port = found[1].path
+    io.write(string.format("commission: matched %s  (chip_uid=%s instance_id=%d)\n",
+        port, found[1].reg.chip_uid, found[1].reg.instance_id))
+else
+    local matches = discover(opts)
+    if #matches == 0 then die("no dongle matches filter (vid:pid=%s:%s)", opts.vid, opts.pid) end
+    if #matches > 1 then die("%d devices match — narrow with --port / --serial / --class", #matches) end
+    port = matches[1].path
+    io.write(string.format("commission: opening %s (vid:pid=%s:%s serial=%s)\n",
+        matches[1].path, matches[1].idVendor or "?", matches[1].idProduct or "?",
+        matches[1].serial or "?"))
+end
 
-if     opts.action == "status" then action_status(fd)
-elseif opts.action == "set"    then action_set(fd, opts.instance_id)
-elseif opts.action == "clear"  then action_clear(fd) end
+local fd = open_raw(port)
+
+if     opts.action == "status" then action_status(fd, opts)
+elseif opts.action == "set"    then action_set(fd, opts)
+elseif opts.action == "clear"  then action_clear(fd, opts) end
 
 C.close(fd)
