@@ -1333,3 +1333,57 @@ it kept on a USB tree without power-hungry peers (the SSD-brownout gotcha).
 4. `memory/app_shell_general_layer_done_2026-05-20.md` — the `chip_commands_table()` extension pattern RA4M1 plugs into
 5. `samd21/apps/register_dongle/README.md` — the reference implementation to mirror
 6. `memory/gpio_specific_layer_done_2026-05-20.md` + `dac_adc_specific_layer_done_2026-05-20.md` + `pwm_counter_done_2026-05-20.md` — what the chip command layer looks like
+
+---
+
+### RA4M1 progress — 2026-05-20 (s_engine M-port + libcomm verified on hardware)
+
+Three RA4M1 apps built, flashed, and **verified on real hardware** — full
+findings in `memory/ra4m1_bringup_2026-05-20.md`:
+
+| App | Proves | Result |
+|---|---|---|
+| `ra4m1/apps/hello_cdc` | toolchain → TinyUSB+FSP → flash → run | CDC enumerates, 1 Hz counter |
+| `ra4m1/apps/blink_engine` | s_engine M-port on Cortex-M4 | chain ROM reused byte-for-byte from SAMD21; node dispatches in lockstep |
+| `ra4m1/apps/blink_frame` | libcomm SLIP+CRC framing on Cortex-M4 | 12/12 CRC OK, frames round-trip |
+
+Committed: `13e1684` is the tip of this work.
+
+**Corrections to the prior (now-stale) notes above:**
+- The app-build-system question is RESOLVED. Apps DO build outside the
+  vendored tree: `ra4m1/apps/<name>/Makefile` includes TinyUSB's make system;
+  app sources live in `src/`, out-of-tree sources (s_engine runtime, libcomm)
+  resolve via `vpath`. One needed flag: `CFLAGS += -Wno-error` (don't gate our
+  code on TinyUSB's strict -Werror). No hand-rolled Makefile required.
+- **Flashing**: the Arduino DFU route needs a *cooperating* app (1200-baud
+  touch); for a non-cooperating app, flash via the **Renesas USB Boot ROM**
+  (`045b:0261`, hold BOOT during USB power-up) with `raflash` — `erase` then
+  `write` to 0x4000. Both routes detailed in the ra4m1_bringup memory.
+- Two latent s_engine runtime bugs fixed (missing `#include`s, surfaced by the
+  RA toolchain's -Werror) — shared code, SAMD21-safe, already committed.
+
+### How to start tomorrow — step 3b: port `register_dongle` to the RA4M1
+
+**Bench prep:** put the Pi on **wired ethernet** if possible — WiFi dropped
+constantly on 2026-05-20 and cost real time. If WiFi stays, keep a long-lived
+SSH session open for long-running commands (captures / builds).
+
+The work: port `samd21/apps/register_dongle/` → `ra4m1/apps/register_dongle/`
+— the full dongle firmware (~2000 lines). Scope reuse-vs-chip-specific first
+(dialog before scaffolding), then build.
+
+- **Reused byte-for-byte:** the chain ROM (`register_dongle_v2_module_rom.c`),
+  most `user_functions.c` chain handlers, the general shell layer
+  (`shell_commands.{c,h}`).
+- **New / chip-specific:** `flash_storage` rewritten for the RA4M1's 8 KB Data
+  Flash, `firmware_get_sysinfo` RA4M1 impl, chip-UID read, and a
+  1200-baud-touch handler so the easy DFU route stays available.
+- **Build:** extend the `blink_frame` Makefile pattern; flash via raflash.
+
+**After 3b:** step 4 is `ra4m1_commands.c` — the analytical-HIL command set.
+The slave/dongle HIL pin map is filed in `memory/ra4m1_pin_map.md`; its first
+task is verifying the D9/D10 encoder routing against the XIAO schematic.
+
+**Cold-start reading order:** `memory/MEMORY.md` → `ra4m1_bringup_2026-05-20`
+→ `feedback_design_dialog_style` → `samd21/apps/register_dongle/README.md`
+(the reference implementation to mirror).
