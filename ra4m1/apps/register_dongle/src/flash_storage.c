@@ -60,8 +60,10 @@ static const flash_cfg_t g_flash_cfg = {
     // p_extend / ipl / irq: zero-init — unused in blocking mode.
 };
 
-// Open the driver lazily on first write. Read is a plain memory-mapped access
-// and needs no open, so the boot-time flash_storage_read() path stays cheap.
+// Open the FSP flash driver (idempotent — the static flag means repeat calls
+// are cheap). BOTH the write and the read path need this: the RA4M1 data
+// flash is memory-mapped, but a read returns reliable data only after
+// R_FLASH_LP_Open has configured the flash interface (see flash_storage_read).
 static bool ensure_open(void) {
     static bool opened = false;
     if (!opened) {
@@ -86,6 +88,16 @@ static bool slot_valid(const slot_t* s) {
 }
 
 bool flash_storage_read(commission_blob_t* out) {
+    // The data flash is read through the memory map, but only returns reliable
+    // data after the FSP flash driver has configured the flash interface
+    // (R_FLASH_LP_Open) — the same setup the write path performs. A read
+    // before Open (the boot-time commissioning load is the case that matters)
+    // returns indeterminate data: register_dongle bring-up 2026-05-21 hit
+    // exactly this — a freshly committed blob read back blank across a reboot
+    // until Open ran first.
+    if (!ensure_open()) {
+        return false;
+    }
     const slot_t* a = slot_at(SLOT_A_ADDR);
     const slot_t* b = slot_at(SLOT_B_ADDR);
     bool va = slot_valid(a);

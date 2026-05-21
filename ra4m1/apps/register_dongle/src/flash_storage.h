@@ -44,8 +44,9 @@ typedef struct {
 
 // Read the latest valid commissioning blob from data flash. Returns true and
 // populates *out if a valid slot exists; returns false on factory-fresh
-// hardware (both slots erased) and leaves *out untouched. Read is a plain
-// memory-mapped access — no FSP driver open required.
+// hardware (both slots erased), and also false if the FSP flash driver fails
+// to open — the RA4M1 data flash is only reliably readable after
+// R_FLASH_LP_Open has configured the flash interface, so this opens it first.
 bool flash_storage_read(commission_blob_t* out);
 
 // Atomically write a new commissioning blob. Picks the inactive slot, erases

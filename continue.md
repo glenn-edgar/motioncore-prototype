@@ -1390,49 +1390,57 @@ task is verifying the D9/D10 encoder routing against the XIAO schematic.
 
 ---
 
-### RA4M1 register_dongle (step 3b) — BUILDS GREEN on Pi — 2026-05-21
+### RA4M1 register_dongle (step 3b) — HARDWARE-VERIFIED — 2026-05-21
 
-`ra4m1/apps/register_dongle/` complete (21 files) and **builds green** on the
-Pi — `make BOARD=xiao_ra4m1` → `register_dongle.bin`, text 34765 + data 120 B
-flash, bss 9624 B RAM. One bring-up fix: added `src/r_flash_lp_cfg.h`, the FSP
-`r_flash_lp` module config header the Smart Configurator generates (the
-hand-made `xiao_ra4m1` board lacked it). **Not yet hardware-verified.** Full
-detail in the app `README.md`.
+`ra4m1/apps/register_dongle/` complete (22 files) and **fully verified on the
+XIAO RA4M1**. Builds on the Pi (`make BOARD=xiao_ra4m1` → `register_dongle.bin`,
+~34.9 KB flash), flashed via raflash.
 
-**Design decisions locked in dialog (this session):**
-- flash_storage → FSP `r_flash_lp` HAL · dedicated 8 KB data flash (0x40100000)
-  · dual-slot rotation kept (logic ports unchanged; slots 2 KB apart)
-- 1200-baud-touch DFU handler added (`tud_cdc_line_coding_cb`)
-- `user_functions.c` → per-chip copy (decision (a)); 3 chip spots adapted —
-  UID via `R_BSP_UniqueIdGet()`, `toggle_led` is a liveness counter (LED pin
-  still unverified, same as blink_frame), `REGISTER_PID` = 0x0053
+Verified end-to-end on hardware:
+- boots, USB-CDC enumerates `2886:0053`; s_engine M-port runs the
+  register_dongle_v2 chain; libcomm SLIP+CRC framing (all CRCs ok)
+- L0 commissioning — `flash_storage.c` on the FSP `r_flash_lp` data flash;
+  `instance_id=1` persists across a reboot AND a code-flash reflash
+- four-layer sync ladder BOOT → L1_DONE → L2 → OPERATIONAL; manifest
+  `schema_hash=0x80AEB146` (identical to SAMD21 → reused chain ROM byte-correct)
+- app-shell `CMD_ECHO` + `CMD_SYSINFO` round-trip; heartbeats in OPERATIONAL
+- chip UID via `R_BSP_UniqueIdGet()`; class_id = FNV-1a `0x281A0BA4`
 
-**Reused byte-for-byte from SAMD21:** `register_dongle_v2*`,
-`shell_commands.{c,h}`, `vendor/libcomm/`. s_engine runtime via `vpath`.
-**New/rewritten:** `main.c`, `user_functions.c`, `flash_storage.{c,h}`,
-`usb_descriptors.c`, `tusb_config.h`, `ra4m1_commands.c` (NULL stub — step 4),
-`Makefile`.
+Two bring-up fixes (committed):
+- `src/r_flash_lp_cfg.h` — FSP `r_flash_lp` module config header the Smart
+  Configurator generates; the hand-made `xiao_ra4m1` board lacked it.
+- `flash_storage_read` must `R_FLASH_LP_Open` before reading the data flash —
+  a read before Open returns indeterminate data. The write path worked (it
+  opens the driver); the boot-time commissioning load did not, so a dongle
+  that reported `COMMISSION_SET ok` still booted UNCOMMISSIONED. FSP contract:
+  Open, *then* memory-mapped read.
 
-FSP-integration unknowns RESOLVED by the green build: `r_flash_lp` wiring
-(compiles+links once), `flash_cfg_t` (no `irq` assert), `R_BSP_UniqueIdGet` /
-`bsp_unique_id_t`, the FSP linker symbols (all 7 resolve), the `bsp_api.h`
-header name. Two items remain — both runtime/bench-only:
-  * data-flash erase-block size — exercised by a commission set/clear cycle
-    (2 KB slot spacing de-risks it)
-  * the Seeed DFU magic in `main.c` (`DFU_DOUBLE_TAP_*`) is still a PLACEHOLDER
-    — the 1200-baud touch resets but won't enter DFU until it's read off the
-    XIAO RA4M1 bootloader source
+**Build/flash decisions** (locked in dialog): flash_storage → FSP `r_flash_lp`,
+8 KB data flash @0x40100000, dual-slot (slots 2 KB apart); `user_functions.c`
+is a per-chip copy; reused byte-for-byte — `register_dongle_v2*`,
+`shell_commands.{c,h}`, `vendor/libcomm/`; s_engine runtime via `vpath`.
 
-**NEXT ACTION — flash + verify on hardware** (needs the bench): put the XIAO
-in Renesas boot mode (hold BOOT during USB power-up), `raflash erase`+`write`
-at 0x4000, tap RESET, then walk the sync ladder with `dongle_console.lua` and
-run an `OP_COMMISSION_SET`/reboot/`--status`/`CLEAR` cycle (confirms data-flash
-persistence). The Pi build dir is `~/motioncore-prototype/ra4m1/apps/
-register_dongle/_build/xiao_ra4m1/register_dongle.bin`.
+Still open on register_dongle: the 1200-baud DFU magic in `main.c`
+(`DFU_DOUBLE_TAP_*`) is a placeholder — the touch resets but won't enter DFU
+until the value is read off the Seeed XIAO RA4M1 bootloader source. Flashing
+uses raflash + the BOOT button meanwhile.
 
-Note: the Pi copy at `~/motioncore-prototype/` is a build-only subset (not git;
-synced from WSL by rsync). register_dongle was rsync'd there 2026-05-21.
+**NEXT ACTION — step 4: `ra4m1_commands.c`**, the analytical-HIL command set
+(ADC/DAC/PWM/encoder). register_dongle's general layer is done; step 4 fills
+the chip command table (currently a NULL stub). First task: D9/D10 encoder
+routing vs the XIAO schematic (`memory/ra4m1_pin_map.md`).
 
-**After hardware-verified:** step 4 — `ra4m1_commands.c`, the analytical-HIL
-command set (ADC/DAC/PWM/encoder); first task is D9/D10 encoder routing vs the
-XIAO schematic (`memory/ra4m1_pin_map.md`).
+Pi build note: `~/motioncore-prototype/` on the Pi is a build-only subset (not
+git; rsync'd from WSL). To build an RA4M1 app: rsync the app dir to
+`robot:~/motioncore-prototype/ra4m1/apps/<app>/`, then
+`ssh robot 'cd … && make BOARD=xiao_ra4m1'`; flash via raflash (Renesas boot
+mode = hold BOOT during USB power-up).
+
+### ⚠ Session TODO (2026-05-21) — before wrapping tonight
+
+**Flash both SAMD21 register_dongle chips** with rebuilt firmware. Their
+`class_id` stub was changed `0xDEADBEEF` → `0x5E588873` (FNV-1a-32 of
+"motioncore.dongle.register.samd21.v1") so SAMD21 vs RA4M1 dongles are
+distinguishable on the wire. The edit is in
+`samd21/apps/register_dongle/user_functions.c`; needs a SAMD21 rebuild +
+UF2 reflash of both dongles.

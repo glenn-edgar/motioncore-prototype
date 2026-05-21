@@ -9,10 +9,12 @@ engine, the chain ROM, the general shell layer, and libcomm unchanged from the
 SAMD21 reference; only the chip layer (flash storage, sysinfo, UID, the DFU
 touch) is RA4M1-specific.
 
-> **Status (2026-05-21):** builds green on the Pi — `register_dongle.bin`,
-> ~34 KB flash / ~9.6 KB RAM. **Not yet hardware-verified** — flashing and the
-> sync-ladder walk need the bench. The FSP-integration unknowns are resolved
-> except two runtime items; see "Build status" and "Verify on hardware" below.
+> **Status (2026-05-21): hardware-verified on the XIAO RA4M1.** Boots, walks
+> the full four-layer sync ladder (BOOT → L1_DONE → L2 → OPERATIONAL),
+> commissions to the data flash with persistence across reboot *and* reflash,
+> and round-trips the general app-shell (`CMD_ECHO`, `CMD_SYSINFO`). Two bugs
+> found + fixed during bring-up — see "Hardware verification". The only item
+> still open is the 1200-baud DFU magic (placeholder; flashing uses raflash).
 
 ---
 
@@ -70,25 +72,37 @@ FSP-integration unknowns **resolved by the green build**:
   `__bss_start__/__bss_end__`, `__StackTop/__StackLimit` — all resolve.
 - The FSP umbrella header is `bsp_api.h`.
 
-## Verify on hardware
+## Hardware verification (2026-05-21)
 
-Not yet done — needs the bench. Flash, then walk the sync ladder with
-`linux/dongle_console/dongle_console.lua` (see the SAMD21 README). Two items
-can only be confirmed at runtime:
+Flashed via raflash and exercised with `commission.lua` + `dongle_console.lua`
+(both need `--vid-pid 2886:0053` — they default to the SAMD21 PID). Verified:
 
-- **Commissioning / data flash** (`flash_storage.c`) — run an
-  `OP_COMMISSION_SET` → reboot → `--status` → `OP_COMMISSION_CLEAR` cycle and
-  confirm the `instance_id` persists across reboot. This exercises the
-  data-flash erase/write and the real erase-block size (slots are 2 KB apart —
-  safe for any block ≤ 2 KB).
-- **1200-baud DFU touch** (`main.c` `DFU_DOUBLE_TAP_*`) — the magic value and
-  RAM address are still **placeholders**; the touch resets but relaunches the
-  app until they are read off the Seeed XIAO RA4M1 bootloader source. Flash via
-  the BOOT-button + `raflash` route meanwhile.
+- Boot, USB-CDC enumeration, s_engine chain, libcomm framing — all CRCs ok.
+- **L0 commissioning** — `commission.lua --set 1`, then `instance_id=1
+  state=COMMISSIONED` survives a reboot *and* a code-flash reflash (the data
+  flash is a separate region). `flash_storage.c` fully exercised.
+- **Sync ladder** — `--sync` walked BOOT → L1_DONE → L2 → OPERATIONAL;
+  `OP_MANIFEST_REPLY schema_hash=0x80AEB146` (matches the SAMD21 → the reused
+  chain ROM is byte-correct).
+- **App-shell** — `CMD_ECHO` and `CMD_SYSINFO` round-trip with `status=ok`.
+
+Two bugs found + fixed during bring-up:
+
+1. `r_flash_lp_cfg.h` missing — the FSP module config header (added in `src/`).
+2. `flash_storage_read` read the data flash *before* `R_FLASH_LP_Open`. On the
+   RA4M1 a data-flash read is reliable only after Open configures the flash
+   interface — the write path opened the driver so its verify passed, but the
+   boot-time commissioning load did not, so a successfully-written blob read
+   back blank. Fix: `flash_storage_read` opens the driver first.
+
+Still open — **1200-baud DFU touch** (`main.c` `DFU_DOUBLE_TAP_*`): the magic
+value + RAM address are **placeholders**, so the touch resets but relaunches
+the app rather than entering DFU. Flash via the BOOT-button + `raflash` route
+until the values are read off the Seeed XIAO RA4M1 bootloader source.
 
 Minor: `firmware_get_sysinfo`'s `ram_bss_b` is `__bss_end__ - __bss_start__`
-(the primary `.bss`); FSP may place extra zero-init regions outside it, so
-treat that figure as a lower bound.
+(the primary `.bss`, ~3.5 KB); FSP places other zero-init regions outside it,
+so treat that field as a lower bound.
 
 ---
 

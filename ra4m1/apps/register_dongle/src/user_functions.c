@@ -83,9 +83,12 @@ static void ra4m1_read_uid(uint8_t out[16]) {
 //   [30..33]  fw_version           (major<<16) | (minor<<8) | patch
 //   [34..37]  build_date           packed YYYYMMDD as u32 decimal
 //
-// TODO: replace stubbed class_id (0xDEADBEEF) with #include "class_ids.h" +
-//       the RA4M1 class constant once kb_build delivers the codegen output
-//       (see dongle_class_identity_2026-05-13 cross-repo handoff).
+// class_id below is an INTERIM value — FNV-1a-32 of the class-name string
+//       "motioncore.dongle.register.ra4m1.v1". The field's declared format is
+//       FNV-1a-32; this value is unique vs the SAMD21 dongle and reproducible.
+// TODO: replace with #include "class_ids.h" + the RA4M1 class constant once
+//       kb_build delivers the authoritative catalog/codegen (see
+//       dongle_class_identity_2026-05-13 cross-repo handoff).
 // ----------------------------------------------------------------------------
 #define REGISTER_PAYLOAD_LEN     38u
 #define REGISTER_PAYLOAD_VERSION 2u
@@ -94,7 +97,7 @@ static void ra4m1_read_uid(uint8_t out[16]) {
 #define REGISTER_FW_VERSION      0x00010000U  // v1.0.0 — matches manifest
 #define REGISTER_BUILD_DATE      20260521U    // 2026-05-21; bump on each build
 
-#define REGISTER_CLASS_ID_STUB   0xDEADBEEFU
+#define REGISTER_CLASS_ID_STUB   0x281A0BA4U  // FNV-1a "motioncore.dongle.register.ra4m1.v1"
 
 // Mutable identity — initialized at boot via register_dongle_load_commissioning(),
 // updated by handle_commission_set / handle_commission_clear (which reboot
