@@ -228,60 +228,70 @@ for the four zenoh `.so` files (libzenoh_pubsub / _rpc / _token + libzenohpico).
 These will be replaced by `vendor/lib-aarch64/` once we cross-compile for Pi.
 Override `LD_LIBRARY_PATH` in the caller env to bypass the bench default.
 
-## Resume here (KB0 built — 2026-05-20)
+## Resume here (2026-05-21)
 
-**KB0 — the connection manager — is built, compiled, and smoke-tested live.**
-It is the shared, class-independent connection lifecycle for every robot.
+**`fake_robot` runs the full lifecycle against the real controller.** This
+session shipped three plan items; `server/` now holds a working controller.
 
-**Files (committed this session):**
-- `fake_robot/chains/connection.lua` — build-time DSL for KB0.
-- `fake_robot/chains/connection.json` — compiled IR, 34 nodes.
-  Rebuild: `luajit chains/connection.lua chains/connection.json`.
-- `fake_robot/chains/connection_user_functions.lua` — `ct_*` user fns.
-- `fake_robot/main.lua` — runtime contract: drains zenoh, advances
-  `handle.timestamp`, posts `ZENOH_CONNECTED`, maintains
-  `handle.zenoh_connected` / `handle.controller_last_beat`.
+### Done this session (committed)
 
-**KB0 structure as built:**
+| Commit | What |
+|---|---|
+| `c8fb87d` | `fake_counter` app KB — multi-KB spawn / concurrent / sweep / respawn verified |
+| `ab52f9d` | `server/fleet_manager` — real controller; `bench_manager` retired |
+| `e1c3f37` | `fleet_manager` survives a `zenohd` bounce (pcall the heartbeat publish) |
+| `f1005e5` | KB0 — dropped the inert transport-recovery scope (one scope now) |
+
+### KB0 structure (current — `connection.json`, 44 nodes)
 
 ```
 outer column
-  wait_for_event("ZENOH_CONNECTED")    HALT-gate — blocks until transport up
-  verify(TEST_ZENOH_CONNECTION)        CFL_CONTINUE; fail → CFL_RESET outer column (FULL recovery)
+  wait_for_event("ZENOH_CONNECTED")   HALT boot-gate — blocks until transport up
   state_machine "protocol_sm"
-    "wait_for_ack"      ANNOUNCE_REGISTRATION → wait REGISTRATION_ACK (retry-backoff) →
-                        PUBLISH_NAMESPACE → NAMESPACE_UP_HOOK → SPAWN_APP_KBS
+    "wait_for_ack"      ANNOUNCE_REGISTRATION → wait REGISTRATION_ACK (retry-backoff)
+                        → PUBLISH_NAMESPACE → NAMESPACE_UP_HOOK → SPAWN_APP_KBS
     "verify_controller_heartbeat"  verify(TEST_CONTROLLER_HEARTBEAT) + delay + reset;
-                        fail → ERROR_CONTROLLER_LOST → back to wait_for_ack (NARROW recovery)
-  asm_halt()           terminal — KB0 runs forever
+                        fail → ERROR_CONTROLLER_LOST → back to wait_for_ack
+  asm_halt()            terminal — KB0 runs forever
 ```
 
-**Decisions locked this session:**
-- Runtime variant = **`ct_*`** (dict-based). RESOLVED — no longer open.
-  User-fn signatures: `one_shot(handle,node)`,
-  `boolean(handle,node,event_id,event_data)`,
-  `main(handle,bool_fn,node,event_id,event_data)`. Canonical reference:
-  `chain_tree_luajit/dsl_tests/incremental_binary/user_functions_dict.lua`.
-- Two layers, two recovery scopes: transport (`wait_for_zenoh` + `verify(zenoh)`)
-  vs controller (`protocol_sm`). Transport loss resets the outer column (full);
-  controller-heartbeat loss re-runs only the protocol SM (narrow, zenoh stays up).
-- Bringup (namespace publish + on_namespace_up hook + app-KB spawn) is folded
-  into KB0's protocol sequence. There is NO separate "KB1 = bringup". KB1…N are
-  purely class-specific application KBs. (Supersedes the earlier KB0/KB1/KBN split.)
+ONE recovery scope: the controller heartbeat. The 2026-05-20 design's second,
+broader transport-recovery scope (`verify(TEST_ZENOH_CONNECTION)` guarding the
+outer column) was removed — it had no detector and was redundant: a `zenohd`
+outage stops the controller heartbeat, so the controller scope already drives
+the full re-bringup, and zenoh-pico client mode reconnects on its own.
 
-**Smoke test — verified live** against `bench_manager` + a `zenohd` router:
-connect → register → namespace → operate → controller-loss → narrow recovery →
-retry-backoff → re-register → operate. NOT yet exercised: zenoh-*transport*
-full recovery (needs bouncing `zenohd`).
+KB0 spawns class application KBs from `class_spec.app_kbs` via `SPAWN_APP_KBS`
+→ `ct_runtime.add_test`; one IR (`connection.json`) carries KB0 + every app
+KB. `fake_counter` is the throwaway example app KB.
 
-**Zenoh transport — IMPORTANT.** The vendored bindings (`zenoh_pubsub`,
-`zenoh_rpc`) are **client-mode + zenohd-router only**. There is no working
-peer / no-router path — `connect()` blocks on a dead locator, and the RPC
-binding has no `listen_locators`. Bench tests need a `zenohd` router:
+### server/ — robot controller
+
+`server/fleet_manager/` is layer 20 of the eventual five (see `server/README.md`).
+Reproduces the register-RPC + heartbeat contract; adds an in-memory registry
+(`lib/registry.lua`, the seam for SQLite `registry.db` per decision #15). The
+controller is passive — no validation, no NACK (#29). `bench_manager/` retired.
+
+### Verified live (zenohd router + fleet_manager + fake_robot)
+
+- Multi-KB: KB0 spawns `fake_counter`, runs it concurrently, sweeps it on
+  controller loss, respawns on recovery.
+- Controller-loss recovery: heartbeat stops → `ERROR_CONTROLLER_LOST` →
+  re-handshake retry-backoff → re-register → respawn.
+- `zenohd` bounce: `fleet_manager` survives (transport down/up logged),
+  `fake_robot` recovers via the controller scope, `RE-REG reg#2` recorded.
+
+### Zenoh transport — IMPORTANT (unchanged)
+
+The vendored bindings (`zenoh_pubsub`, `zenoh_rpc`) are **client-mode +
+zenohd-router only** — no working peer / no-router path. Bench + container
+tests need a `zenohd` router:
 `docker run -d --name fleet-zenohd -p 7447:7447/tcp -p 7447:7447/udp eclipse/zenoh --listen tcp/0.0.0.0:7447 --listen udp/0.0.0.0:7447`
 Pi Zero 2 deploy (no containers) is an unsolved, separate problem.
 
-**Run the smoke test** (the shell may preset a Lua-5.4 `LUA_CPATH`; override it):
+### Run the end-to-end smoke test
+
+(the shell may preset a Lua-5.4 `LUA_CPATH`; override it)
 
 ```
 # 1. router (docker run … above)
@@ -292,47 +302,29 @@ ROBOT_CLASS=fake_robot ROBOT_INSTANCE=bench01 \
   LUA_CPATH="/usr/local/lib/lua/5.1/?.so;;" fake_robot/run.sh
 ```
 
-## Plan for tomorrow
+## Plan for next session
 
-KB0 is done. Tomorrow finishes the fake-robot side and opens the controller side:
+Two prior plan items remain (base architecture, container) plus follow-ups:
 
-**1. Throwaway application KB — close the loop (START HERE).**
-- KB0's `SPAWN_APP_KBS` already iterates `class_spec.app_kbs` and calls
-  `ct_runtime.add_test`. Today it spawns nothing (the list is empty).
-- Write a minimal app KB — e.g. `fake_counter`: a column that loops
-  `one_shot(PUBLISH_COUNTER) → wait_time(1.0) → reset`, publishing an
-  incrementing value on `<namespace>/counter` via `bb._pubsub`.
-- Add it to the build: a second `start_test("fake_counter")…end_test()` in the
-  `connection.lua` build script (so one IR carries both KBs); declare
-  `"fake_counter"` in `class_spec.app_kbs`; add its user fns to the registry.
-- Smoke-test: KB0 spawns it after `operating`; on controller loss
-  `ERROR_CONTROLLER_LOST`'s `kill_app_kbs` sweeps it (watch "killed N app KB(s)"
-  go to 1). Validates multi-KB operation — KB0 + a class KB concurrently,
-  spawn + sweep.
+**1. Base architecture (START HERE).** Work out how a real robot class
+composes — class-specific KBs, `class_spec`, identity, the app layer — beyond
+the `fake_counter` throwaway. Decide where `fake_robot/lib/` and `chains/`
+graduate to a shared location (decision #26 was directional). Likely first
+real class: `car_window_controller` per the CWC spec.
 
-**2. Container.** Package `fake_robot` as a container (Dockerfile + vendored
-`vendor/lua/` + `lib/`). The Pi Zero 2 runs the bare process; the container is
-the non-Pi deployment form.
+**2. Container.** Package `fake_robot` (and later `server/`) as a container —
+Dockerfile + `vendor/` + `lib/`. The Pi Zero 2 runs the bare process; the
+container is the non-Pi deployment form. `server/` is built `FROM
+nanodatacenter/luajit-base` (decision #12).
 
-**3. Base architecture.** Work out how class-specific KBs, `class_spec`,
-identity, and the app layer compose for a real robot class beyond the throwaway.
+**3. fleet_manager follow-ups.** SQLite `registry.db` (decision #15) behind
+`lib/registry.lua`; then the next controller layers (`persistence`,
+`application_logic`, `application_gateway`). Small hardening: KB0's
+`PUBLISH_NAMESPACE` does unguarded `ps:publish` calls — pcall them like
+`fake_counter` does (low risk; the transport is up right after an ACK).
 
-**4. zenoh-transport full-recovery test.** Bounce `zenohd` mid-run; confirm
-`verify(TEST_ZENOH_CONNECTION)` fails → outer column `CFL_RESET` → back through
-`wait_for_event("ZENOH_CONNECTED")` → full re-bringup.
-
-**5. Start the robot controller — begin getting off the test bench.** Stand up
-`fleet_design/server/` (currently empty) — the real fleet controller that will
-replace the throwaway `bench_manager` stub. It's intended as a multi-layer
-server. Scaffold it and reproduce the `bench_manager` contract as its first
-working layer (RPC queryable on `fleet/admin/register`, heartbeat publisher on
-`fleet/admin/heartbeat`) so `fake_robot` registers against the real controller;
-then retire `bench_manager`. This is the start of moving off the bench-only
-setup toward a real deployment shape.
-
-**First action:** read this file + the `chain_tree_dsl_runtime_model.md` memory
-(now carries the practical KB-build lessons), then design the `fake_counter`
-app KB.
+**First action:** read this file + the `chain_tree_dsl_runtime_model.md`
+memory, then design the base architecture for the first real robot class.
 
 **Reference paths (dev-machine orientation only — NOT used at runtime):**
 The runtime uses `fleet_design/vendor/lua/` exclusively (see `vendor/PROVENANCE.md`).
