@@ -80,8 +80,12 @@ local clock       = require("clock")
 local ir_path = script_dir .. "chains/connection.json"
 local ir = ct_loader.load(ir_path)
 
-local user_fns = require("connection_user_functions")
-fn_registry.register_functions(ir, builtins, user_fns.registry)
+-- KB0's user fns plus every application KB's user fns. register_functions is
+-- variadic; each registry is a { main, one_shot, boolean } table.
+local conn_fns    = require("connection_user_functions")
+local counter_fns = require("fake_counter_user_functions")
+fn_registry.register_functions(ir, builtins,
+    conn_fns.registry, counter_fns.registry)
 
 local ok, missing = fn_registry.validate(ir)
 if not ok then

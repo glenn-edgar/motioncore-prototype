@@ -39,7 +39,11 @@
 -- at the upstream DSL builder (see continue.md "Reference paths").
 local _dsl = (os.getenv("HOME") or "")
     .. "/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/chain_tree_luajit/lua_dsl/"
-package.path = _dsl .. "?.lua;" .. _dsl .. "lua_support/?.lua;" .. package.path
+-- This script's own directory — so the CLI driver can require sibling build
+-- modules (chains/fake_counter.lua) regardless of the cwd it is invoked from.
+local _self_dir = (arg and arg[0] and arg[0]:match("(.*/)")) or "./"
+package.path = _self_dir .. "?.lua;"
+    .. _dsl .. "?.lua;" .. _dsl .. "lua_support/?.lua;" .. package.path
 
 local ChainTreeMaster = require("chain_tree_master")
 
@@ -119,6 +123,14 @@ if is_cli then
     end
     local ct = ChainTreeMaster.new(arg[1])
     build_kb0(ct, KB0_NAME)
+
+    -- Application KBs build into the SAME IR — ct_runtime.add_test spawns a
+    -- KB by name from the single loaded connection.json. fake_counter is the
+    -- throwaway class KB; real classes will own their app-KB build modules
+    -- and this driver will assemble whichever the class declares.
+    local fake_counter = require("fake_counter")
+    fake_counter.build_fake_counter(ct, fake_counter.FAKE_COUNTER_NAME)
+
     ct:check_and_generate()
     print("Wrote: " .. arg[1])
     print("Total nodes: " .. ct.ctb:get_total_node_count())
