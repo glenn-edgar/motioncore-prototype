@@ -1467,3 +1467,39 @@ Bench note: `commission.lua` + its registry run on the Pi at `~/usb_commission/`
 (rsync'd from `linux/`). The two SAMD21 USB serials are a hardcoded dummy
 (`0123456789ABCDEF`) — future fix in the SAMD21 `usb_descriptors.c` to read the
 real chip UID, as the RA4M1 already does.
+
+---
+
+### Roadmap — future plans (as of 2026-05-21)
+
+**NEXT SESSION — RA4M1 step 4: `ra4m1_commands.c`.** The analytical-HIL chip
+command set (ADC / DAC / PWM / quadrature encoder). register_dongle's general
+shell layer is done + hardware-verified; `ra4m1_commands.c` is currently a NULL
+stub. First task: verify D9/D10 encoder GPT-channel routing against the XIAO
+RA4M1 schematic (`memory/ra4m1_pin_map.md`). Then implement the commands —
+follow the SAMD21 `samd21_commands.c` pattern + the `chip_commands_table()`
+plug-in point. RA4M1 is the higher-res HIL chip (14-bit ADC, 12-bit DAC,
+CMSIS-DSP) so the command set differs from the SAMD21's.
+
+**RA4M1 register_dongle loose end.** The 1200-baud DFU magic — read the real
+Seeed XIAO RA4M1 bootloader "stay-in-DFU" RAM address + value and replace the
+`DFU_DOUBLE_TAP_*` placeholders in `main.c`. Then `stty 1200` + dfu-util
+flashing works (currently raflash + the BOOT button).
+
+**SAMD21 loose end.** `usb_descriptors.c` — report the real chip UID as the USB
+serial (the RA4M1 already does); the dummy `0123456789ABCDEF` makes two SAMD21s
+indistinguishable by USB serial.
+
+**Four-chip dongle suite — the arc.** SAMD21 ✓ (reference) · RA4M1 ✓ step 3b
+(step 4 pending). Remaining ports: **RP2350**, **ESP32-C6** — each reuses the
+s_engine M-port + `register_dongle_v2` chain + general shell layer, and supplies
+its own chip layer (flash storage, sysinfo, UID, command set).
+
+**Cross-repo.** kb_build (`nano_data_center`) — deliver the `class_ids.h`
+codegen; replace the interim FNV-1a class_id stubs (RA4M1 `0x281A0BA4` / SAMD21
+`0x5E588873`) with the authoritative catalog values.
+
+**Linux side.** The operational Linux driver (mqtt_robot-based, separate tree)
+consumes `linux/dongle_registry.lua` to recognise an attached dongle from its
+`OP_REGISTER`. Possible `commission.lua` add: `--list` (scan + show every
+attached dongle's class_id / instance_id / chip_uid).
