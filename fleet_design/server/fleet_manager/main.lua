@@ -116,12 +116,22 @@ end
 -- Service loop
 -- ---------------------------------------------------------------------------
 
-local hb_seq      = 0
-local last_hb_t   = 0
-local last_summ_t = os.time()
+local hb_seq       = 0
+local last_hb_t    = 0
+local last_summ_t  = os.time()
+local transport_up = true   -- tracked so the up/down transition logs once
 
 while true do
-    service_registrations()
+    -- Servicing and publishing both touch the zenoh transport, which drops
+    -- out from under the controller when the router (zenohd) bounces. Neither
+    -- may kill the process — pcall both; the zenoh client reconnects
+    -- underneath and the next tick resumes. (The register-RPC side already
+    -- tolerates this; an unguarded heartbeat publish previously crashed the
+    -- controller on a router bounce.)
+    local ok, err = pcall(service_registrations)
+    if not ok then
+        log("register servicing error (%s) — continuing", tostring(err))
+    end
 
     local now = os.time()
 
@@ -129,7 +139,16 @@ while true do
     if now - last_hb_t >= 1 then
         last_hb_t = now
         hb_seq = hb_seq + 1
-        ps:publish(hb_token, cjson.encode({ seq = hb_seq, ts = now }))
+        local pok, perr = pcall(ps.publish, ps, hb_token,
+            cjson.encode({ seq = hb_seq, ts = now }))
+        if pok and not transport_up then
+            transport_up = true
+            log("transport recovered — heartbeat resumed (seq=%d)", hb_seq)
+        elseif not pok and transport_up then
+            transport_up = false
+            log("transport down (%s) — heartbeat paused, retrying",
+                tostring(perr))
+        end
     end
 
     -- Periodic registry summary (quiet otherwise).
