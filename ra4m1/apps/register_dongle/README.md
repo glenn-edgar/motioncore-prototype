@@ -9,11 +9,10 @@ engine, the chain ROM, the general shell layer, and libcomm unchanged from the
 SAMD21 reference; only the chip layer (flash storage, sysinfo, UID, the DFU
 touch) is RA4M1-specific.
 
-> **Status:** code complete, **not yet built or hardware-verified.** The build
-> happens on the Pi (`ssh robot`) — the WSL checkout has no cross toolchain and
-> no vendored FSP tree. Six FSP-integration details could not be confirmed from
-> WSL; they ship as `TODO-verify` markers in the code. **Resolve the checklist
-> below on the first Pi build.**
+> **Status (2026-05-21):** builds green on the Pi — `register_dongle.bin`,
+> ~34 KB flash / ~9.6 KB RAM. **Not yet hardware-verified** — flashing and the
+> sync-ladder walk need the bench. The FSP-integration unknowns are resolved
+> except two runtime items; see "Build status" and "Verify on hardware" below.
 
 ---
 
@@ -53,23 +52,43 @@ route also works: `stty -F /dev/ttyACM0 1200` → `dfu-util -a 0 -D ...`.
 
 ---
 
-## TODO-verify checklist (first Pi build)
+## Build status — green (2026-05-21)
 
-These could not be checked from WSL (the FSP tree lives only on the Pi). Each
-is marked `TODO-verify` at its site in the code.
+Builds on the Pi with `arm-none-eabi-gcc` 8.3.1: `register_dongle.bin`,
+text 34765 + data 120 B flash, bss 9624 B RAM. One fix was needed during
+bring-up — `src/r_flash_lp_cfg.h`, the FSP `r_flash_lp` module config header
+the Smart Configurator normally generates (the hand-made `xiao_ra4m1` board
+lacks it). It is checked into the app and resolved via the `src/` include path.
 
-| # | Item | Where | What to do |
-|---|------|-------|-----------|
-| 1 | FSP `r_flash_lp` build wiring | `Makefile` | Confirm `r_flash_lp.c` path + `inc/api`,`inc/instances` on the include path. If the link reports **duplicate** `r_flash_lp` symbols, the RA `family.mk` already compiles it — drop `r_flash_lp.c` from `SRC_C`. |
-| 2 | `flash_cfg_t` fields | `flash_storage.c` | If the FSP build asserts on an unset `irq`, set `.irq = FSP_INVALID_VECTOR`. |
-| 3 | Data-flash erase-block size | `flash_storage.c` | Slots are spaced 2 KB apart — robust to any block ≤ 2 KB (every real RA4M1 geometry). Only revisit if FSP reports a larger block. |
-| 4 | `R_BSP_UniqueIdGet()` accessor | `user_functions.c` | Confirm the call returns `bsp_unique_id_t*` with a `.unique_id_bytes[16]` member; adjust if the field name differs. |
-| 5 | FSP linker symbols | `main.c` `firmware_get_sysinfo` | Confirm `__etext`, `__data_start__`, `__data_end__`, `__bss_start__`, `__bss_end__`, `__StackTop`, `__StackLimit` against the FSP `fsp.ld`. |
-| 6 | Seeed bootloader DFU magic | `main.c` `DFU_DOUBLE_TAP_*` | The "stay in DFU" RAM address + magic value are **placeholders**. Read them off the Seeed XIAO RA4M1 bootloader source (or confirm empirically). Until then the 1200-baud touch resets but relaunches the app. |
+FSP-integration unknowns **resolved by the green build**:
 
-Also confirm the FSP umbrella header is named `bsp_api.h` (included by `main.c`
-and `user_functions.c` for `NVIC_SystemReset` / `SystemCoreClock` /
-`R_BSP_UniqueIdGet`); adjust if the vendored FSP uses a different name.
+- `r_flash_lp` compiles and links exactly once — no double-compile via the RA
+  `family.mk`.
+- `flash_cfg_t` designated-init compiles clean — no `irq` assert.
+- `R_BSP_UniqueIdGet()` / `bsp_unique_id_t.unique_id_bytes` are correct.
+- The FSP linker exports `__etext`, `__data_start__/__data_end__`,
+  `__bss_start__/__bss_end__`, `__StackTop/__StackLimit` — all resolve.
+- The FSP umbrella header is `bsp_api.h`.
+
+## Verify on hardware
+
+Not yet done — needs the bench. Flash, then walk the sync ladder with
+`linux/dongle_console/dongle_console.lua` (see the SAMD21 README). Two items
+can only be confirmed at runtime:
+
+- **Commissioning / data flash** (`flash_storage.c`) — run an
+  `OP_COMMISSION_SET` → reboot → `--status` → `OP_COMMISSION_CLEAR` cycle and
+  confirm the `instance_id` persists across reboot. This exercises the
+  data-flash erase/write and the real erase-block size (slots are 2 KB apart —
+  safe for any block ≤ 2 KB).
+- **1200-baud DFU touch** (`main.c` `DFU_DOUBLE_TAP_*`) — the magic value and
+  RAM address are still **placeholders**; the touch resets but relaunches the
+  app until they are read off the Seeed XIAO RA4M1 bootloader source. Flash via
+  the BOOT-button + `raflash` route meanwhile.
+
+Minor: `firmware_get_sysinfo`'s `ram_bss_b` is `__bss_end__ - __bss_start__`
+(the primary `.bss`); FSP may place extra zero-init regions outside it, so
+treat that figure as a lower bound.
 
 ---
 
@@ -85,6 +104,7 @@ register_dongle/
 │   ├── shell_commands.{c,h}      general shell layer — reused verbatim
 │   ├── ra4m1_commands.c          chip command table — NULL stub (step 4)
 │   ├── flash_storage.{c,h}       RA4M1 data-flash commissioning (FSP r_flash_lp)
+│   ├── r_flash_lp_cfg.h          FSP r_flash_lp module config (hand-written)
 │   ├── register_dongle_v2*.{c,h} DSL-generated chain ROM — reused verbatim
 │   ├── usb_descriptors.c         USB-CDC descriptors (VID 0x2886 / PID 0x0053)
 │   └── tusb_config.h             TinyUSB config

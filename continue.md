@@ -1390,11 +1390,14 @@ task is verifying the D9/D10 encoder routing against the XIAO schematic.
 
 ---
 
-### RA4M1 register_dongle (step 3b) — CODE COMPLETE, not yet built — 2026-05-21
+### RA4M1 register_dongle (step 3b) — BUILDS GREEN on Pi — 2026-05-21
 
-`ra4m1/apps/register_dongle/` scaffolded in full (20 files). **Not built or
-hardware-verified** — the WSL checkout has no cross toolchain and no vendored
-FSP tree, so the build is a Pi task. Full detail in the app's `README.md`.
+`ra4m1/apps/register_dongle/` complete (21 files) and **builds green** on the
+Pi — `make BOARD=xiao_ra4m1` → `register_dongle.bin`, text 34765 + data 120 B
+flash, bss 9624 B RAM. One bring-up fix: added `src/r_flash_lp_cfg.h`, the FSP
+`r_flash_lp` module config header the Smart Configurator generates (the
+hand-made `xiao_ra4m1` board lacked it). **Not yet hardware-verified.** Full
+detail in the app `README.md`.
 
 **Design decisions locked in dialog (this session):**
 - flash_storage → FSP `r_flash_lp` HAL · dedicated 8 KB data flash (0x40100000)
@@ -1410,17 +1413,26 @@ FSP tree, so the build is a Pi task. Full detail in the app's `README.md`.
 `usb_descriptors.c`, `tusb_config.h`, `ra4m1_commands.c` (NULL stub — step 4),
 `Makefile`.
 
-**NEXT ACTION — build on the Pi** (`cd ra4m1/apps/register_dongle && make
-BOARD=xiao_ra4m1`) and work the **6-item TODO-verify checklist** in the app's
-`README.md` — FSP-integration details that could not be confirmed from WSL:
-  1. `r_flash_lp` Makefile wiring (path / possible double-include w/ family.mk)
-  2. `flash_cfg_t.irq` — set to `FSP_INVALID_VECTOR` if FSP asserts
-  3. data-flash erase-block size (2 KB slot spacing already de-risks it)
-  4. `R_BSP_UniqueIdGet()` accessor + `bsp_unique_id_t` field name
-  5. FSP linker symbols for `firmware_get_sysinfo` (`__etext`, `__data_*`, ...)
-  6. Seeed bootloader DFU magic (addr + value) — placeholders in `main.c`
-  Plus: confirm the FSP umbrella header is `bsp_api.h`.
+FSP-integration unknowns RESOLVED by the green build: `r_flash_lp` wiring
+(compiles+links once), `flash_cfg_t` (no `irq` assert), `R_BSP_UniqueIdGet` /
+`bsp_unique_id_t`, the FSP linker symbols (all 7 resolve), the `bsp_api.h`
+header name. Two items remain — both runtime/bench-only:
+  * data-flash erase-block size — exercised by a commission set/clear cycle
+    (2 KB slot spacing de-risks it)
+  * the Seeed DFU magic in `main.c` (`DFU_DOUBLE_TAP_*`) is still a PLACEHOLDER
+    — the 1200-baud touch resets but won't enter DFU until it's read off the
+    XIAO RA4M1 bootloader source
 
-**After it builds + sync ladder verified:** step 4 — `ra4m1_commands.c`, the
-analytical-HIL command set (ADC/DAC/PWM/encoder); first task is D9/D10 encoder
-routing vs the XIAO schematic (`memory/ra4m1_pin_map.md`).
+**NEXT ACTION — flash + verify on hardware** (needs the bench): put the XIAO
+in Renesas boot mode (hold BOOT during USB power-up), `raflash erase`+`write`
+at 0x4000, tap RESET, then walk the sync ladder with `dongle_console.lua` and
+run an `OP_COMMISSION_SET`/reboot/`--status`/`CLEAR` cycle (confirms data-flash
+persistence). The Pi build dir is `~/motioncore-prototype/ra4m1/apps/
+register_dongle/_build/xiao_ra4m1/register_dongle.bin`.
+
+Note: the Pi copy at `~/motioncore-prototype/` is a build-only subset (not git;
+synced from WSL by rsync). register_dongle was rsync'd there 2026-05-21.
+
+**After hardware-verified:** step 4 — `ra4m1_commands.c`, the analytical-HIL
+command set (ADC/DAC/PWM/encoder); first task is D9/D10 encoder routing vs the
+XIAO schematic (`memory/ra4m1_pin_map.md`).
