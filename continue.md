@@ -1387,3 +1387,40 @@ task is verifying the D9/D10 encoder routing against the XIAO schematic.
 **Cold-start reading order:** `memory/MEMORY.md` → `ra4m1_bringup_2026-05-20`
 → `feedback_design_dialog_style` → `samd21/apps/register_dongle/README.md`
 (the reference implementation to mirror).
+
+---
+
+### RA4M1 register_dongle (step 3b) — CODE COMPLETE, not yet built — 2026-05-21
+
+`ra4m1/apps/register_dongle/` scaffolded in full (20 files). **Not built or
+hardware-verified** — the WSL checkout has no cross toolchain and no vendored
+FSP tree, so the build is a Pi task. Full detail in the app's `README.md`.
+
+**Design decisions locked in dialog (this session):**
+- flash_storage → FSP `r_flash_lp` HAL · dedicated 8 KB data flash (0x40100000)
+  · dual-slot rotation kept (logic ports unchanged; slots 2 KB apart)
+- 1200-baud-touch DFU handler added (`tud_cdc_line_coding_cb`)
+- `user_functions.c` → per-chip copy (decision (a)); 3 chip spots adapted —
+  UID via `R_BSP_UniqueIdGet()`, `toggle_led` is a liveness counter (LED pin
+  still unverified, same as blink_frame), `REGISTER_PID` = 0x0053
+
+**Reused byte-for-byte from SAMD21:** `register_dongle_v2*`,
+`shell_commands.{c,h}`, `vendor/libcomm/`. s_engine runtime via `vpath`.
+**New/rewritten:** `main.c`, `user_functions.c`, `flash_storage.{c,h}`,
+`usb_descriptors.c`, `tusb_config.h`, `ra4m1_commands.c` (NULL stub — step 4),
+`Makefile`.
+
+**NEXT ACTION — build on the Pi** (`cd ra4m1/apps/register_dongle && make
+BOARD=xiao_ra4m1`) and work the **6-item TODO-verify checklist** in the app's
+`README.md` — FSP-integration details that could not be confirmed from WSL:
+  1. `r_flash_lp` Makefile wiring (path / possible double-include w/ family.mk)
+  2. `flash_cfg_t.irq` — set to `FSP_INVALID_VECTOR` if FSP asserts
+  3. data-flash erase-block size (2 KB slot spacing already de-risks it)
+  4. `R_BSP_UniqueIdGet()` accessor + `bsp_unique_id_t` field name
+  5. FSP linker symbols for `firmware_get_sysinfo` (`__etext`, `__data_*`, ...)
+  6. Seeed bootloader DFU magic (addr + value) — placeholders in `main.c`
+  Plus: confirm the FSP umbrella header is `bsp_api.h`.
+
+**After it builds + sync ladder verified:** step 4 — `ra4m1_commands.c`, the
+analytical-HIL command set (ADC/DAC/PWM/encoder); first task is D9/D10 encoder
+routing vs the XIAO schematic (`memory/ra4m1_pin_map.md`).
