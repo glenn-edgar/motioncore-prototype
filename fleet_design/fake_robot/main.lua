@@ -103,10 +103,9 @@ handle.blackboard._pubsub     = ps
 handle.blackboard._rpc        = rpc
 handle.blackboard.shutdown_requested = false
 
--- Runtime-maintained fields the KB0 booleans read (see the "Runtime contract"
--- header in connection_user_functions.lua). handle.timestamp is advanced in
--- the pump from CLOCK_MONOTONIC.
-handle.zenoh_connected      = true   -- sessions opened above
+-- Runtime-maintained field the KB0 controller-heartbeat boolean reads (see the
+-- "Runtime contract" header in connection_user_functions.lua). handle.timestamp
+-- is advanced in the pump from CLOCK_MONOTONIC.
 handle.controller_last_beat = nil    -- stamped on the first drained heartbeat
 
 ct_engine.init_test(handle, "connection")

@@ -17,7 +17,6 @@
 --   * event "REGISTRATION_ACK"    posted when the controller acks (see note in
 --                                 ANNOUNCE_REGISTRATION — currently posted by
 --                                 that one-shot off the RPC reply)
---   * handle.zenoh_connected      bool — current zenoh transport liveness
 --   * handle.controller_last_beat seconds (handle.timestamp scale) — stamped
 --                                 each time a controller heartbeat is drained
 
@@ -165,16 +164,6 @@ M.one_shot.SPAWN_APP_KBS = function(handle, node)
     end
 end
 
--- verify(TEST_ZENOH_CONNECTION) error handler — zenoh transport lost.
--- Full recovery: kill every app KB. The verify's CFL_RESET then resets the
--- outer column structurally (back to wait_for_event("ZENOH_CONNECTED")).
--- The runtime owns re-opening the zenoh session.
-M.one_shot.ERROR_ZENOH_LOST = function(handle, node)
-    local n = kill_app_kbs(handle)
-    io.stderr:write(string.format(
-        "KB0: zenoh transport lost — killed %d app KB(s); outer column resets to wait_for_zenoh\n", n))
-end
-
 -- verify(TEST_CONTROLLER_HEARTBEAT) error handler — controller heartbeat lost.
 -- Narrow recovery: kill app KBs and drive the protocol SM back to
 -- wait_for_ack. Zenoh is untouched. Replicates the CFL_CHANGE_STATE builtin
@@ -196,14 +185,6 @@ end
 -- ---------------------------------------------------------------------------
 -- Booleans  (fed every event by verify; return true = pass / connection ok)
 -- ---------------------------------------------------------------------------
-
--- Zenoh transport guard. The runtime maintains handle.zenoh_connected; nil is
--- treated as connected (the KB only reaches this verify after ZENOH_CONNECTED).
-M.boolean.TEST_ZENOH_CONNECTION = function(handle, node, event_id, event_data)
-    if event_id == defs.CFL_INIT_EVENT then return true end
-    if event_id == defs.CFL_TERMINATE_EVENT then return false end
-    return handle.zenoh_connected ~= false
-end
 
 -- Controller heartbeat guard. Fresh if a controller heartbeat was drained
 -- within threshold_s. threshold_s comes from the verify's fn data

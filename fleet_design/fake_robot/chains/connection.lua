@@ -1,18 +1,14 @@
 -- chains/connection.lua — build-time DSL for KB0, the connection manager.
 --
 -- KB0 is the shared connection lifecycle — identical for every robot class.
--- Structure (locked in the 2026-05-20 design dialog):
+-- Structure:
 --
 --   outer column "kb0_outer"
 --     [1] wait_for_event("ZENOH_CONNECTED")  HALTs the outer column — blocks
 --                                            every younger sibling until the
 --                                            runtime reports the zenoh
 --                                            transport is up.
---     [2] verify(TEST_ZENOH_CONNECTION)      CFL_CONTINUE while up — passes
---                                            events through to the protocol
---                                            SM. On loss the verify CFL_RESETs
---                                            the OUTER column => full reconnect.
---     [3] state_machine "protocol_sm"
+--     [2] state_machine "protocol_sm"
 --           state "wait_for_ack"             announce registration, await the
 --                                            controller ack (retry on
 --                                            timeout), publish the namespace,
@@ -20,17 +16,19 @@
 --           state "verify_controller_heartbeat"
 --                                            verify the controller heartbeat;
 --                                            on loss kill app KBs + return to
---                                            wait_for_ack (zenoh stays up =
---                                            narrow recovery).
---     [4] asm_halt()                         terminal element — keeps the
+--                                            wait_for_ack.
+--     [3] asm_halt()                         terminal element — keeps the
 --                                            outer column permanently enabled
 --                                            so KB0 never auto-completes.
 --
--- The protocol SM is a younger sibling of the verify node (the DSL adds
--- nodes as siblings within a column). Behaviourally identical to nesting it
--- as verify's child: verify healthy => CFL_CONTINUE => the walker reaches the
--- SM; verify failed => CFL_RESET on the outer column tears the SM down before
--- the walker gets there.
+-- ONE recovery scope — the controller heartbeat. A 2026-05-20 design had a
+-- second, broader transport-recovery scope (a verify(TEST_ZENOH_CONNECTION)
+-- guarding the outer column). Removed 2026-05-21: it had no detector — nothing
+-- could flip its boolean — and was redundant. A zenohd outage stops the
+-- controller heartbeat, so the controller-heartbeat scope already drives the
+-- full re-bringup (re-register + PUBLISH_NAMESPACE + SPAWN_APP_KBS), and
+-- zenoh-pico client mode reconnects to the router on its own. Confirmed by the
+-- transport-bounce test.
 --
 -- Build (dev machine only):
 --   luajit chains/connection.lua chains/connection.json
@@ -62,13 +60,12 @@ local function build_kb0(ct, kb_name)
         ct:asm_log_message("KB0: waiting for zenoh transport")
         ct:asm_wait_for_event("ZENOH_CONNECTED", 1, false, 0, nil, nil, {})
 
-        -- [2] Transport guard. reset=true => on loss CFL_RESET resets this
-        -- node's column (the outer column) => everything below is torn down
-        -- and the KB restarts at wait_for_event("ZENOH_CONNECTED").
+        -- The boot gate has cleared — the zenoh transport is up. Fall through
+        -- to the protocol layer. (No transport-recovery guard here; see the
+        -- "ONE recovery scope" note in the file header.)
         ct:asm_log_message("KB0: zenoh transport up — entering protocol layer")
-        ct:asm_verify("TEST_ZENOH_CONNECTION", {}, true, "ERROR_ZENOH_LOST", {})
 
-        -- [3] Protocol state machine — runs only while the verify CONTINUEs.
+        -- [2] Protocol state machine.
         local protocol_sm = ct:define_state_machine(
             "protocol_sm", "protocol_sm",
             { "wait_for_ack", "verify_controller_heartbeat" },
@@ -107,7 +104,7 @@ local function build_kb0(ct, kb_name)
 
         ct:end_state_machine(protocol_sm, "protocol_sm")
 
-        -- [4] Terminal halt — a permanently enabled node so the outer column
+        -- [3] Terminal halt — a permanently enabled node so the outer column
         -- never auto-completes. KB0 runs forever.
         ct:asm_halt()
 
