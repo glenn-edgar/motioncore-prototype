@@ -15,9 +15,9 @@ History: design dialog opened 2026-05-18 (26 base decisions); extended 2026-05-1
 
 - `memory.md` — load-bearing locked decisions + design rationale + push-backs captured. **Read this before any implementation work in this area.**
 - `continue.md` — this file. Current state + open questions + next-session candidates.
-- `server/` — Path 1 work lands here (server container — still empty; Path 2 prioritized)
+- `server/` — Path 1 robot controller. `fleet_manager/` layer built 2026-05-21 (register RPC + heartbeat + in-memory registry); see `server/README.md`.
 - `fake_robot/` — Path 2 robot (populated 2026-05-19): `main.lua`, `class_spec.lua`, `chains/` (DSL + user fns + compiled IR), `lib/` (identity + pubsub + RPC wrappers)
-- `bench_manager/` — throwaway stub controller for end-to-end testing (populated 2026-05-19). Will be deleted when real fleet_manager lands in `server/`.
+- `bench_manager/` — retired 2026-05-21; the real controller is `server/fleet_manager/`.
 
 ## What this design is
 
@@ -209,8 +209,8 @@ docker run -d --rm --name zenoh-smoke \
     eclipse/zenoh:latest \
     --listen tcp/0.0.0.0:7447 --listen udp/0.0.0.0:7447
 
-# 2. Bench manager (terminal A)
-ZENOH_LOCATOR=tcp/127.0.0.1:17447 ./bench_manager/run.sh
+# 2. fleet_manager — the robot controller (terminal A)
+ZENOH_LOCATOR=tcp/127.0.0.1:17447 ./server/fleet_manager/run.sh
 
 # 3. fake_robot (terminal B)
 ROBOT_CLASS=fake_robot ROBOT_INSTANCE=alpha IDENTITY_DIR=/tmp/fake_alpha \
@@ -286,7 +286,7 @@ Pi Zero 2 deploy (no containers) is an unsolved, separate problem.
 ```
 # 1. router (docker run … above)
 # 2. controller:
-LUA_CPATH="/usr/local/lib/lua/5.1/?.so;;" bench_manager/run.sh &
+LUA_CPATH="/usr/local/lib/lua/5.1/?.so;;" server/fleet_manager/run.sh &
 # 3. robot:
 ROBOT_CLASS=fake_robot ROBOT_INSTANCE=bench01 \
   LUA_CPATH="/usr/local/lib/lua/5.1/?.so;;" fake_robot/run.sh
@@ -350,5 +350,5 @@ The runtime uses `fleet_design/vendor/lua/` exclusively (see `vendor/PROVENANCE.
 - Don't reach for ROS / VDA 5050 patterns — wrong reference model.
 - Don't muddle s_engine and chain_tree — distinct engines (s_engine = ARM dongles; chain_tree = fleet_design).
 - Don't re-add Zenoh commissioning round-trips — #23 rescinded by #27; identity is env+file.
-- Don't extend `bench_manager/` — throwaway; the real controller lives in `server/`.
+- The real controller is `server/fleet_manager/`; `bench_manager/` was retired 2026-05-21.
 - Don't propose chain_tree DSL from API primitives — study `dsl_tests/` + the `chain_tree_dsl_runtime_model.md` memo first.

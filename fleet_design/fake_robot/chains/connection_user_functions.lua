@@ -80,8 +80,8 @@ end
 
 -- Announce registration to the controller and, on a positive ack, post the
 -- REGISTRATION_ACK event so the wait_for_event node advances.
--- NOTE: bench_manager exposes an RPC queryable on fleet/admin/register, so the
--- ack is synchronous here; we convert the RPC reply into the chain_tree event.
+-- NOTE: the fleet_manager exposes an RPC queryable on fleet/admin/register, so
+-- the ack is synchronous here; we convert the RPC reply into a chain_tree event.
 -- If registration moves to pub + a separate ack subscription, this one-shot
 -- becomes a plain publish and the runtime posts REGISTRATION_ACK instead.
 M.one_shot.ANNOUNCE_REGISTRATION = function(handle, node)
