@@ -47,6 +47,8 @@ SRC_C += \
   flash_storage.c \
   shell_commands.c \
   ra4m1_commands.c \
+  ra4m1_hal.c \
+  mode.c \
   register_dongle_v2_module_rom.c \
   frame.c \
   s_engine_module.c \

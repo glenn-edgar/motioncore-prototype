@@ -59,6 +59,9 @@ int poll(struct pollfd *fds, unsigned long nfds, int timeout);
 
 int usleep(unsigned int usec);
 
+struct timespec { long tv_sec; long tv_nsec; };
+int clock_gettime(int clk_id, struct timespec *tp);
+
 char *strerror(int errnum);
 int errno;
 ]]
@@ -70,6 +73,21 @@ local TCSANOW    = 0
 local B115200    = 4098      -- Linux speed code; baud is moot on USB-CDC
 local POLLIN     = 0x0001
 local VMIN, VTIME = 6, 5     -- glibc cc_c indices on Linux
+
+-- Monotonic millisecond clock — for the interleaved send/listen drain.
+local g_ts = ffi.new("struct timespec[1]")
+local function now_ms()
+    C.clock_gettime(1, g_ts)   -- CLOCK_MONOTONIC
+    return tonumber(g_ts[0].tv_sec) * 1000.0 + tonumber(g_ts[0].tv_nsec) / 1e6
+end
+
+-- Reinterpret a u32 bit pattern as IEEE-754 float32 — for shell results that
+-- carry floats (ANALOG_READ mean/stddev).
+local g_f32 = ffi.new("uint32_t[1]")
+local function u32_to_f32(u)
+    g_f32[0] = u
+    return tonumber(ffi.cast("float*", g_f32)[0])
+end
 
 -- ============================================================================
 -- Utilities
@@ -100,6 +118,12 @@ local CMD_COUNTER_SETUP      = 0x010B
 local CMD_COUNTER_RESET      = 0x010C
 local CMD_COUNTER_READ       = 0x010D
 local CMD_COUNTER_STOP       = 0x010E
+-- RA4M1-specific (multi-mode control); see ra4m1/apps/register_dongle/ra4m1_commands.c.
+local CMD_SET_MODE           = 0x0110
+local CMD_GET_MODE           = 0x0111
+local CMD_ANALOG_START       = 0x0112
+local CMD_ANALOG_READ        = 0x0113
+local CMD_ANALOG_STOP        = 0x0114
 
 -- request_id -> command_id map for in-flight shell calls. Populated by
 -- send_m2s_frame when emitting OP_SHELL_EXEC; consulted by the OP_SHELL_REPLY
@@ -145,22 +169,57 @@ local SAMD21_XIAO_D_TO_AIN = {
     [10] =  6,  -- D10  PA06   AIN[6]
 }
 
+-- ============================================================================
+-- Chip selection. The XIAO SAMD21 and XIAO RA4M1 share the D0..D10 silkscreen
+-- but map those pads to different MCU port pins / ADC channels, and have
+-- different DAC/ADC widths. g_chip (set by --chip, pre-scanned in parse_args)
+-- picks the per-chip table. Default 'samd21' preserves prior behaviour.
+-- ============================================================================
+local g_chip = "samd21"
+local CHIP_PARAMS = {
+    samd21 = { dac_max = 1023, adc_max = 4095  },   -- 10-bit DAC, 12-bit ADC
+    ra4m1  = { dac_max = 4095, adc_max = 16383 },   -- 12-bit DAC, 14-bit ADC
+}
+local function chip() return CHIP_PARAMS[g_chip] end
+
+-- XIAO RA4M1 D-label -> MCU (port,pin). Verified vs schematic v1.0 + RA4M1
+-- manual. Renesas Pmn notation: 1-digit port, 2-digit pin (P111 = port1 pin11).
+local RA4M1_XIAO_D_TO_PORTPIN = {
+    [0]  = {port=0, pin=14},  -- D0   P014   ADC AN9 + DAC DA0
+    [1]  = {port=0, pin= 0},  -- D1   P000   ADC AN0
+    [2]  = {port=0, pin= 1},  -- D2   P001   ADC AN1
+    [3]  = {port=0, pin= 2},  -- D3   P002   ADC AN2
+    [4]  = {port=2, pin= 6},  -- D4   P206   (no ADC)
+    [5]  = {port=1, pin= 0},  -- D5   P100   ADC AN22
+    [6]  = {port=3, pin= 2},  -- D6   P302   UART TX
+    [7]  = {port=3, pin= 1},  -- D7   P301   UART RX
+    [8]  = {port=1, pin=11},  -- D8   P111   PWM  GTIOC3A
+    [9]  = {port=1, pin=10},  -- D9   P110   encoder phase B GTIOC1B
+    [10] = {port=1, pin= 9},  -- D10  P109   encoder phase A GTIOC1A
+}
+-- XIAO RA4M1 D-label -> ADC AN channel. Only D0/D1/D2/D3/D5 are analog-capable.
+local RA4M1_XIAO_D_TO_AIN = {
+    [0] = 9, [1] = 0, [2] = 1, [3] = 2, [5] = 22,
+}
+
 local function resolve_ain(label)
-    -- Accept "D0".."D10" (silkscreen), "AIN3"/"AIN18" (chip channel),
-    -- or a bare integer (channel number).
+    -- Accept "D0".."D10" (silkscreen), "AINn"/"ANn" (chip channel), or a bare
+    -- integer. The D-label map and channel ceiling depend on g_chip.
+    local d_map  = (g_chip == "ra4m1") and RA4M1_XIAO_D_TO_AIN or SAMD21_XIAO_D_TO_AIN
+    local ch_max = (g_chip == "ra4m1") and 28 or 19
     if type(label) == "string" then
         local d = label:match("^[Dd](%d+)$")
         if d then
-            local ch = SAMD21_XIAO_D_TO_AIN[tonumber(d)]
-            if ch == nil then die("unknown Xiao D-pin for ADC: %s", label) end
+            local ch = d_map[tonumber(d)]
+            if ch == nil then die("D%s is not an ADC pin on %s", d, g_chip) end
             return ch
         end
-        local a = label:match("^[Aa][Ii][Nn](%d+)$")
+        local a = label:match("^[Aa][Ii]?[Nn](%d+)$")
         if a then return tonumber(a) end
     end
     local n = tonumber(label)
-    if n and n >= 0 and n <= 19 then return n end
-    die("adc channel must be 'D0..D10', 'AIN0..AIN19', or 0..19 (got %s)", tostring(label))
+    if n and n >= 0 and n <= ch_max then return n end
+    die("adc channel must be a D-pin, AIN/AN number, or 0..%d (got %s)", ch_max, tostring(label))
 end
 
 local SAMD21_XIAO_D_TO_PORTPIN = {
@@ -181,16 +240,28 @@ local SAMD21_XIAO_D_TO_PORTPIN = {
 
 local function resolve_pin(label)
     if type(label) ~= "string" then
-        die("pin label must be a string (e.g. 'D2', 'PA10', 'PB08'); got %s", type(label))
+        die("pin label must be a string (e.g. 'D2'); got %s", type(label))
     end
-    -- D-label (Xiao silkscreen):
+    -- D-label (XIAO silkscreen) — map depends on g_chip.
     local d = label:match("^[Dd](%d+)$")
     if d then
-        local m = SAMD21_XIAO_D_TO_PORTPIN[tonumber(d)]
-        if not m then die("unknown Xiao D-pin: %s (valid: D0..D10)", label) end
+        local d_map = (g_chip == "ra4m1") and RA4M1_XIAO_D_TO_PORTPIN
+                                          or  SAMD21_XIAO_D_TO_PORTPIN
+        local m = d_map[tonumber(d)]
+        if not m then die("unknown XIAO D-pin: %s (valid: D0..D10)", label) end
         return m.port, m.pin
     end
-    -- PA/PB chip port notation:
+    if g_chip == "ra4m1" then
+        -- Renesas Pmnn notation: 1-digit port, 2-digit pin (P111 = port1 pin11).
+        local pt, pn = label:match("^[Pp](%d)(%d%d)$")
+        if pt then
+            local pin = tonumber(pn)
+            if pin > 15 then die("pin %d out of range (0..15)", pin) end
+            return tonumber(pt), pin
+        end
+        die("pin %q not recognised. Use 'D0'..'D10' or 'P<port><pin>' (e.g. P111)", label)
+    end
+    -- SAMD21 PA/PB chip port notation:
     local g, p = label:match("^[Pp]([AaBb])(%d+)$")
     if g and p then
         local port = (g == "A" or g == "a") and 0 or 1
@@ -245,10 +316,22 @@ local function parse_args(argv)
         help      = false,
         send_seq  = {},           -- list of m2s opcodes to send before listening
     }
+    -- Pre-scan for --chip so the pin/ADC resolvers (called below during the
+    -- main parse) pick the right per-chip map regardless of argv order.
+    for k = 1, #argv - 1 do
+        if argv[k] == "--chip" then
+            local c = (argv[k + 1] or ""):lower()
+            if c ~= "samd21" and c ~= "ra4m1" then
+                die("--chip expects samd21 or ra4m1 (got %s)", tostring(argv[k + 1]))
+            end
+            g_chip = c
+        end
+    end
     local i = 1
     while i <= #argv do
         local a = argv[i]
         if     a == "--port"     then i = i + 1; opts.port = argv[i]
+        elseif a == "--chip"     then i = i + 1   -- value consumed by the pre-scan above
         elseif a == "--serial"   then i = i + 1; opts.serial = argv[i]
         elseif a == "--vid-pid"  then
             i = i + 1
@@ -299,6 +382,66 @@ local function parse_args(argv)
                 payload    = payload,
                 shell_req  = req_id,
                 shell_cmd  = cmd_id,
+            })
+        elseif a == "--send-shell-get-mode" then
+            local req_id = alloc_shell_req()
+            local cmd_id = CMD_GET_MODE
+            table.insert(opts.send_seq, {
+                cmd        = 0x0109,
+                label      = "OP_SHELL_EXEC(get_mode)",
+                payload    = {
+                    bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                    bit.band(cmd_id, 0xFF), bit.band(bit.rshift(cmd_id, 8), 0xFF),
+                },
+                shell_req  = req_id, shell_cmd = cmd_id,
+            })
+        elseif a == "--send-shell-set-mode" then
+            i = i + 1
+            local mode = tonumber(argv[i])
+            if not mode or mode < 0 or mode > 255 then
+                die("set-mode MODE must be 0..255 (got %s)", tostring(argv[i]))
+            end
+            local req_id = alloc_shell_req()
+            local cmd_id = CMD_SET_MODE
+            table.insert(opts.send_seq, {
+                cmd        = 0x0109,
+                label      = string.format("OP_SHELL_EXEC(set_mode %d)", mode),
+                payload    = {
+                    bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                    bit.band(cmd_id, 0xFF), bit.band(bit.rshift(cmd_id, 8), 0xFF),
+                    bit.band(mode, 0xFF),
+                },
+                shell_req  = req_id, shell_cmd = cmd_id,
+            })
+        elseif a == "--send-shell-analog-start" then
+            local req_id = alloc_shell_req()
+            table.insert(opts.send_seq, {
+                cmd = 0x0109, label = "OP_SHELL_EXEC(analog_start)",
+                payload = {
+                    bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                    bit.band(CMD_ANALOG_START, 0xFF), bit.band(bit.rshift(CMD_ANALOG_START, 8), 0xFF),
+                },
+                shell_req = req_id, shell_cmd = CMD_ANALOG_START,
+            })
+        elseif a == "--send-shell-analog-read" then
+            local req_id = alloc_shell_req()
+            table.insert(opts.send_seq, {
+                cmd = 0x0109, label = "OP_SHELL_EXEC(analog_read)",
+                payload = {
+                    bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                    bit.band(CMD_ANALOG_READ, 0xFF), bit.band(bit.rshift(CMD_ANALOG_READ, 8), 0xFF),
+                },
+                shell_req = req_id, shell_cmd = CMD_ANALOG_READ,
+            })
+        elseif a == "--send-shell-analog-stop" then
+            local req_id = alloc_shell_req()
+            table.insert(opts.send_seq, {
+                cmd = 0x0109, label = "OP_SHELL_EXEC(analog_stop)",
+                payload = {
+                    bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                    bit.band(CMD_ANALOG_STOP, 0xFF), bit.band(bit.rshift(CMD_ANALOG_STOP, 8), 0xFF),
+                },
+                shell_req = req_id, shell_cmd = CMD_ANALOG_STOP,
             })
         elseif a == "--send-shell-gpio-config" then
             i = i + 1; local pin_label = argv[i]
@@ -371,8 +514,8 @@ local function parse_args(argv)
         elseif a == "--send-shell-dac-write" then
             i = i + 1
             local value = tonumber(argv[i])
-            if not value or value < 0 or value > 1023 then
-                die("dac-write VALUE must be 0..1023 (got %s)", tostring(argv[i]))
+            if not value or value < 0 or value > chip().dac_max then
+                die("dac-write VALUE must be 0..%d (got %s)", chip().dac_max, tostring(argv[i]))
             end
             local req_id = alloc_shell_req()
             local cmd_id = CMD_DAC_WRITE
@@ -383,7 +526,7 @@ local function parse_args(argv)
             }
             table.insert(opts.send_seq, {
                 cmd        = 0x0109,
-                label      = string.format("OP_SHELL_EXEC(dac_write %d  ~%.2f V)", value, value * 3.3 / 1023),
+                label      = string.format("OP_SHELL_EXEC(dac_write %d  ~%.2f V)", value, value * 3.3 / chip().dac_max),
                 payload    = payload,
                 shell_req  = req_id, shell_cmd = cmd_id,
             })
@@ -436,8 +579,8 @@ local function parse_args(argv)
             local WAVEFORMS = { sine=0, ramp=1, ramp_up=1, ramp_down=2, square=3 }
             local wf = WAVEFORMS[(type_str or ""):lower()] or tonumber(type_str)
             if not wf or wf < 0 or wf > 3 then die("dac-waveform TYPE must be sine|ramp_up|ramp_down|square (got %s)", tostring(type_str)) end
-            if not amp or amp < 0 or amp > 1023 then die("amplitude 0..1023") end
-            if not offset or offset < 0 or offset > 1023 then die("offset 0..1023") end
+            if not amp or amp < 0 or amp > chip().dac_max then die("amplitude 0..%d", chip().dac_max) end
+            if not offset or offset < 0 or offset > chip().dac_max then die("offset 0..%d", chip().dac_max) end
             if not freq or freq < 50 or freq > 500 then die("freq 50..500 Hz") end
             if not dur_ms or dur_ms < 0 then die("duration_ms ≥ 0") end
             local req_id = alloc_shell_req()
@@ -687,6 +830,8 @@ Options:
   --port PATH         Explicit ACM path (skips VID:PID discovery)
   --serial SERIAL     Match by USB serial string
   --vid-pid VVVV:PPPP Override default VID:PID filter (default 2886:802f)
+  --chip samd21|ra4m1 Select the dongle's D-pin / ADC map + DAC/ADC width.
+                      Default 'samd21'. Use 'ra4m1' for the XIAO RA4M1.
   --slip              Decode SLIP frames (RFC 1055) and print as hex
   --frame             Decode SLIP frames as libcomm s2m + CRC-8/AUTOSAR verify
                       (implies --slip; expected 7-byte header + payload + 1-byte CRC)
@@ -701,6 +846,14 @@ Options:
                       string S as args. Expect OP_SHELL_REPLY echoing it back.
   --send-shell-sysinfo Send one m2s OP_SHELL_EXEC frame invoking CMD_SYSINFO.
                       Expect OP_SHELL_REPLY with chip memory + uptime + clock.
+  --send-shell-get-mode    Query the device operating mode (RA4M1; 0=workbench).
+  --send-shell-set-mode N  Set the device operating mode (RA4M1).
+  --send-shell-analog-start   Begin background analog collection (RA4M1) — a
+                      ~1 kHz sampler over the 4 ADC pins, Welford mean/stddev +
+                      min/max per channel.
+  --send-shell-analog-read    Read {n, mean, stddev, min, max} per channel for
+                      the interval since the last read; resets the accumulators.
+  --send-shell-analog-stop    Stop analog collection.
   --send-shell-gpio-config PIN MODE
                       Configure a GPIO pin. PIN is 'D0'..'D10' (Xiao silkscreen)
                       or 'PA0'..'PA31'/'PB0'..'PB31' (raw chip port:pin).
@@ -1174,7 +1327,7 @@ local function decode_s2m_frame()
             elseif status == 0 and expected_cmd == CMD_ADC_READ and len == 3 + 2 then
                 local v = bit.bor(f[11], bit.lshift(f[12], 8))
                 io.write(string.format("\n  adc_read: value=%d  (%.3f V at full-scale 3.3 V)",
-                    v, v * 3.3 / 4095))
+                    v, v * 3.3 / chip().adc_max))
                 pending_shell_requests[req_id] = nil
             elseif status == 0 and expected_cmd == CMD_DAC_WRITE and len == 3 then
                 io.write("\n  dac_write: ok")
@@ -1187,12 +1340,37 @@ local function decode_s2m_frame()
                 pending_shell_requests[req_id] = nil
             elseif status == 0 and expected_cmd == CMD_COUNTER_READ and len == 3 + 4 then
                 local n = bit.bor(f[11], bit.lshift(f[12], 8), bit.lshift(f[13], 16), bit.lshift(f[14], 24))
-                io.write(string.format("\n  counter_read: %u pulses", n))
+                -- RA4M1: signed quadrature position. SAMD21: unsigned pulse
+                -- count (identical for small positive values).
+                if n >= 0x80000000 then n = n - 0x100000000 end
+                io.write(string.format("\n  counter_read: %d", n))
+                pending_shell_requests[req_id] = nil
+            elseif status == 0 and expected_cmd == CMD_GET_MODE and len == 3 + 1 then
+                local MODE_NAMES = {[0]="workbench", [1]="spectral", [2]="pid", [3]="scurve"}
+                io.write(string.format("\n  get_mode: %d (%s)", f[11], MODE_NAMES[f[11]] or "?"))
+                pending_shell_requests[req_id] = nil
+            elseif status == 0 and expected_cmd == CMD_ANALOG_READ and len == 3 + 52 then
+                -- result: n:u32  then 4x { mean:f32 stddev:f32 min:u16 max:u16 }
+                local function u32at(o) return bit.bor(f[o], bit.lshift(f[o+1], 8),
+                                              bit.lshift(f[o+2], 16), bit.lshift(f[o+3], 24)) end
+                local function u16at(o) return bit.bor(f[o], bit.lshift(f[o+1], 8)) end
+                local n = u32at(11)
+                io.write(string.format("\n  analog_read: n=%d sample(s) this interval", n))
+                local LBL = { "D1/AN0", "D2/AN1", "D3/AN2", "D5/AN22" }
+                for c = 0, 3 do
+                    local o = 15 + c * 12
+                    local mean   = u32_to_f32(u32at(o))
+                    local stddev = u32_to_f32(u32at(o + 4))
+                    io.write(string.format(
+                        "\n    %-8s mean=%8.2f  sd=%7.2f  min=%5d  max=%5d  (%.3f V avg)",
+                        LBL[c+1], mean, stddev, u16at(o + 8), u16at(o + 10),
+                        mean * 3.3 / 16383))
+                end
                 pending_shell_requests[req_id] = nil
             elseif status == 0 and (expected_cmd == CMD_PWM_CONFIG or expected_cmd == CMD_PWM_SET
                                  or expected_cmd == CMD_PWM_TEARDOWN
                                  or expected_cmd == CMD_COUNTER_SETUP or expected_cmd == CMD_COUNTER_RESET
-                                 or expected_cmd == CMD_COUNTER_STOP) and len == 3 then
+                                 or expected_cmd == CMD_COUNTER_STOP or expected_cmd == CMD_SET_MODE) and len == 3 then
                 io.write(string.format("\n  %s: ok", OPCODE_NAMES[0x0109] and "shell" or "shell"))
                 pending_shell_requests[req_id] = nil
             elseif status == 0 and expected_cmd == CMD_ADC_CAPTURE and len >= 3 + 3 then
@@ -1207,7 +1385,7 @@ local function decode_s2m_frame()
                         local off = 14 + sample_idx * 2
                         if off + 1 <= 7 + len then
                             local v = bit.bor(f[off], bit.lshift(f[off+1], 8))
-                            table.insert(row, string.format("%4d (%.2fV)", v, v * 3.3 / 4095))
+                            table.insert(row, string.format("%4d (%.2fV)", v, v * 3.3 / chip().adc_max))
                         end
                         sample_idx = sample_idx + 1
                     end
@@ -1351,6 +1529,29 @@ local function slip_step(b)
         slip_state.escaped = true
     else
         table.insert(slip_state.frame, b)
+    end
+end
+
+-- Read + SLIP-decode for `ms` milliseconds. Used during the send phase so
+-- replies arriving between queued frames are consumed and printed instead of
+-- piling up in the kernel tty buffer (a long batch would otherwise overflow it
+-- and drop bytes). The normal listen loop takes over afterwards.
+local function drain_for(fd, ms)
+    local buf = ffi.new("uint8_t[?]", 4096)
+    local pfd = ffi.new("struct pollfd[1]")
+    pfd[0].fd = fd
+    pfd[0].events = POLLIN
+    local deadline = now_ms() + ms
+    while true do
+        local remain = deadline - now_ms()
+        if remain <= 0 then break end
+        local rc = C.poll(pfd, 1, remain)
+        if rc > 0 and bit.band(pfd[0].revents, POLLIN) ~= 0 then
+            local n = tonumber(C.read(fd, buf, 4096))
+            if n and n > 0 then
+                for i = 0, n - 1 do slip_step(buf[i]) end
+            end
+        end
     end
 end
 
@@ -1503,10 +1704,10 @@ if #opts.send_seq > 0 then
         if entry.delay_ms then
             io.write(string.format("  [delay %d ms]\n", entry.delay_ms))
             io.flush()
-            C.usleep(entry.delay_ms * 1000)
+            drain_for(fd, entry.delay_ms)        -- read replies during the wait
         else
             send_m2s_frame(fd, entry)
-            C.usleep(50 * 1000)
+            drain_for(fd, 50)                    -- 50 ms gap, but keep reading
         end
     end
     io.write("\n")

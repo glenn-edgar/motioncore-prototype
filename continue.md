@@ -1503,3 +1503,168 @@ codegen; replace the interim FNV-1a class_id stubs (RA4M1 `0x281A0BA4` / SAMD21
 consumes `linux/dongle_registry.lua` to recognise an attached dongle from its
 `OP_REGISTER`. Possible `commission.lua` add: `--list` (scan + show every
 attached dongle's class_id / instance_id / chip_uid).
+
+---
+
+### RA4M1 step 4 — workbench command set + multi-mode foundation — HARDWARE-VERIFIED — 2026-05-22
+
+**Scope.** The RA4M1 register_dongle's analytical-HIL command set (mode 1
+"workbench"), plus the multi-mode foundation that mode 2 (spectral / FFT),
+mode 3 (closed-loop encoder PID) and mode 4 (S-curve motion profile) will sit
+on. Designed in dialog, built, flashed, and verified end-to-end with two
+physical loopbacks on the bench.
+
+**The four files added/changed under `ra4m1/apps/register_dongle/src/`:**
+
+- **`mode.h` / `mode.c`** — multi-mode foundation. `device_mode_t` enum
+  (WORKBENCH/SPECTRAL/PID/SCURVE); `mode_init()` relocates the 48-entry vector
+  table to a 256-B-aligned RAM copy (the BSP's `g_vector_table` is `const`
+  flash); `g_modes[]` descriptor (on_enter / on_exit / on_periodic per mode);
+  `mode_set()`. The **mode periodic timer** is GPT0 + ICU/NVIC slot 4; its ISR
+  dispatches to the active mode's on_periodic. `g_mode_arena[256]` — shared
+  RAM, per-mode state overlays in a union (only one mode active at a time, so
+  it costs the *largest* mode, not the sum).
+- **`ra4m1_hal.h` / `ra4m1_hal.c`** — bare-CMSIS drivers: GPIO (PFS/PORT),
+  ADC140 14-bit, DAC12 12-bit, PWM (GPT3/GTIOC3A/D8), quadrature encoder
+  (GPT1/GTIOC1A+B/D10+D9, x4, software zero offset), and the D7/GPT4 edge
+  counter (added in batch 2).
+- **`ra4m1_commands.c`** — workbench command table. Mirrors the SAMD21 IDs
+  `0x0100`..`0x010E` 1:1 (GPIO, DAC, ADC, PWM, COUNTER) so `dongle_console.lua`
+  is uniform across chips; `COUNTER_SETUP` routes by pin (D9/D10 → GPT1
+  encoder, D7 → GPT4 edge counter). Plus `CMD_SET_MODE`/`GET_MODE` at
+  `0x0110`/`0x0111` and `ANALOG_START/READ/STOP` at `0x0112-0x0114`.
+- `main.c` gains `mode_init()` after `tusb_init()` and a
+  `workbench_analog_poll()` call in the main superloop.
+
+**Multi-mode architecture (locked):** one unified firmware image, mode = device
+state, supervision on the s_engine chain tick, real-time work in timer ISRs
+(the 250 ms chain tick is far too slow for a control loop). RAM stays bounded
+because per-mode buffers overlay in `g_mode_arena` — unified RAM ≈ largest
+single mode, not the sum. The fallback ("if it doesn't fit, do distinct
+builds") is preserved as a `#ifdef` knob, so no commitment is made.
+
+**Batch 2 same day — D7 counter + native ~11-bit PWM + analog collection:**
+
+- **D7 / GPT4 edge counter.** D7/P301 = GTIOC4B. `COUNTER_SETUP` routes by pin:
+  D9/D10 (port 1, pin 9/10) → GPT1 quadrature encoder; D7 (port 3, pin 1) →
+  GPT4 16-bit edge counter. For the D8-PWM → D7-count loopback (16-bit GTCNT
+  wraps at 65 536 — keep the window under ~3 s at 20 kHz).
+- **PWM: native ~11-bit at 20 kHz on D8.** The RA4M1 GPT clock caps at PCLKD =
+  48 MHz, so PWM levels × freq ≤ 48 MHz — true 12-bit (4096 levels) requires
+  freq ≤ ~11.7 kHz. We considered a duty-dither ISR (effective 12-bit @ 20 kHz
+  via cycle-to-cycle error feedback) and built it, but dropped it after a
+  hardware bug-hunt — the user's call (*"11-bit and live with it"*).
+  `pwm_set` now scales the host's 12-bit setpoint directly onto the hardware
+  period and writes `GTCCRA`+`GTCCRC`; no ISR.
+- **Analog collection.** `ANALOG_START / READ / STOP` — a ~1 kHz main-loop
+  sampler over the 4 ADC pins (D1/D2/D3/D5 — D0 stays the DAC); per channel
+  Welford running mean + M2 + min + max. `READ` is **reset-on-read**: returns
+  `{n, per-channel (mean:f32, stddev:f32, min:u16, max:u16)}` for the interval
+  since the previous READ, then zeros the accumulators (sampling continues).
+  `STOP` freezes for one final READ. Main-loop (not ISR) → can't disturb the
+  DAC-waveform / PWM ISRs, and `READ` is atomic w.r.t. the sampler (same
+  context — no IRQ masking).
+- **`dongle_console.lua`** got `--chip ra4m1` (RA4M1 D-pin + AN-channel maps +
+  12-bit DAC / 14-bit ADC widths), `--send-shell-analog-{start,read,stop}` with
+  IEEE-754 float decode, and a **send/listen interleave fix** (it now drains
+  the port during inter-frame `--delay-ms`, so long batches no longer drop
+  replies to kernel-tty-buffer overflow).
+
+**Three GTIOC bugs caught and fixed today** — all in `hal_pwm_config`, all
+necessary to get D8 actually toggling:
+
+1. **`PmnPFS.PDR = 1`** on the GTIOC output pin. The manual's GPT-PWM pin
+   example says so; the register cookbook that built `ra4m1_hal.c` second-
+   guessed the manual and left it out. Symptom: D8 floated hi-Z (scoped as
+   noise).
+2. **`GTCR.CST = 1` to start the channel.** Writing `GTSTR = (1 << n)` does
+   *not* start the channel unless `GTSSR.CSTRT = 1` is set first — which we
+   never wrote. So GPT3 sat with `CST = 0`, the counter never incremented, and
+   the pin held at GTIOA's initial level (low). Switching to direct `CST=1`
+   start (inside the GTWP-unlocked block) fixed it. *Same warning applies to
+   anything else using the shared start register.*
+3. **`pwm_set` writes `GTCCRA` (GTCCR[0]) directly**, plus `GTCCRC`. Bypasses
+   any single-buffer-transfer config uncertainty — the duty change takes
+   immediate effect.
+
+**Verifications (`dongle_console --chip ra4m1 --port /dev/ttyACM0`):**
+
+- **A0 → A1 DAC→ADC loopback** (jumper, DAC P014 → ADC P000/AN0). Swept the
+  DAC 0..4000; `ADC = 4.000 × DAC` (the exact 14-bit / 12-bit ratio,
+  ratiometric — independent of VREF), voltages match to ~2 mV, small ~2 mV
+  DAC low-side rail offset. The DAC and ADC HAL are correct and accurate.
+- **D8 → D7 PWM-count loopback** (jumper). At 20 kHz / 50 % duty for ~1.25 s:
+  `counter_read: 25002` (expected ~25 000). **0.01 % off** — confirms the PWM
+  is exactly 20 kHz, drives D8, and GPT4 on D7 counts edges correctly.
+- **Welford on a known signal.** With the A0→A1 jumper and `dac_waveform sine
+  3500 2048 500 0` running, `analog_read` returned n=2750, D1 mean=8181 (vs
+  expected 8192 — 0.13 % off), min/max 1448/14911 (vs expected ~1200/15200,
+  small DAC rail compression). Stddev=6699 vs theoretical 4760 — that's
+  **Nyquist aliasing**: ~1 kHz sampler at 2× a 500 Hz signal collapses the
+  sampled distribution toward bimodal (±A), so the stddev tracks peak rather
+  than peak/√2. Use the analog collection for DC / slow signals; for content
+  above ~Nyquist/few the stats characterise the *sampled* distribution.
+  Crosstalk visible on the other channels — D2 (adjacent to D1) sd=2821,
+  D3 sd=1927, D5 sd=498 — clear distance gradient from adjacent-pin coupling
+  + ADC sample/hold leakage between sequential mux channels.
+- **DAC waveform generator.** 500 Hz sine on D0 verified clean on the scope.
+- **Multi-mode foundation.** VTOR relocation didn't break boot; `get_mode`→
+  0 (workbench); `set_mode 1` → `bad_args` (the `MODE_MAX_IMPLEMENTED` guard
+  rejects modes 2-4 until they land).
+
+**Flash size:** 39 209 B of 240 KB (16.3 % of the app region); RAM ~10.5 KB.
+
+**Flash route notes (the bench USB took some beating).** The bench USB hub
+chain degraded mid-session — `dmesg -71` on `1-1.1`; sustained `raflash write`
+hung repeatedly while short commands (erase, info) survived. **Two findings
+worth keeping:**
+
+1. **`raflash --verify` hangs on the *read-back* phase** even when the write
+   itself completed — every successful flash this session came from skipping
+   `--verify` and just booting the device to check.
+2. **The XIAO RA4M1 exposes a Seeed DFU bootloader** at VID:PID `2886:8049`
+   (entered by RESET when no valid app is at 0x4000). DfuSe layout
+   `@CodeFlash /0x00000000/8*2Ka,120*2Kg` — the first 8 × 2 KB ('a' = not
+   writeable) protects the bootloader. Flash via
+   `sudo dfu-util -a 0 -s 0x00004000:leave -D <bin>` — alternate route, no
+   BOOT button needed (though it hit the same USB-link flakiness this
+   session). Worth knowing for future sessions.
+
+**Three GTIOC lessons crystallised.** GTIOC *output* pins need `PDR=1`. GPT
+channels start cleanly with `GTCR.CST = 1`; the shared `GTSTR` register needs
+`GTSSR.CSTRT` set first. Write `GTCCRA` directly if the single-buffer
+mechanism is in doubt.
+
+**Encoder (D9/D10 quadrature, GPT1) is still untested** — no quadrature source
+on the bench. Its setup uses `GTCR.CST = 1` directly so the start-register
+issue doesn't apply; should work when a real encoder is wired.
+
+---
+
+### Roadmap — future plans (as of 2026-05-22)
+
+**NEXT SESSION — spectral analysis (mode 2) + SAMD21 back-port.**
+
+- **Mode 2 / spectral analysis** on the RA4M1. The first mode that uses the
+  multi-mode foundation's mode-periodic timer for autonomous work: a
+  timer-triggered ADC capture (deeper than the 60-sample `ADC_CAPTURE`),
+  CMSIS-DSP single-precision FFT (the RA4M1 Cortex-M4 has an FPU — confirmed),
+  result reported as a magnitude spectrum via the shell. The Nyquist note
+  above is the design input: the FFT's effective bandwidth is set by the
+  sample timer's rate (a real GPT timer ISR, not the 1 kHz main-loop poller).
+  Per-mode buffers come from `g_mode_arena` — a 1024-point real FFT wants
+  ~10 KB; bump `MODE_ARENA_SIZE` accordingly.
+- **SAMD21 back-port.** Bring today's RA4M1-side improvements back to the
+  SAMD21 register_dongle where they're chip-agnostic: the analog-collection
+  command set (`ANALOG_START/READ/STOP` + Welford + min/max) and any cleanups.
+  The `dongle_console.lua` send/listen interleave fix is host-side and is
+  already shared. The `--chip samd21` path is the default — analog channels
+  there are SAMD21 AINs (D1/D2/D3/D5 → AIN[4]/AIN[18]/AIN[19]/AIN[17] per
+  the SAMD21 pin map). The SAMD21 already has a TC3-driven DAC waveform ISR
+  so its "mode periodic timer" equivalent is in place.
+
+**Other previously-tracked items still live** — RA4M1 register_dongle DFU magic
+(`DFU_DOUBLE_TAP_*` placeholders in `main.c`); SAMD21 `usb_descriptors.c`
+should report the real chip UID instead of the hardcoded dummy; the
+four-chip dongle suite continues with RP2350 and ESP32-C6 ports; cross-repo
+kb_build `class_ids.h` codegen.

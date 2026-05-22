@@ -49,11 +49,13 @@
 #include "opcodes.h"
 #include "flash_storage.h"
 #include "shell_commands.h"  // firmware_sysinfo_t
+#include "mode.h"            // multi-mode foundation (VTOR reloc + mode table)
 
 // Implemented in user_functions.c.
 extern void     register_dongle_load_commissioning(void);
 extern uint32_t g_pending_commission_instance_id;
 extern bool     shell_pending_push(const uint8_t* payload, uint8_t len);
+extern void     workbench_analog_poll(void);   // ra4m1_commands.c — ADC sampler
 
 // ----------------------------------------------------------------------------
 // Deferred-reboot plumbing. Two flavors:
@@ -307,6 +309,12 @@ int main(void) {
     };
     tusb_init(BOARD_TUD_RHPORT, &rhport_init);
 
+    // Multi-mode foundation: relocate the vector table to RAM (so mode
+    // dispatcher handlers can be installed), prepare the mode periodic timer,
+    // and enter MODE_WORKBENCH. After tusb_init() so the live USB vector
+    // entries are captured into the relocated table.
+    mode_init();
+
     frame_ring_init(&g_tx_ring, g_tx_ring_buf, TX_RING_SIZE);
     frame_decoder_init(&g_rx_decoder, FRAME_DIR_M2S);
 
@@ -350,6 +358,11 @@ int main(void) {
 
     for (;;) {
         tud_task();
+
+        // Workbench analog collection — self-gated ~1 kHz ADC sampler. No-op
+        // unless ANALOG_START is active; runs in this main-loop context so it
+        // never delays the DAC-waveform / PWM-dither ISRs.
+        workbench_analog_poll();
 
         // Host-reattach edge detection.
         if (tree != NULL) {
