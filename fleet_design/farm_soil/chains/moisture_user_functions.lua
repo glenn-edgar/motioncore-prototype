@@ -26,8 +26,13 @@ local cjson      = require("cjson")
 local ttn_client = require("ttn_client")
 local decoder    = require("decoder")
 local moisture   = require("moisture")
+local app_heartbeat = require("app_heartbeat")
 
 local M = { main = {}, one_shot = {}, boolean = {} }
+
+-- The moisture KB's fetch cadence (matches FETCH_INTERVAL_S in
+-- chains/moisture.lua). KB0 uses it as the heartbeat-staleness yardstick.
+local FETCH_INTERVAL_S = 3600
 
 local function log(id, fmt, ...)
     io.stderr:write(string.format(
@@ -61,6 +66,8 @@ M.one_shot.MOISTURE_FETCH = function(handle, node)
     local token = os.getenv("TTN_BEARER_TOKEN")
     if not token or token == "" then
         log(id, "TTN_BEARER_TOKEN not set — skipping fetch")
+        app_heartbeat.stamp(handle, "moisture", "degraded",
+            "TTN_BEARER_TOKEN not set", FETCH_INTERVAL_S)
         return
     end
 
@@ -78,6 +85,8 @@ M.one_shot.MOISTURE_FETCH = function(handle, node)
     local body, ok, err = client:fetch(after_iso(ttn_cfg.lookback_hours or 24))
     if not ok then
         log(id, "TTN fetch failed (%s) — skipping cycle", tostring(err))
+        app_heartbeat.stamp(handle, "moisture", "degraded",
+            "TTN fetch failed", FETCH_INTERVAL_S)
         return
     end
 
@@ -110,6 +119,8 @@ M.one_shot.MOISTURE_FETCH = function(handle, node)
 
     log(id, "fetch ok — %d uplinks, %d new readings, %d published",
         #uplinks, appended, published)
+    app_heartbeat.stamp(handle, "moisture", "ok",
+        string.format("%d uplinks, %d new", #uplinks, appended), FETCH_INTERVAL_S)
 end
 
 -- `sample` RPC handler — main.lua's pump calls this with the request

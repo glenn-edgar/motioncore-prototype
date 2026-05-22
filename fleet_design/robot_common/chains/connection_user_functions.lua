@@ -182,6 +182,49 @@ M.one_shot.ERROR_CONTROLLER_LOST = function(handle, node)
     end
 end
 
+-- Publish the robot's heartbeat — the aggregate app-KB health. KB0 owns the
+-- robot's heartbeat leaf (#31). Each app KB stamps bb.app_heartbeats via
+-- robot_common/lib/app_heartbeat.lua; this rolls them up so the published
+-- heartbeat is honest — a robot with a degraded or silent app KB shows
+-- "degraded", not "operating". Fires every verify_controller_heartbeat loop.
+M.one_shot.PUBLISH_ROBOT_HEARTBEAT = function(handle, node)
+    local bb = handle.blackboard
+    local id, ps = bb._identity, bb._pubsub
+    local now    = handle.timestamp or 0
+    local beats  = bb.app_heartbeats or {}
+
+    local apps, state = {}, "operating"
+    for kb_name in pairs(handle.active_tests or {}) do
+        if kb_name ~= KB0_NAME then
+            local h = beats[kb_name]
+            if not h then
+                apps[kb_name] = { health = "unknown" }
+                state = "degraded"
+            else
+                local age   = now - (h.ts or 0)
+                local stale = (h.interval_s ~= nil) and age > h.interval_s * 3
+                apps[kb_name] = {
+                    health = h.health,
+                    detail = h.detail,
+                    age_s  = math.floor(age),
+                    stale  = stale or nil,
+                }
+                if h.health ~= "ok" or stale then state = "degraded" end
+            end
+        end
+    end
+
+    local ok = pcall(function()
+        ps:publish(id.namespace .. "/heartbeat", cjson.encode({
+            ts = wall_s(), state = state, apps = apps,
+        }))
+    end)
+    if not ok then
+        io.stderr:write(string.format(
+            "KB0 [%s]: heartbeat publish failed — retry next loop\n", id.namespace))
+    end
+end
+
 -- ---------------------------------------------------------------------------
 -- Booleans  (fed every event by verify; return true = pass / connection ok)
 -- ---------------------------------------------------------------------------

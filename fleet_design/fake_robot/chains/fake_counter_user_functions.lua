@@ -10,6 +10,7 @@
 
 local cjson = require("cjson")
 local clock = require("clock")
+local app_heartbeat = require("app_heartbeat")
 
 local M = { main = {}, one_shot = {}, boolean = {} }
 
@@ -44,6 +45,9 @@ M.one_shot.PUBLISH_COUNTER = function(handle, node)
         io.stderr:write(string.format(
             "fake_counter [%s]: publish failed: %s\n", id.namespace, tostring(err)))
     end
+    -- Stamp this app KB's heartbeat for KB0 to roll into the robot heartbeat.
+    app_heartbeat.stamp(handle, "fake_counter", ok and "ok" or "degraded",
+        "counter=" .. n, 1)
 end
 
 -- ---------------------------------------------------------------------------

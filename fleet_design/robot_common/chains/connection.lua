@@ -73,15 +73,17 @@ local function build_kb0(ct, kb_name)
             ct:end_column(st_ack)
 
             -- state: verify_controller_heartbeat — steady-state monitor.
-            -- verify + delay + reset loops the column so the verify is a
-            -- durable guard. reset=true is required: with reset=false a
-            -- failure CFL_TERMINATEs the column and nothing re-enables it.
-            -- On failure ERROR_CONTROLLER_LOST kills app KBs and drives the
-            -- SM back to wait_for_ack — zenoh is untouched (narrow recovery).
+            -- verify + publish + delay + reset loops the column. reset=true is
+            -- required: with reset=false a failure CFL_TERMINATEs the column
+            -- and nothing re-enables it. On verify failure ERROR_CONTROLLER_LOST
+            -- kills app KBs and drives the SM back to wait_for_ack — zenoh
+            -- untouched (narrow recovery). PUBLISH_ROBOT_HEARTBEAT rolls the
+            -- app-KB heartbeats into the robot's published heartbeat each loop.
             local st_hb = ct:define_state("verify_controller_heartbeat", nil)
                 ct:asm_log_message("protocol: operating — monitoring controller heartbeat")
                 ct:asm_verify("TEST_CONTROLLER_HEARTBEAT", { threshold_s = 3.5 },
                     true, "ERROR_CONTROLLER_LOST", {})
+                ct:asm_one_shot_handler("PUBLISH_ROBOT_HEARTBEAT", {})
                 ct:asm_wait_time(3.0)
                 ct:asm_reset()
             ct:end_column(st_hb)
