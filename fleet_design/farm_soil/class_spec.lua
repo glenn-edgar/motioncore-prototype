@@ -10,10 +10,13 @@ local M = {}
 M.capabilities = {
     "heartbeat",
     "soil_moisture",
+    "et_reference",       -- daily ASCE ETo via the CIMIS Web API
 }
 
 -- Application KBs spawned after the robot reaches operating.
-M.app_kbs = { "moisture" }
+-- cimis_station/cimis_spatial are two instances of the same skill module
+-- (chains/cimis.lua) — one per CIMIS provider, each with its own retry loop.
+M.app_kbs = { "moisture", "cimis_station", "cimis_spatial" }
 
 -- TTN v3 storage API config for the moisture skill. The bearer token is NOT
 -- here — it is a secret, read from the TTN_BEARER_TOKEN env var (run.sh
@@ -24,6 +27,29 @@ M.ttn = {
     url_after      = "/packages/storage/uplink_message?",
     lookback_hours = 24,
     limit          = 200,
+}
+
+-- CIMIS Web API config for the cimis_station / cimis_spatial KBs. The appKey
+-- is NOT here — it is a secret, read from the CIMIS_APP_KEY env var (run.sh
+-- sources secrets/ttn.env). Spatial targets are zip codes ONLY (coordinate
+-- forms are blocked by et.water.ca.gov's WAF, verified live 2026-05-22).
+--
+-- The daily-gate semantics: each KB tries to fetch yesterday's finalized
+-- ASCE ETo every retry_s seconds between window_start_h and window_end_h
+-- Pacific civil time. On success, it publishes once on
+-- `<namespace>/cimis/<source>/latest` and idles until the next Pacific day.
+M.cimis = {
+    api_base       = "https://et.water.ca.gov/api/data",
+    data_items     = "day-asce-eto",
+    window_start_h = 9,            -- inclusive (Pacific civil)
+    window_end_h   = 15,           -- exclusive
+    retry_s        = 900,          -- 15 minutes between attempts
+    sources = {
+        -- station 237 = Temecula East II (closest to the Murrieta site).
+        station = { target_kind = "station", target = "237"   },
+        -- 92562 = Murrieta CA (21005 Paseo Montañez).
+        spatial = { target_kind = "spatial", target = "92562" },
+    },
 }
 
 -- device_id -> location (the sensing-point sub-namespace). Adding a sensor is

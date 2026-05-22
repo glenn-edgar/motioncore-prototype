@@ -82,10 +82,31 @@ local sample_topic = id.namespace .. "/sample"
 local sample_token = zt.hash(sample_topic)
 zt.register(sample_token, sample_topic)
 local sample_q = rpc_srv:register(sample_token, 8)
+
+-- One repost queryable per CIMIS source. The handler returns the latest
+-- recorded reading JSON, or the literal "null" when nothing's recorded yet.
+-- Topic shape: <namespace>/cimis/<source>/repost.
+local function register_cimis_repost(source_id)
+    local topic = id.namespace .. "/cimis/" .. source_id .. "/repost"
+    local token = zt.hash(topic)
+    zt.register(token, topic)
+    local q = rpc_srv:register(token, 8)
+    return { source = source_id, q = q, topic = topic }
+end
+local cimis_qs = {
+    register_cimis_repost("station"),
+    register_cimis_repost("spatial"),
+}
+
 rpc_srv:start()
 io.stderr:write(string.format(
     "FARM_SOIL [%s]: sample queryable up on %s\n",
     id.namespace, sample_topic))
+for _, qrec in ipairs(cimis_qs) do
+    io.stderr:write(string.format(
+        "FARM_SOIL [%s]: cimis %s repost queryable up on %s\n",
+        id.namespace, qrec.source, qrec.topic))
+end
 
 -- ---------------------------------------------------------------------------
 -- Chain_tree wire-up: load compiled IR, register fns, activate KB0
@@ -102,11 +123,12 @@ local clock       = require("clock")
 local ir_path = script_dir .. "chains/connection.json"
 local ir = ct_loader.load(ir_path)
 
--- KB0's user fns + the moisture skill-KB's user fns.
+-- KB0's user fns + the moisture skill-KB's user fns + both CIMIS KBs' fns.
 local conn_fns     = require("connection_user_functions")
 local moisture_fns = require("moisture_user_functions")
+local cimis_fns    = require("cimis_user_functions")
 fn_registry.register_functions(ir, builtins,
-    conn_fns.registry, moisture_fns.registry)
+    conn_fns.registry, moisture_fns.registry, cimis_fns.registry)
 
 local ok, missing = fn_registry.validate(ir)
 if not ok then
@@ -123,6 +145,11 @@ handle.blackboard._class_spec = class_spec
 handle.blackboard._pubsub     = ps
 handle.blackboard._rpc        = rpc
 handle.blackboard.shutdown_requested = false
+
+-- Per-source CIMIS runtime state — the in-memory single-value store + the
+-- last_recorded_date gate flag. One entry per cimis_<source> KB; the KBs
+-- read/write their own entry, and the repost queryable handler reads it.
+handle.blackboard._cimis = { station = {}, spatial = {} }
 
 -- Runtime-maintained field the KB0 controller-heartbeat boolean reads.
 -- handle.timestamp is advanced in the pump from CLOCK_MONOTONIC.
@@ -208,6 +235,26 @@ while not handle.blackboard.shutdown_requested do
                 "FARM_SOIL [%s]: sample request error (contained): %s\n",
                 id.namespace, tostring(reply)))
             pcall(function() req:reply_error(tostring(reply)) end)
+        end
+    end
+
+    -- Service CIMIS repost requests — one queryable per source. The handler
+    -- returns the latest recorded reading JSON or the literal "null" when
+    -- nothing has been recorded yet. Handler + reply pcall-wrapped.
+    for _, qrec in ipairs(cimis_qs) do
+        while true do
+            local creq = qrec.q:poll()
+            if not creq then break end
+            local okrp, reply = pcall(cimis_fns.handle_repost_request,
+                handle, qrec.source, creq:payload())
+            if okrp then
+                pcall(function() creq:reply(reply) end)
+            else
+                io.stderr:write(string.format(
+                    "FARM_SOIL [%s]: cimis %s repost error (contained): %s\n",
+                    id.namespace, qrec.source, tostring(reply)))
+                pcall(function() creq:reply_error(tostring(reply)) end)
+            end
         end
     end
 

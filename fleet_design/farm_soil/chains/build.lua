@@ -20,6 +20,7 @@ package.path = _self .. "?.lua;"                            -- this class's app-
 local ChainTreeMaster = require("chain_tree_master")
 local kb0      = require("connection")   -- shared: build_kb0, KB0_NAME
 local moisture = require("moisture")     -- this class's app KB
+local cimis    = require("cimis")        -- two CIMIS app KBs (station + spatial)
 
 if #arg ~= 1 then
     print("Usage: luajit farm_soil/chains/build.lua <json_file>")
@@ -29,6 +30,8 @@ end
 local ct = ChainTreeMaster.new(arg[1])
 kb0.build_kb0(ct, kb0.KB0_NAME)
 moisture.build_moisture(ct, moisture.MOISTURE_KB_NAME)
+cimis.build_cimis_station(ct, cimis.STATION_KB_NAME)
+cimis.build_cimis_spatial(ct, cimis.SPATIAL_KB_NAME)
 ct:check_and_generate()
 print("Wrote: " .. arg[1])
 print("Total nodes: " .. ct.ctb:get_total_node_count())
