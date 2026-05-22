@@ -1654,6 +1654,20 @@ issue doesn't apply; should work when a real encoder is wired.
   sample timer's rate (a real GPT timer ISR, not the 1 kHz main-loop poller).
   Per-mode buffers come from `g_mode_arena` — a 1024-point real FFT wants
   ~10 KB; bump `MODE_ARENA_SIZE` accordingly.
+
+  Alongside the batch FFT, **real-time peak tracking via Goertzel** — a
+  small set of single-bin DFT filters (one per frequency of interest) runs
+  in the sample-timer ISR and reports the magnitude of each tracked bin
+  continuously. Cheap (~few mul-adds per sample per filter, FPU-native on
+  the M4), narrowband, and the right algorithm for *"follow the specific
+  peaks I care about live"* — e.g. expected motor harmonic, a 60 Hz mains
+  artefact, a sensor's known resonance. The FFT gives the wide-band view
+  periodically; the Goertzel set gives the live ticker on chosen
+  frequencies. Likely API: a GOERTZEL_ADD `freq_hz` opcode to enroll a
+  frequency, GOERTZEL_READ to get the live per-frequency magnitudes,
+  GOERTZEL_CLEAR to drop them all. Coefficients are precomputed once on
+  ADD (`coeff = 2·cos(2π·k/N)` for whatever block length the design picks)
+  so the ISR does only sample-time updates.
 - **SAMD21 back-port.** Bring today's RA4M1-side improvements back to the
   SAMD21 register_dongle where they're chip-agnostic: the analog-collection
   command set (`ANALOG_START/READ/STOP` + Welford + min/max) and any cleanups.
