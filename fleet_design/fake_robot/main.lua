@@ -28,6 +28,8 @@ local script_dir = (arg and arg[0] and arg[0]:match("(.*/)")) or "./"
 package.path = script_dir .. "lib/?.lua;"
             .. script_dir .. "?.lua;"
             .. script_dir .. "chains/?.lua;"
+            .. script_dir .. "../robot_common/lib/?.lua;"
+            .. script_dir .. "../robot_common/chains/?.lua;"
             .. package.path
 
 local LOCATOR = os.getenv("ZENOH_LOCATOR") or "tcp/127.0.0.1:7447"

@@ -1,13 +1,15 @@
--- chains/connection.lua — build-time DSL for KB0, the connection manager.
+-- robot_common/chains/connection.lua — KB0 builder module (shared).
 --
 -- KB0 is the shared connection lifecycle — identical for every robot class.
--- Structure:
+-- This module exports build_kb0(ct, kb_name); a per-robot build driver
+-- (<robot>/chains/build.lua) requires it together with the class's app-KB
+-- build modules and assembles them into one compiled IR.
 --
+-- Structure:
 --   outer column "kb0_outer"
---     [1] wait_for_event("ZENOH_CONNECTED")  HALTs the outer column — blocks
---                                            every younger sibling until the
---                                            runtime reports the zenoh
---                                            transport is up.
+--     [1] wait_for_event("ZENOH_CONNECTED")  HALT boot-gate — blocks every
+--                                            younger sibling until the runtime
+--                                            reports the zenoh transport up.
 --     [2] state_machine "protocol_sm"
 --           state "wait_for_ack"             announce registration, await the
 --                                            controller ack (retry on
@@ -17,36 +19,18 @@
 --                                            verify the controller heartbeat;
 --                                            on loss kill app KBs + return to
 --                                            wait_for_ack.
---     [3] asm_halt()                         terminal element — keeps the
---                                            outer column permanently enabled
---                                            so KB0 never auto-completes.
+--     [3] asm_halt()                         terminal — KB0 runs forever.
 --
 -- ONE recovery scope — the controller heartbeat. A 2026-05-20 design had a
--- second, broader transport-recovery scope (a verify(TEST_ZENOH_CONNECTION)
--- guarding the outer column). Removed 2026-05-21: it had no detector — nothing
--- could flip its boolean — and was redundant. A zenohd outage stops the
--- controller heartbeat, so the controller-heartbeat scope already drives the
--- full re-bringup (re-register + PUBLISH_NAMESPACE + SPAWN_APP_KBS), and
--- zenoh-pico client mode reconnects to the router on its own. Confirmed by the
--- transport-bounce test.
+-- second, broader transport-recovery scope (verify(TEST_ZENOH_CONNECTION));
+-- removed 2026-05-21 — it had no detector and was redundant: a zenohd outage
+-- stops the controller heartbeat, so the controller-heartbeat scope already
+-- drives the full re-bringup, and zenoh-pico client mode reconnects on its
+-- own. Confirmed by the transport-bounce test.
 --
--- Build (dev machine only):
---   luajit chains/connection.lua chains/connection.json
+-- build_kb0 uses only the passed-in ChainTreeMaster instance `ct` — this
+-- module requires nothing itself.
 
--- lua_dsl is build-time only and never ships to the Pi. Point package.path
--- at the upstream DSL builder (see continue.md "Reference paths").
-local _dsl = (os.getenv("HOME") or "")
-    .. "/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/chain_tree_luajit/lua_dsl/"
--- This script's own directory — so the CLI driver can require sibling build
--- modules (chains/fake_counter.lua) regardless of the cwd it is invoked from.
-local _self_dir = (arg and arg[0] and arg[0]:match("(.*/)")) or "./"
-package.path = _self_dir .. "?.lua;"
-    .. _dsl .. "?.lua;" .. _dsl .. "lua_support/?.lua;" .. package.path
-
-local ChainTreeMaster = require("chain_tree_master")
-
--- KB name — main.lua activates this KB at boot; the user fns reference it
--- when sweeping app KBs on connection loss.
 local KB0_NAME = "connection"
 
 local function build_kb0(ct, kb_name)
@@ -110,27 +94,6 @@ local function build_kb0(ct, kb_name)
 
     ct:end_column(outer)
     ct:end_test()
-end
-
-local is_cli = arg and arg[0] and arg[0]:match("connection%.lua$")
-if is_cli then
-    if #arg ~= 1 then
-        print("Usage: luajit chains/connection.lua <json_file>")
-        os.exit(1)
-    end
-    local ct = ChainTreeMaster.new(arg[1])
-    build_kb0(ct, KB0_NAME)
-
-    -- Application KBs build into the SAME IR — ct_runtime.add_test spawns a
-    -- KB by name from the single loaded connection.json. fake_counter is the
-    -- throwaway class KB; real classes will own their app-KB build modules
-    -- and this driver will assemble whichever the class declares.
-    local fake_counter = require("fake_counter")
-    fake_counter.build_fake_counter(ct, fake_counter.FAKE_COUNTER_NAME)
-
-    ct:check_and_generate()
-    print("Wrote: " .. arg[1])
-    print("Total nodes: " .. ct.ctb:get_total_node_count())
 end
 
 return { build_kb0 = build_kb0, KB0_NAME = KB0_NAME }

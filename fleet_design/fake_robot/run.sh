@@ -21,7 +21,8 @@ VENDOR_LUA=$REPO_ROOT/vendor/lua
 export LUA_CPATH
 
 # Repo-relative LUA_PATH only. No reference to upstream knowledge_base_assembly.
-export LUA_PATH="$VENDOR_LUA/?.lua;$SCRIPT_DIR/lib/?.lua;$SCRIPT_DIR/?.lua;$SCRIPT_DIR/chains/?.lua;;"
+# robot_common/ holds the shared KB0 + lib graduated out of fake_robot.
+export LUA_PATH="$VENDOR_LUA/?.lua;$SCRIPT_DIR/lib/?.lua;$SCRIPT_DIR/?.lua;$SCRIPT_DIR/chains/?.lua;$REPO_ROOT/robot_common/lib/?.lua;$REPO_ROOT/robot_common/chains/?.lua;;"
 
 # TODO Pi deploy: replace bench LD_LIBRARY_PATH with vendor/lib-aarch64/.
 # Bench dev expects libzenoh_*.so + libzenohpico.so on the loader path.
