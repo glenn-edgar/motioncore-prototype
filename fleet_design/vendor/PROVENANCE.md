@@ -43,3 +43,4 @@ Upstream root on dev: `~/knowledge_base_assembly/luajit_programs_and_containers/
 | Date | Action |
 |---|---|
 | 2026-05-19 | Initial vendor copy from local upstream. |
+| 2026-05-22 | Re-vendored `ct_builtins.lua` — added the `CFL_WAIT_UNTIL_{IN,OUT_OF}_TIME_WINDOW` time-of-day wait leaves (ported from the Python `ct_builtins`). |

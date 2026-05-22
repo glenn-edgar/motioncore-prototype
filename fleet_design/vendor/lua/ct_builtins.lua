@@ -195,6 +195,85 @@ M.main.CFL_WAIT_TIME = function(handle, bool_fn, node, event_id, event_data)
     return CFL_HALT
 end
 
+-- ---------- Time-of-day window wait leaves ----------
+-- Two native CFL wait-leaves that gate on whether the engine's wall clock
+-- currently matches a configured local-time window. Standard wait-leaf shape:
+-- HALT while the gate condition holds, DISABLE once it flips. Re-arm by
+-- RESETting the surrounding parent (composition via subtrees).
+--
+--   CFL_WAIT_UNTIL_IN_TIME_WINDOW     HALT while OUT of window, DISABLE on entry
+--   CFL_WAIT_UNTIL_OUT_OF_TIME_WINDOW HALT while IN window,     DISABLE on exit
+--
+-- Ported from the Python ct_builtins time_window.py — same window semantics.
+--
+-- Window shape: per-field [start,end] masks over {hour,minute,sec,dow,dom},
+-- each field independent. Both bounds present => field in [start,end]
+-- inclusive, wrap allowed when end < start (minute 50..10 = [50..59]+[0..10]).
+-- Both absent => field unconstrained. Exactly one present => error (the
+-- paired-or-absent rule; the DSL asm_* validates this at build time too).
+-- Final answer = logical AND of all five per-field checks. Field ranges:
+-- hour 0..23, minute 0..59, sec 0..59, dow 0..6 (0=Mon), dom 1..31.
+--
+-- Wall clock: handle.get_wall_time() if the runtime supplies it (epoch
+-- seconds — lets a test inject a clock), else os.time(). Broken down to
+-- local time, or UTC when handle.timezone == "utc".
+--
+-- node.node_dict = { start = <field table>, ["end"] = <field table> }
+
+-- current in [start,end], wrapping when end < start
+local function tw_span_contains(cur, start_v, end_v)
+    if start_v <= end_v then
+        return cur >= start_v and cur <= end_v
+    end
+    return cur >= start_v or cur <= end_v
+end
+
+local function tw_field_ok(cur, start_v, end_v, field_name)
+    if start_v == nil and end_v == nil then return true end
+    if start_v == nil or end_v == nil then
+        error("time-window field '" .. field_name .. "' must be present in "
+            .. "both start and end, or neither")
+    end
+    return tw_span_contains(cur, start_v, end_v)
+end
+
+local function tw_in_window(handle, node)
+    local nd    = node.node_dict or {}
+    local win_s = nd.start or {}
+    local win_e = nd["end"] or {}
+
+    local epoch = (handle.get_wall_time and handle.get_wall_time())
+        or os.time()
+    local dt = os.date(handle.timezone == "utc" and "!*t" or "*t", epoch)
+    -- os.date wday is 1=Sun..7=Sat; the window's dow is 0=Mon..6=Sun
+    -- (Python datetime.weekday()).
+    local dow = (dt.wday + 5) % 7
+
+    return tw_field_ok(dt.hour, win_s.hour,   win_e.hour,   "hour")
+       and tw_field_ok(dt.min,  win_s.minute, win_e.minute, "minute")
+       and tw_field_ok(dt.sec,  win_s.sec,    win_e.sec,    "sec")
+       and tw_field_ok(dow,     win_s.dow,    win_e.dow,    "dow")
+       and tw_field_ok(dt.day,  win_s.dom,    win_e.dom,    "dom")
+end
+
+-- HALT while the wall clock is OUT of the window; DISABLE on first tick IN.
+M.main.CFL_WAIT_UNTIL_IN_TIME_WINDOW = function(handle, bool_fn, node, event_id, event_data)
+    if tw_in_window(handle, node) then
+        return CFL_DISABLE
+    end
+    return CFL_HALT
+end
+
+-- HALT while the wall clock is IN the window; DISABLE on first tick OUT.
+-- Idiomatic use: place after a one-shot action inside a column so the action
+-- fires once per window crossing; RESET the parent to re-arm.
+M.main.CFL_WAIT_UNTIL_OUT_OF_TIME_WINDOW = function(handle, bool_fn, node, event_id, event_data)
+    if tw_in_window(handle, node) then
+        return CFL_HALT
+    end
+    return CFL_DISABLE
+end
+
 -- Event logger: check event_ids array, print matching events
 M.main.CFL_EVENT_LOGGER = function(handle, bool_fn, node, event_id, event_data)
     local node_id = nid(node)
