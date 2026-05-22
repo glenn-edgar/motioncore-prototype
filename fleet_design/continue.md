@@ -228,103 +228,106 @@ for the four zenoh `.so` files (libzenoh_pubsub / _rpc / _token + libzenohpico).
 These will be replaced by `vendor/lib-aarch64/` once we cross-compile for Pi.
 Override `LD_LIBRARY_PATH` in the caller env to bypass the bench default.
 
-## Resume here (2026-05-21)
+## Resume here (2026-05-22)
 
-**`fake_robot` runs the full lifecycle against the real controller.** This
-session shipped three plan items; `server/` now holds a working controller.
+**fleet_design has its first real robot — `farm_soil` — built and verified
+against the live network.** Slices 1–5 complete. The shared connection layer
+graduated into `robot_common/`. See the `farm-soil-robot-2026-05-22` memory.
 
-### Done this session (committed)
-
-| Commit | What |
-|---|---|
-| `c8fb87d` | `fake_counter` app KB — multi-KB spawn / concurrent / sweep / respawn verified |
-| `ab52f9d` | `server/fleet_manager` — real controller; `bench_manager` retired |
-| `e1c3f37` | `fleet_manager` survives a `zenohd` bounce (pcall the heartbeat publish) |
-| `f1005e5` | KB0 — dropped the inert transport-recovery scope (one scope now) |
-
-### KB0 structure (current — `connection.json`, 44 nodes)
+### Layout
 
 ```
-outer column
-  wait_for_event("ZENOH_CONNECTED")   HALT boot-gate — blocks until transport up
-  state_machine "protocol_sm"
-    "wait_for_ack"      ANNOUNCE_REGISTRATION → wait REGISTRATION_ACK (retry-backoff)
-                        → PUBLISH_NAMESPACE → NAMESPACE_UP_HOOK → SPAWN_APP_KBS
-    "verify_controller_heartbeat"  verify(TEST_CONTROLLER_HEARTBEAT) + delay + reset;
-                        fail → ERROR_CONTROLLER_LOST → back to wait_for_ack
-  asm_halt()            terminal — KB0 runs forever
+fleet_design/
+  vendor/lua/        ct_* runtime + zenoh bindings (vendored)
+  robot_common/      shared — chains/{connection.lua (KB0 builder),
+                     connection_user_functions.lua}; lib/{identity, clock,
+                     zenoh_session, zenoh_rpc_session, app_heartbeat}
+  fake_robot/        the generic test robot — class_spec, chains/build.lua,
+                     the fake_counter app KB
+  farm_soil/         the soil-moisture robot — class_spec, chains/build.lua,
+                     the moisture app KB, lib/{decoder, ttn_client, moisture},
+                     secrets/ttn.env (gitignored — the TTN bearer token)
+  server/fleet_manager/   the controller (register RPC + heartbeat + registry)
 ```
 
-ONE recovery scope: the controller heartbeat. The 2026-05-20 design's second,
-broader transport-recovery scope (`verify(TEST_ZENOH_CONNECTION)` guarding the
-outer column) was removed — it had no detector and was redundant: a `zenohd`
-outage stops the controller heartbeat, so the controller scope already drives
-the full re-bringup, and zenoh-pico client mode reconnects on its own.
+Each robot's `chains/build.lua` requires the shared KB0 builder + its own
+app-KB modules and assembles one `connection.json` IR (45 nodes).
 
-KB0 spawns class application KBs from `class_spec.app_kbs` via `SPAWN_APP_KBS`
-→ `ct_runtime.add_test`; one IR (`connection.json`) carries KB0 + every app
-KB. `fake_counter` is the throwaway example app KB.
+### farm_soil — the moisture robot (slices 1–5, real-data verified)
 
-### server/ — robot controller
+A standalone LuaJIT chain_tree robot: polls LoRaWAN soil sensors from The
+Things Network and publishes onto the local Zenoh fabric. Standalone mode
+(#17) — no DCS, SQLite-only, local zenohd.
 
-`server/fleet_manager/` is layer 20 of the eventual five (see `server/README.md`).
-Reproduces the register-RPC + heartbeat contract; adds an in-memory registry
-(`lib/registry.lua`, the seam for SQLite `registry.db` per decision #15). The
-controller is passive — no validation, no NACK (#29). `bench_manager/` retired.
+- **KB0** (shared) — connect, register, publish namespace, watch the
+  controller heartbeat, supervise app KBs.
+- **moisture KB** — hourly: fetch the TTN 24 h window → decode → append to a
+  256-deep in-memory ring → publish each new reading per-sample on
+  `farm_soil/<instance>/<device>/<location>/latest`.
+- **`sample` RPC** (`farm_soil/<instance>/sample`) — pull one ring entry by
+  index (0 = newest); ad-hoc queries + gap backfill.
+- **honest heartbeat** — every ~3 s KB0 publishes `…/heartbeat`
+  `{ts, state, apps}`, rolling up each app KB's stamped health.
 
-### Verified live (zenohd router + fleet_manager + fake_robot)
+Verified live: 64–65 real uplinks/fetch from the lacima ranch (3 sensing
+points) — per-sample published + received, the `sample` RPC, both robots'
+heartbeats.
 
-- Multi-KB: KB0 spawns `fake_counter`, runs it concurrently, sweeps it on
-  controller loss, respawns on recovery.
-- Controller-loss recovery: heartbeat stops → `ERROR_CONTROLLER_LOST` →
-  re-handshake retry-backoff → re-register → respawn.
-- `zenohd` bounce: `fleet_manager` survives (transport down/up logged),
-  `fake_robot` recovers via the controller scope, `RE-REG reg#2` recorded.
+### THE zenoh lesson — publish per-sample, never blobs
 
-### Zenoh transport — IMPORTANT (unchanged)
+zenoh-pico's pub/sub **silently drops multi-KB payloads** (a ~7 KB value
+never arrived; ~600 B is fine — confirmed by a real-data smoke). So the robot
+publishes each reading as its own small message, never the 256-ring as one
+object. The vendored bindings have **no get-from-storage** and zenohd runs no
+storage — which is why the robot holds the ring in memory and serves it by RPC.
 
-The vendored bindings (`zenoh_pubsub`, `zenoh_rpc`) are **client-mode +
-zenohd-router only** — no working peer / no-router path. Bench + container
-tests need a `zenohd` router:
-`docker run -d --name fleet-zenohd -p 7447:7447/tcp -p 7447:7447/udp eclipse/zenoh --listen tcp/0.0.0.0:7447 --listen udp/0.0.0.0:7447`
-Pi Zero 2 deploy (no containers) is an unsolved, separate problem.
+### Commits since the 2026-05-21 wrap
 
-### Run the end-to-end smoke test
+`311d440` re-vendor ct_builtins (time-window leaves) · `6c739ee` graduate
+KB0 + lib → robot_common · `7bbf981` farm_soil skill modules · `d53ab75`
+farm_soil scaffold + moisture KB · `6f6ac8c` republish RPC · `88ebd0b`
+per-sample publish + `sample` RPC · `7ae3cd6` slice 5 (KB0 app-KB heartbeat).
+Engine repo (`~/knowledge_base_assembly`): `77ec769b` time-window leaves.
 
-(the shell may preset a Lua-5.4 `LUA_CPATH`; override it)
+### Bench smoke
 
 ```
-# 1. router (docker run … above)
-# 2. controller:
+# zenohd router:
+docker run -d --name fleet-zenohd -p 7447:7447/tcp -p 7447:7447/udp \
+  eclipse/zenoh --listen tcp/0.0.0.0:7447 --listen udp/0.0.0.0:7447
+# controller:
 LUA_CPATH="/usr/local/lib/lua/5.1/?.so;;" server/fleet_manager/run.sh &
-# 3. robot:
-ROBOT_CLASS=fake_robot ROBOT_INSTANCE=bench01 \
-  LUA_CPATH="/usr/local/lib/lua/5.1/?.so;;" fake_robot/run.sh
+# farm_soil (needs the TTN token in farm_soil/secrets/ttn.env):
+ROBOT_CLASS=farm_soil ROBOT_INSTANCE=lacima01 \
+  LUA_CPATH="/usr/local/lib/lua/5.1/?.so;;" farm_soil/run.sh
+# rebuild an IR after a chains/ edit:
+luajit farm_soil/chains/build.lua farm_soil/chains/connection.json
 ```
+
+The vendored bindings are still **client-mode + zenohd-router only** — bench
+and container tests need the `zenohd` router above. Pi Zero 2 deploy (no
+containers) remains a separate, unsolved problem.
 
 ## Plan for next session
 
-Two prior plan items remain (base architecture, container) plus follow-ups:
+**1. Two more irrigation skill-KBs (START HERE).** Two further skill-KBs for
+the farm system (the user has them in mind). Each is a new app KB —
+`chains/<skill>.lua` (build module) + `<skill>_user_functions.lua` — added to
+`class_spec.app_kbs` and `chains/build.lua`, registered in `main.lua`. Each
+app KB stamps `app_heartbeat.stamp(...)` so KB0's heartbeat stays honest.
+First decide: do they live in `farm_soil/` or a new robot class?
 
-**1. Base architecture (START HERE).** Work out how a real robot class
-composes — class-specific KBs, `class_spec`, identity, the app layer — beyond
-the `fake_counter` throwaway. Decide where `fake_robot/lib/` and `chains/`
-graduate to a shared location (decision #26 was directional). Likely first
-real class: `car_window_controller` per the CWC spec.
+**2. Persistence app + local web servers.** The `server/` layers that
+subscribe to the per-sample reading streams, store SQLite (the durable
+central copy — the robot only buffers 256 readings), and serve local web
+dashboards.
 
-**2. Container.** Package `fake_robot` (and later `server/`) as a container —
-Dockerfile + `vendor/` + `lib/`. The Pi Zero 2 runs the bare process; the
-container is the non-Pi deployment form. `server/` is built `FROM
-nanodatacenter/luajit-base` (decision #12).
+**3. Container packaging (still open).** `fake_robot`/`farm_soil` and
+`server/` as containers (`FROM nanodatacenter/luajit-base`, decision #12).
+The Pi Zero 2 runs the bare process.
 
-**3. fleet_manager follow-ups.** SQLite `registry.db` (decision #15) behind
-`lib/registry.lua`; then the next controller layers (`persistence`,
-`application_logic`, `application_gateway`). Small hardening: KB0's
-`PUBLISH_NAMESPACE` does unguarded `ps:publish` calls — pcall them like
-`fake_counter` does (low risk; the transport is up right after an ACK).
-
-**First action:** read this file + the `chain_tree_dsl_runtime_model.md`
-memory, then design the base architecture for the first real robot class.
+**First action:** read this file + the `farm-soil-robot-2026-05-22` and
+`chain-tree-dsl-runtime-model` memories, then start the first irrigation skill.
 
 **Reference paths (dev-machine orientation only — NOT used at runtime):**
 The runtime uses `fleet_design/vendor/lua/` exclusively (see `vendor/PROVENANCE.md`).
@@ -344,3 +347,4 @@ The runtime uses `fleet_design/vendor/lua/` exclusively (see `vendor/PROVENANCE.
 - Don't re-add Zenoh commissioning round-trips — #23 rescinded by #27; identity is env+file.
 - The real controller is `server/fleet_manager/`; `bench_manager/` was retired 2026-05-21.
 - Don't propose chain_tree DSL from API primitives — study `dsl_tests/` + the `chain_tree_dsl_runtime_model.md` memo first.
+- Don't publish multi-KB Zenoh values — zenoh-pico silently drops them. Publish per-sample (small messages); serve bulk data by RPC, one small reply per request.
