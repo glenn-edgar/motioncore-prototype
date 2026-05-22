@@ -1,16 +1,17 @@
 -- chains/moisture_user_functions.lua — ct_* user fns for the moisture KB.
 --
 -- MOISTURE_FETCH (a one-shot leaf): fetch the TTN lookback window, decode,
--- append new uplinks to the per-sensing-point in-memory ring, and publish
--- each touched sensing point's `latest` + `recent` slot onto the namespace.
+-- and for each NEW uplink — append it to the per-sensing-point in-memory
+-- ring AND publish it as its own small `latest` message. Per-sample, never
+-- a blob: a multi-KB payload does not traverse zenoh-pico (confirmed by the
+-- real-data smoke), but a ~500 B reading does.
 --
--- Also exports republish_all(handle) — re-emit *every* slot from the ring.
--- main.lua's pump calls it to service the `republish` RPC: the catch-up
--- door for a late subscriber (a fresh persistence app, a dashboard) that
--- wants current state without waiting for the next hourly publish.
+-- Also exports handle_sample_request(handle, payload) — main.lua's pump
+-- calls it for the `sample` RPC: a consumer pulls one ring entry by index
+-- (0 = newest) for ad-hoc queries and gap backfill.
 --
--- The robot is the sole writer of the slots; the rings live in the
--- blackboard (bb._moisture_slots). Nothing is read back from zenohd.
+-- The robot holds the rings in the blackboard (bb._moisture_slots). Nothing
+-- is read back from zenohd.
 --
 -- Containment (the robustness requirement): a TTN fetch error is a return
 -- value, not a raise — the leaf logs and skips the cycle. Zenoh publishes
@@ -21,6 +22,7 @@
 --   bb._class_spec.device_locations = { [device_id] = location, ... }
 -- Secret: TTN_BEARER_TOKEN from the environment (run.sh sources secrets/).
 
+local cjson      = require("cjson")
 local ttn_client = require("ttn_client")
 local decoder    = require("decoder")
 local moisture   = require("moisture")
@@ -37,22 +39,16 @@ local function after_iso(lookback_hours)
     return os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - lookback_hours * 3600)
 end
 
--- Publish one sensing point's `recent` + `latest` slots onto the namespace.
--- Every Zenoh call is pcall-wrapped — a publish failure is contained and
--- logged; the ring keeps the data for the next cycle. Returns true on
--- success. Shared by MOISTURE_FETCH and republish_all.
-local function publish_slot(id, ps, slot)
-    local base       = id.namespace .. "/" .. slot.device .. "/" .. slot.location
-    local updated_at = os.date("!%Y-%m-%dT%H:%M:%SZ")
-    local recent     = moisture.recent_json(slot, id.class, id.instance, updated_at)
-    local latest     = moisture.latest_json(slot, id.class, id.instance, updated_at)
-    local ok, err = pcall(function()
-        ps:publish(base .. "/recent", recent)
-        if latest then ps:publish(base .. "/latest", latest) end
-    end)
+-- Publish one reading as a small message on the sensing point's `latest`
+-- key. pcall-wrapped — a publish failure is contained and logged; the ring
+-- keeps the record, and the `sample` RPC can still serve it. Returns true
+-- on success.
+local function publish_reading(id, ps, device, location, record)
+    local key = id.namespace .. "/" .. device .. "/" .. location .. "/latest"
+    local msg = moisture.reading_json(id.class, id.instance, device, location, record)
+    local ok, err = pcall(function() ps:publish(key, msg) end)
     if not ok then
-        log(id, "publish failed for %s/%s (%s) — retry next cycle",
-            slot.device, slot.location, tostring(err))
+        log(id, "publish failed for %s/%s (%s)", device, location, tostring(err))
     end
     return ok
 end
@@ -85,14 +81,15 @@ M.one_shot.MOISTURE_FETCH = function(handle, node)
         return
     end
 
-    -- Decode + timestamp-reconcile into the per-sensing-point rings.
+    -- Decode; feed the rings oldest-first (TTN returns ascending, sort to
+    -- be sure). Each genuinely-new uplink is ringed AND published per-sample.
     local uplinks = decoder.parse_uplinks(body)
-    table.sort(uplinks, function(a, b)          -- oldest-first for ring_append
+    table.sort(uplinks, function(a, b)
         return tostring(a.received_at) < tostring(b.received_at)
     end)
 
     local locations = cs.device_locations or {}
-    local appended, touched = 0, {}
+    local appended, published = 0, 0
     for _, up in ipairs(uplinks) do
         local device   = up.device_id
         local location = locations[device] or "unknown"
@@ -102,31 +99,42 @@ M.one_shot.MOISTURE_FETCH = function(handle, node)
             slot = moisture.new_slot(device, location)
             slots[sp] = slot
         end
-        if moisture.ring_append(slot, moisture.record_from_uplink(up)) then
+        local record = moisture.record_from_uplink(up)
+        if moisture.ring_append(slot, record) then
             appended = appended + 1
-            touched[sp] = slot
+            if publish_reading(id, ps, device, location, record) then
+                published = published + 1
+            end
         end
     end
 
-    local published = 0
-    for _, slot in pairs(touched) do
-        if publish_slot(id, ps, slot) then published = published + 1 end
-    end
-
-    log(id, "fetch ok — %d uplinks, %d new samples, %d slots published",
+    log(id, "fetch ok — %d uplinks, %d new readings, %d published",
         #uplinks, appended, published)
 end
 
--- Re-emit every slot the robot currently holds — the `republish` RPC
--- handler (in main.lua's pump) calls this. Returns the count published.
-function M.republish_all(handle)
-    local bb = handle.blackboard
-    local id, ps = bb._identity, bb._pubsub
-    local n = 0
-    for _, slot in pairs(bb._moisture_slots or {}) do
-        if publish_slot(id, ps, slot) then n = n + 1 end
+-- `sample` RPC handler — main.lua's pump calls this with the request
+-- payload. Request JSON: { device, location, index } (index 0 = newest).
+-- Reply JSON: a reading message, or {..., end=true} past the ring depth, or
+-- {error=...} for a malformed request / unknown sensing point. One entry per
+-- request — every reply stays small.
+function M.handle_sample_request(handle, req_payload)
+    local id = handle.blackboard._identity
+    local ok, q = pcall(cjson.decode, req_payload or "")
+    if not ok or type(q) ~= "table" or not q.device or not q.location then
+        return cjson.encode({ error = "bad request — need {device, location, index}" })
     end
-    return n
+    local index = tonumber(q.index) or 0
+    local slot  = (handle.blackboard._moisture_slots or {})[q.device .. "/" .. q.location]
+    if not slot then
+        return cjson.encode({ error = "no such sensing point",
+                              device = q.device, location = q.location })
+    end
+    local record = moisture.ring_at(slot, index)
+    if not record then
+        return cjson.encode({ device = q.device, location = q.location,
+                              index = index, ["end"] = true })
+    end
+    return moisture.reading_json(id.class, id.instance, q.device, q.location, record)
 end
 
 M.registry = { main = M.main, one_shot = M.one_shot, boolean = M.boolean }

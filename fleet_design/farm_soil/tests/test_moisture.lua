@@ -92,32 +92,29 @@ do  -- eviction past capacity
 end
 
 ----------------------------------------------------------------------------
-print("== slot JSON ==")
+print("== ring_at + reading JSON ==")
 do
     local s = moisture.new_slot("lacima1c", "zone3")
     moisture.ring_append(s, moisture.record_from_uplink(uplink("2026-05-12T12:00:00Z", 1)))
     moisture.ring_append(s, moisture.record_from_uplink(uplink("2026-05-12T13:00:00Z", 2)))
 
-    local recent = cjson.decode(
-        moisture.recent_json(s, "farm_soil", "lacima01", "2026-05-12T13:00:05Z"))
-    check("recent: schema", recent.schema, "moisture.recent/1")
-    check("recent: device", recent.device, "lacima1c")
-    check("recent: location", recent.location, "zone3")
-    check("recent: capacity 256", recent.capacity, 256)
-    check("recent: 2 entries", #recent.entries, 2)
-    check("recent: entries oldest-first", recent.entries[1].f_cnt, 1)
-    check("recent: units present", recent.units.moisture, "m3/m3")
+    check("ring_at(0) is the newest", moisture.ring_at(s, 0).f_cnt, 2)
+    check("ring_at(1) is next-newest", moisture.ring_at(s, 1).f_cnt, 1)
+    check("ring_at(2) past depth -> nil", moisture.ring_at(s, 2), nil)
 
-    local latest = cjson.decode(
-        moisture.latest_json(s, "farm_soil", "lacima01", "2026-05-12T13:00:05Z"))
-    check("latest: schema", latest.schema, "moisture.latest/1")
-    check("latest: entry is the newest", latest.entry.f_cnt, 2)
-    check("latest: entry moisture", near(latest.entry.measurements.moisture, 0.530), true)
+    local r = cjson.decode(moisture.reading_json(
+        "farm_soil", "lacima01", "lacima1c", "zone3", moisture.ring_at(s, 0)))
+    check("reading: schema", r.schema, "moisture.reading/1")
+    check("reading: device", r.device, "lacima1c")
+    check("reading: location", r.location, "zone3")
+    check("reading: entry is the record", r.entry.f_cnt, 2)
+    check("reading: entry moisture", near(r.entry.measurements.moisture, 0.530), true)
+    check("reading: units present", r.units.moisture, "m3/m3")
 end
 
-do  -- latest_json on an empty ring -> nil
-    check("latest_json empty ring -> nil",
-        moisture.latest_json(moisture.new_slot("d", "l"), "c", "i", "t"), nil)
+do  -- ring_at on an empty ring -> nil
+    check("ring_at empty ring -> nil",
+        moisture.ring_at(moisture.new_slot("d", "l"), 0), nil)
 end
 
 ----------------------------------------------------------------------------

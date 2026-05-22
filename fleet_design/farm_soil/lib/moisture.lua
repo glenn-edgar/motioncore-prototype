@@ -1,19 +1,20 @@
 -- lib/moisture.lua — moisture skill core: uplink records, the per-sensing-
--- point ring buffer, and the latest/recent slot JSON.
+-- point ring buffer, ring access by index, and the per-reading message JSON.
 --
 -- Engine-agnostic — pure data logic, no chain_tree imports. The chain_tree
 -- wiring lives in chains/moisture_user_functions.lua.
 --
 -- A "slot" is one sensing point (<device>/<location>): a ring of up to
--- RING_CAPACITY uplink records, oldest-first. The robot is the sole writer,
--- so the ring in memory is the source of truth — nothing is read back.
+-- RING_CAPACITY uplink records, oldest-first. The robot holds the ring in
+-- memory and publishes each new reading as its own small message (a multi-KB
+-- blob does not traverse zenoh-pico — confirmed by the real-data smoke). The
+-- ring is served by index via the `sample` RPC; it is never one big object.
 
 local cjson = require("cjson")
 
 local M = {}
 
-M.SCHEMA_RECENT  = "moisture.recent/1"
-M.SCHEMA_LATEST  = "moisture.latest/1"
+M.SCHEMA_READING = "moisture.reading/1"
 M.RING_CAPACITY  = 256
 
 -- SenseCAP S2105 measurement ids -> field names. The decoder is generic
@@ -64,9 +65,9 @@ function M.new_slot(device, location)
 end
 
 -- Append `record` to the slot's ring IFF it is strictly newer than the
--- ring's current newest entry — this is the timestamp reconcile: a re-fetched
--- uplink (received_at <= newest) is dropped. Evicts the oldest past
--- RING_CAPACITY. Records must be fed oldest-first. Returns true if appended.
+-- ring's current newest entry — the timestamp reconcile: a re-fetched uplink
+-- (received_at <= newest) is dropped. Evicts the oldest past RING_CAPACITY.
+-- Records must be fed oldest-first. Returns true if appended.
 --
 -- received_at is TTN's RFC3339 UTC string; consistent formatting makes a
 -- lexicographic compare equivalent to a chronological one.
@@ -83,36 +84,25 @@ function M.ring_append(slot, record)
     return true
 end
 
--- The `recent` slot JSON — the whole ring. `updated_at` is the robot's
--- wall-clock at publish (RFC3339 UTC string).
-function M.recent_json(slot, class, instance, updated_at)
-    return cjson.encode({
-        schema     = M.SCHEMA_RECENT,
-        class      = class,
-        instance   = instance,
-        device     = slot.device,
-        location   = slot.location,
-        capacity   = M.RING_CAPACITY,
-        updated_at = updated_at,
-        units      = UNITS,
-        entries    = slot.ring,          -- oldest -> newest
-    })
+-- The ring entry at `index` — 0 = newest, 1 = next-newest, … — or nil when
+-- the index is past the ring's current depth. The `sample` RPC uses this.
+function M.ring_at(slot, index)
+    local pos = #slot.ring - index
+    if pos < 1 then return nil end
+    return slot.ring[pos]
 end
 
--- The `latest` slot JSON — the newest entry only (the persistence app's
--- cheap integrate-trigger). Returns nil for an empty ring.
-function M.latest_json(slot, class, instance, updated_at)
-    local newest = slot.ring[#slot.ring]
-    if not newest then return nil end
+-- Encode one reading as a small published/replied message: a self-
+-- identifying envelope wrapping a single uplink record.
+function M.reading_json(class, instance, device, location, record)
     return cjson.encode({
-        schema     = M.SCHEMA_LATEST,
-        class      = class,
-        instance   = instance,
-        device     = slot.device,
-        location   = slot.location,
-        updated_at = updated_at,
-        units      = UNITS,
-        entry      = newest,
+        schema   = M.SCHEMA_READING,
+        class    = class,
+        instance = instance,
+        device   = device,
+        location = location,
+        units    = UNITS,
+        entry    = record,
     })
 end
 

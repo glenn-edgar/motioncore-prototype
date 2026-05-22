@@ -68,24 +68,24 @@ io.stderr:write(string.format(
 -- only consumes. Drained each pump tick — see the event pump below.
 ps:subscribe("fleet/admin/heartbeat", { kind = "ctrl_heartbeat" })
 
--- RPC server — the `republish` queryable. A consumer (a fresh persistence
--- app, a dashboard) calls it to make the robot re-emit every slot from its
--- in-memory ring, so a late subscriber catches up without waiting for the
--- next hourly publish. Polled + handled in the pump.
+-- RPC server — the `sample` queryable. A consumer calls it to pull one
+-- entry from the in-memory 256-ring by index (0 = newest) — ad-hoc queries
+-- and gap backfill, one small reply per request (no blob). Polled + handled
+-- in the pump.
 local zrpc = require("zenoh_rpc")
 local zt   = require("zenoh_token")
 
 local rpc_srv = zrpc.Server.new({
     locators = { LOCATOR }, client_name = id.namespace .. "/srv",
 })
-local republish_topic = id.namespace .. "/republish"
-local republish_token = zt.hash(republish_topic)
-zt.register(republish_token, republish_topic)
-local republish_q = rpc_srv:register(republish_token, 8)
+local sample_topic = id.namespace .. "/sample"
+local sample_token = zt.hash(sample_topic)
+zt.register(sample_token, sample_topic)
+local sample_q = rpc_srv:register(sample_token, 8)
 rpc_srv:start()
 io.stderr:write(string.format(
-    "FARM_SOIL [%s]: republish queryable up on %s\n",
-    id.namespace, republish_topic))
+    "FARM_SOIL [%s]: sample queryable up on %s\n",
+    id.namespace, sample_topic))
 
 -- ---------------------------------------------------------------------------
 -- Chain_tree wire-up: load compiled IR, register fns, activate KB0
@@ -193,23 +193,21 @@ while not handle.blackboard.shutdown_requested do
         end
     end
 
-    -- Service `republish` requests — re-emit every slot from the in-memory
-    -- ring so a late subscriber can catch up. republish_all + the reply are
-    -- pcall-wrapped — a bad request cannot crash the pump.
+    -- Service `sample` RPC requests — return one ring entry per request
+    -- (index 0 = newest). Handler + reply pcall-wrapped — a bad request
+    -- cannot crash the pump.
     while true do
-        local req = republish_q:poll()
+        local req = sample_q:poll()
         if not req then break end
-        local okrp, n = pcall(moisture_fns.republish_all, handle)
+        local okrp, reply = pcall(moisture_fns.handle_sample_request,
+            handle, req:payload())
         if okrp then
-            io.stderr:write(string.format(
-                "FARM_SOIL [%s]: republish — re-emitted %d slot(s)\n",
-                id.namespace, n))
-            pcall(function() req:reply("ok " .. tostring(n)) end)
+            pcall(function() req:reply(reply) end)
         else
             io.stderr:write(string.format(
-                "FARM_SOIL [%s]: republish error (contained): %s\n",
-                id.namespace, tostring(n)))
-            pcall(function() req:reply_error(tostring(n)) end)
+                "FARM_SOIL [%s]: sample request error (contained): %s\n",
+                id.namespace, tostring(reply)))
+            pcall(function() req:reply_error(tostring(reply)) end)
         end
     end
 
