@@ -166,19 +166,30 @@ the same code path, but we assume the same ceiling until proven otherwise.
   schema bug worth surfacing, not silently truncating.
 
 **Cursor format (opaque to client; documented here):**
-- For `stream`: base64 of `{"order":"desc","after_id":<int>}` — server
-  resumes with `WHERE id < after_id ORDER BY id DESC` (or `>` for asc).
-  Survives concurrent inserts cleanly (no duplicate rows mid-page).
+- For `stream`: plain string `"<order>:<after_id>"` (e.g. `"desc:42"`).
+  Server resumes with `WHERE id < after_id ORDER BY id DESC` (or `>` for
+  asc). ID-based (not `recorded_at`-based) so concurrent inserts mid-walk
+  don't cause dupes or skips. The cursor includes order so a client
+  cannot accidentally flip direction by re-passing the cursor with new
+  args — server uses cursor's order when present.
 - For `list_kbs` / `list_leaves`: probably no cursor needed in v1
   (counts are small); leave the field structure in place so adding one
   later isn't a breaking change.
 
+**Size discipline for `stream` specifically:** the op queries with
+`limit+1` to detect `more_available`, then iteratively trims the tail
+row + recomputes the cursor until the encoded reply fits under
+`max_reply_bytes`. So `limit` is a *hint*; actual page size can be
+smaller. If the FIRST row alone is over-cap → `payload_too_big`.
+
 ## 6. KBDS read-side facts (for the implementer)
 
 - Status read: `rt:get_status_data(ltree_path)` on KBDS aggregator.
-- Stream read: `rt.stream:list_stream_data(path, {limit, offset,
-  recorded_after, recorded_before, order})` — NOT on the aggregator
-  (known gap). Also `rt.stream:get_latest_stream_data(path)`.
+- Stream read: `rt:list_stream_data(path, {limit, offset, recorded_after,
+  recorded_before, order, order_by='id', after_id=N})` — facade method
+  (added 2026-05-23, was previously only on `rt.stream:`).
+- Latest stream row: `rt:get_latest_stream_data(path)` — facade method
+  (added 2026-05-23 alongside `list_stream_data` to close the same gap).
 - KB list: iterate `p.instances` (already in memory).
 - Leaf list: iterate `state.leaves` (already in memory).
 
@@ -199,10 +210,14 @@ existing kb_stream / kb_status call. Implementation is small.
 
 ## 8. Slice plan
 
-- **Slice 1** (this draft → implementation): envelope + announce +
-  `latest(path)` + `list_kbs()` + test client. Smoke against
-  farm_soil heartbeat. No pagination paths exercised yet.
-- **Slice 2**: `stream(...)` with pagination + `latest_stream(...)` +
-  `list_leaves(...)`. Smoke against CIMIS sample stream.
+- **Slice 1** (DONE 2026-05-23): envelope + announce + `latest(path)` +
+  `list_kbs()` + test client. Smoke against farm_soil heartbeat.
+- **Slice 2** (DONE 2026-05-23): `stream(...)` with cursor pagination +
+  iterative size-trim + `latest_stream(...)` + `list_leaves(...)`.
+  Smoked against CIMIS sample stream (7 rows / 3 pages at limit=3) and
+  moisture stream (limit=100 trimmed to 6 rows under the 4 KB cap).
+  Library extensions: `kb_stream.list_stream_data` now takes
+  `opts.after_id` + `opts.order_by='id'`; `kb_data_structures` facade
+  now exposes `get_latest_stream_data`.
 - **Slice 3**: live-update push channel if a dashboard consumer needs
   it; otherwise deferred.

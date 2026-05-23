@@ -136,7 +136,101 @@ for _, kb in ipairs(r.data) do
 end
 
 -- ---------------------------------------------------------------------------
--- 4. Negative checks — ensure error envelope works
+-- 4. Slice-2 ops: list_leaves / latest_stream / stream + pagination
+-- ---------------------------------------------------------------------------
+log("\n== list_leaves() for each kb ==")
+local stream_leaf_by_kb = {}   -- kb_name -> first stream leaf path, for next step
+for _, kb in ipairs(r.data) do
+    local rl = rpc_call(cli, announce.rpc_token_key,
+        { op = "list_leaves", args = { kb_name = kb.kb_name } })
+    if not rl or not rl.ok then
+        log("  %s: FAIL %s", kb.kb_name,
+            (rl and rl.error and rl.error.code) or "rpc raised")
+        fail_count = fail_count + 1
+    else
+        local n_stream, n_status = 0, 0
+        local picked_stream
+        for _, leaf in ipairs(rl.data) do
+            if leaf.kind == "stream" then
+                n_stream = n_stream + 1
+                -- Prefer cimis/station/sample (predictable test data); else
+                -- accept the first stream leaf alphabetically.
+                if leaf.path == "cimis/station/sample" then
+                    picked_stream = leaf.path
+                end
+                if not picked_stream and not stream_leaf_by_kb[kb.kb_name] then
+                    stream_leaf_by_kb[kb.kb_name] = leaf.path
+                end
+            elseif leaf.kind == "status" then
+                n_status = n_status + 1
+            end
+        end
+        if picked_stream then stream_leaf_by_kb[kb.kb_name] = picked_stream end
+        log("  %s: %d stream + %d status leaves; picked stream=%s",
+            kb.kb_name, n_stream, n_status,
+            tostring(stream_leaf_by_kb[kb.kb_name]))
+    end
+end
+
+log("\n== latest_stream(kb_name, <picked>) ==")
+for kb_name, path in pairs(stream_leaf_by_kb) do
+    local rls = rpc_call(cli, announce.rpc_token_key,
+        { op = "latest_stream", args = { kb_name = kb_name, path = path } })
+    if not rls or not rls.ok then
+        log("  %s %s: FAIL %s", kb_name, path,
+            (rls and rls.error and rls.error.code) or "rpc raised")
+        fail_count = fail_count + 1
+    elseif rls.data == cjson.null then
+        log("  %s %s: null (no rows yet)", kb_name, path)
+    else
+        log("  %s %s: id=%s recorded_at=%s value=%s",
+            kb_name, path, tostring(rls.data.id),
+            tostring(rls.data.recorded_at),
+            cjson.encode(rls.data.value):sub(1, 80))
+    end
+end
+
+log("\n== stream(...) pagination round-trip ==")
+for kb_name, path in pairs(stream_leaf_by_kb) do
+    local total, pages = 0, 0
+    local cursor
+    local LIMIT = 3
+    local MAX_PAGES = 50   -- safety bound
+    local seen_ids = {}
+    repeat
+        pages = pages + 1
+        if pages > MAX_PAGES then
+            log("  %s %s: aborted after %d pages (runaway?)", kb_name, path, pages - 1)
+            fail_count = fail_count + 1
+            break
+        end
+        local req = { op = "stream", args = {
+            kb_name = kb_name, path = path,
+            limit = LIMIT, order = "desc",
+        }}
+        if cursor then req.page = cursor end
+        local rs = rpc_call(cli, announce.rpc_token_key, req)
+        if not rs or not rs.ok then
+            log("  %s %s: FAIL on page %d: %s", kb_name, path, pages,
+                (rs and rs.error and rs.error.code) or "rpc raised")
+            fail_count = fail_count + 1
+            break
+        end
+        for _, row in ipairs(rs.data) do
+            total = total + 1
+            if seen_ids[row.id] then
+                log("  %s %s: DUP row id=%d at page %d", kb_name, path, row.id, pages)
+                fail_count = fail_count + 1
+            end
+            seen_ids[row.id] = true
+        end
+        cursor = rs.next_page
+    until not cursor
+    log("  %s %s: walked %d row(s) in %d page(s)", kb_name, path, total, pages)
+end
+
+-- ---------------------------------------------------------------------------
+-- 5. Negative checks — ensure error envelope works
 -- ---------------------------------------------------------------------------
 log("\n== negative checks ==")
 
@@ -161,6 +255,31 @@ log("  missing args     -> ok=%s code=%s",
     tostring(r5 and r5.ok), r5 and r5.error and r5.error.code)
 if not (r5 and r5.ok == false and r5.error.code == "bad_request") then
     fail_count = fail_count + 1
+end
+
+-- Stream with garbage cursor — should be bad_request, not internal.
+local first_kb = (r.data[1] and r.data[1].kb_name) or nil
+if first_kb and stream_leaf_by_kb[first_kb] then
+    local r6 = rpc_call(cli, announce.rpc_token_key, {
+        op = "stream", args = { kb_name = first_kb,
+                                path = stream_leaf_by_kb[first_kb] },
+        page = "not-a-real-cursor",
+    })
+    log("  invalid cursor   -> ok=%s code=%s",
+        tostring(r6 and r6.ok), r6 and r6.error and r6.error.code)
+    if not (r6 and r6.ok == false and r6.error.code == "bad_request") then
+        fail_count = fail_count + 1
+    end
+
+    -- Stream on a status path — should be bad_request (wrong kind).
+    local r7 = rpc_call(cli, announce.rpc_token_key, {
+        op = "stream", args = { kb_name = first_kb, path = "heartbeat" },
+    })
+    log("  stream on status -> ok=%s code=%s",
+        tostring(r7 and r7.ok), r7 and r7.error and r7.error.code)
+    if not (r7 and r7.ok == false and r7.error.code == "bad_request") then
+        fail_count = fail_count + 1
+    end
 end
 
 cli:disconnect(); cli:destroy()

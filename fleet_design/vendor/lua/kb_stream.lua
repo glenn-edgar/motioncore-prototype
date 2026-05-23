@@ -453,7 +453,12 @@ end
 
 --- List valid stream data with optional filtering and pagination.
 -- @param path  string
--- @param opts  { limit=, offset=, recorded_after=, recorded_before=, order= }
+-- @param opts  { limit=, offset=, recorded_after=, recorded_before=, order=,
+--                order_by=, after_id= }
+-- `order_by` is 'recorded_at' (default, back-compat) or 'id'.
+-- `after_id` adds `AND id < ?` (DESC) / `AND id > ?` (ASC) for cursored
+-- pagination — robust to concurrent inserts. Pairs with `order_by='id'`
+-- so first page and subsequent pages share a single sort dimension.
 -- @return list of dicts
 function KB_Stream:list_stream_data(path, opts)
     if not path or path == '' then error("Path cannot be empty or nil") end
@@ -461,6 +466,10 @@ function KB_Stream:list_stream_data(path, opts)
     local order = (opts.order or 'ASC'):upper()
     if order ~= 'ASC' and order ~= 'DESC' then
         error("Order must be 'ASC' or 'DESC'")
+    end
+    local order_by = (opts.order_by or 'recorded_at'):lower()
+    if order_by ~= 'recorded_at' and order_by ~= 'id' then
+        error("order_by must be 'recorded_at' or 'id'")
     end
 
     local parts = { string.format(
@@ -476,8 +485,12 @@ function KB_Stream:list_stream_data(path, opts)
         parts[#parts + 1] = "AND recorded_at <= ?"
         params[#params + 1] = opts.recorded_before
     end
+    if opts.after_id then
+        parts[#parts + 1] = (order == 'DESC' and "AND id < ?" or "AND id > ?")
+        params[#params + 1] = opts.after_id
+    end
 
-    parts[#parts + 1] = "ORDER BY recorded_at " .. order
+    parts[#parts + 1] = "ORDER BY " .. order_by .. " " .. order
 
     if opts.limit and opts.limit > 0 then
         parts[#parts + 1] = "LIMIT ?"

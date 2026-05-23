@@ -206,6 +206,9 @@ end
 function KB_Data_Structures:list_stream_data(...)
     return self.stream:list_stream_data(...)
 end
+function KB_Data_Structures:get_latest_stream_data(...)
+    return self.stream:get_latest_stream_data(...)
+end
 function KB_Data_Structures:clear_stream_data(...)
     return self.stream:clear_stream_data(...)
 end

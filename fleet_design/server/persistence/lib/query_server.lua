@@ -134,16 +134,164 @@ function M:op_list_kbs(_args)
     return ok_reply(out)
 end
 
--- v1 deferred ops — declared so the dispatcher returns a consistent
--- error rather than `unsupported_op` (lets clients probe).
-function M:op_stream(_args)
-    return err_reply("unsupported_op", "stream() lands in slice-2")
+-- ------------------------------------------------------------------
+-- Slice 2 ops: stream / latest_stream / list_leaves
+-- ------------------------------------------------------------------
+
+-- Pagination cursor for `stream`. Format: "<order>:<after_id>" — opaque
+-- to the client. ID-based (not recorded_at): IDs are monotonic with
+-- insertion, so a cursor of `id < last_id` resumes cleanly even if a
+-- concurrent write lands during pagination (no dup, no skip).
+local function make_cursor(order, after_id)
+    return string.format("%s:%d", order, after_id)
 end
-function M:op_latest_stream(_args)
-    return err_reply("unsupported_op", "latest_stream() lands in slice-2")
+
+local function parse_cursor(s)
+    if type(s) ~= "string" then return nil end
+    local order, after_id = s:match("^(%a+):(%d+)$")
+    if not order or (order ~= "asc" and order ~= "desc") then return nil end
+    return order, tonumber(after_id)
 end
-function M:op_list_leaves(_args)
-    return err_reply("unsupported_op", "list_leaves() lands in slice-2")
+
+-- stream(kb_name, path, since_ts?, until_ts?, limit?, order?) with cursor.
+function M:op_stream(args, page)
+    local leaf, errr = self:_resolve_leaf(args, "stream")
+    if not leaf then return errr end
+
+    -- Resolve order + after_id. Cursor wins over args (so a paginated
+    -- call can't accidentally switch direction mid-walk).
+    local order = "desc"
+    local after_id
+    if page ~= nil and page ~= "" then
+        local o, aid = parse_cursor(page)
+        if not o then return err_reply("bad_request", "invalid page cursor") end
+        order, after_id = o, aid
+    elseif args.order ~= nil then
+        if args.order ~= "asc" and args.order ~= "desc" then
+            return err_reply("bad_request", "order must be 'asc' or 'desc'")
+        end
+        order = args.order
+    end
+
+    -- Resolve + cap limit.
+    local limit = args.limit
+    if limit ~= nil then
+        if type(limit) ~= "number" or limit < 1 then
+            return err_reply("bad_request", "limit must be a positive integer")
+        end
+        limit = math.min(math.floor(limit), self.max_page_rows)
+    else
+        limit = self.max_page_rows
+    end
+
+    -- Time-range filters are optional; pass through verbatim.
+    if args.since_ts ~= nil and type(args.since_ts) ~= "number"
+       and type(args.since_ts) ~= "string" then
+        return err_reply("bad_request", "since_ts must be number or string")
+    end
+    if args.until_ts ~= nil and type(args.until_ts) ~= "number"
+       and type(args.until_ts) ~= "string" then
+        return err_reply("bad_request", "until_ts must be number or string")
+    end
+
+    local read_opts = {
+        order           = order:upper(),
+        order_by        = "id",
+        limit           = limit + 1,   -- +1 → detect more-available
+        after_id        = after_id,
+        recorded_after  = args.since_ts,
+        recorded_before = args.until_ts,
+    }
+
+    local rok, rows = pcall(function()
+        return self.p.rt:list_stream_data(leaf.ltree_path, read_opts)
+    end)
+    if not rok then
+        self:_log("op_stream %s: %s", leaf.ltree_path, tostring(rows))
+        return err_reply("internal", "list_stream_data failed")
+    end
+
+    local more_available = #rows > limit
+    if more_available then rows[#rows] = nil end
+
+    local data = {}
+    for _, r in ipairs(rows) do
+        data[#data + 1] = {
+            id          = r.id,
+            recorded_at = r.recorded_at,
+            value       = r.data,
+        }
+    end
+
+    local reply = ok_reply(data)
+    if more_available and #data > 0 then
+        reply.next_page = make_cursor(order, data[#data].id)
+    end
+
+    -- Empty result is a valid reply; nothing to trim.
+    if #data == 0 then return reply end
+
+    -- Iterative size-trim. Encode here so we can drop trailing rows on
+    -- overflow; the dispatcher re-encodes for the wire (cheap for ≤4 KB).
+    while #data > 0 do
+        local enc_ok, encoded = pcall(cjson.encode, reply)
+        if not enc_ok then return err_reply("internal", "encode failed") end
+        if #encoded <= self.max_reply_bytes then return reply end
+        data[#data] = nil
+        if #data > 0 then
+            reply.next_page = make_cursor(order, data[#data].id)
+        else
+            reply.next_page = nil
+        end
+    end
+    -- First (and only) row already exceeds the cap — the caller is
+    -- storing oversized values; surface as a schema bug not a silent trunc.
+    return err_reply("payload_too_big",
+        "first stream row exceeds max_reply_bytes")
+end
+
+-- latest_stream(kb_name, path) — newest valid stream row or null.
+function M:op_latest_stream(args)
+    local leaf, errr = self:_resolve_leaf(args, "stream")
+    if not leaf then return errr end
+    local ok, row = pcall(function()
+        return self.p.rt:get_latest_stream_data(leaf.ltree_path)
+    end)
+    if not ok then
+        self:_log("op_latest_stream %s: %s", leaf.ltree_path, tostring(row))
+        return err_reply("internal", "get_latest_stream_data failed")
+    end
+    if not row then return ok_reply(cjson.null) end
+    return ok_reply({
+        id          = row.id,
+        recorded_at = row.recorded_at,
+        value       = row.data,
+    })
+end
+
+-- list_leaves(kb_name) — topology for one kb (paths + kinds).
+function M:op_list_leaves(args)
+    if type(args) ~= "table" then
+        return err_reply("bad_request", "args must be an object")
+    end
+    if type(args.kb_name) ~= "string" or args.kb_name == "" then
+        return err_reply("bad_request", "kb_name required")
+    end
+    local st = self:_state_for_kb(args.kb_name)
+    if not st then
+        return err_reply("not_found", "unknown kb_name: " .. args.kb_name)
+    end
+    local out = {}
+    if st.leaves then
+        for _, leaf in pairs(st.leaves) do
+            local row = { path = leaf.tail, kind = leaf.kind }
+            if leaf.length then row.length = leaf.length end
+            if leaf.desc   then row.desc   = leaf.desc   end
+            out[#out + 1] = row
+        end
+        table.sort(out, function(a, b) return a.path < b.path end)
+    end
+    return ok_reply(out)
 end
 
 -- ------------------------------------------------------------------
@@ -176,7 +324,7 @@ function M:handle(req_payload)
     if not fn_name then
         return cjson.encode(err_reply("unsupported_op", "unknown op: " .. op))
     end
-    local handler_ok, reply = pcall(self[fn_name], self, req.args or {})
+    local handler_ok, reply = pcall(self[fn_name], self, req.args or {}, req.page)
     if not handler_ok then
         self:_log("dispatch %s raised: %s", op, tostring(reply))
         return cjson.encode(err_reply("internal", "handler raised"))
