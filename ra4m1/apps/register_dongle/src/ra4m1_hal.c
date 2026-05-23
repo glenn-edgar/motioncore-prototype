@@ -451,3 +451,68 @@ void hal_counter_stop(void)
 }
 
 bool hal_counter_active(void) { return g_counter_initialized; }
+
+// ============================================================================
+// Independent Watchdog Timer (IWDT)
+//
+// IWDTCR bit fields:
+//   [1:0]   TOPS  — timeout: 00=128, 01=512, 10=1024, 11=2048 cycles
+//   [7:4]   CKS   — clock divisor: 0000=/1, 0010=/16, 0011=/32, 0100=/64,
+//                                  1111=/128, 1000=/256
+//   [9:8]   RPES  — window end:    11=disabled (100% — always refreshable)
+//   [13:12] RPSS  — window start:  11=disabled
+// Picked TOPS=01 (512), CKS=1111 (/128), RPES=11, RPSS=11 →
+//   512 × 128 / 15 kHz ≈ 1.09 s
+// Pet cadence: chain pump @ 250 ms → 4× safety margin. Faster recovery
+// (~4 s hang→reattach) than 4.37 s, still safe vs worst-case main-loop jitter.
+//
+// In auto-start mode (OFS0[1]=0), IWDTCR writes are ignored — OFS0 controls
+// timeout. The first IWDTRR write below still pets the already-running WDT,
+// so this init is safe either way. If OFS0 has been programmed for a much
+// shorter auto-start timeout, bench-verify will surface it (the pet cadence
+// must be < OFS0-defined timeout).
+// ============================================================================
+
+#define IWDTCR_TOPS_512    (0x1u << 0)
+#define IWDTCR_CKS_DIV128  (0xFu << 4)
+#define IWDTCR_RPES_DIS    (0x3u << 8)
+#define IWDTCR_RPSS_DIS    (0x3u << 12)
+
+void hal_wdt_init(void)
+{
+    R_IWDT->IWDTCR = IWDTCR_TOPS_512 | IWDTCR_CKS_DIV128
+                   | IWDTCR_RPES_DIS | IWDTCR_RPSS_DIS;
+    hal_wdt_pet();
+}
+
+void hal_wdt_pet(void)
+{
+    R_IWDT->IWDTRR = 0x00u;
+    R_IWDT->IWDTRR = 0xFFu;
+}
+
+// ============================================================================
+// Reset-cause capture
+//
+// Read RSTSR0/RSTSR1 once at boot and snapshot, then clear the flags so the
+// next reset starts with a clean register. Without an early snapshot, any
+// later code that clears RSTSR1 (e.g., FSP startup) loses the cause.
+// ============================================================================
+
+static uint16_t g_reset_cause_snapshot = 0u;
+
+void hal_capture_reset_cause(void)
+{
+    uint8_t  rstsr0 = R_SYSTEM->RSTSR0;
+    uint16_t rstsr1 = R_SYSTEM->RSTSR1;
+    g_reset_cause_snapshot = (uint16_t)rstsr0 | (uint16_t)(rstsr1 << 8);
+    // Clear flags so future resets show fresh causes. RSTSR0 bits are W0C
+    // (write 0 to clear), RSTSR1 bits are R/W and cleared by writing 0.
+    R_SYSTEM->RSTSR0 = 0u;
+    R_SYSTEM->RSTSR1 = 0u;
+}
+
+uint16_t hal_get_reset_cause(void)
+{
+    return g_reset_cause_snapshot;
+}
