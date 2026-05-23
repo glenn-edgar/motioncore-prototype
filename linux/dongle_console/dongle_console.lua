@@ -89,6 +89,18 @@ local function u32_to_f32(u)
     return tonumber(ffi.cast("float*", g_f32)[0])
 end
 
+-- Forward direction: pack an f32 as four LE bytes appended to `out` (table).
+-- Used by CMD_GOERTZEL_* args carrying f32 fields (orders, RPM, thresholds).
+local g_f32_packer = ffi.new("float[1]")
+local function pack_f32_le(out, f)
+    g_f32_packer[0] = f
+    local u = ffi.cast("uint32_t*", g_f32_packer)[0]
+    table.insert(out, tonumber(bit.band(u, 0xFF)))
+    table.insert(out, tonumber(bit.band(bit.rshift(u,  8), 0xFF)))
+    table.insert(out, tonumber(bit.band(bit.rshift(u, 16), 0xFF)))
+    table.insert(out, tonumber(bit.band(bit.rshift(u, 24), 0xFF)))
+end
+
 -- ============================================================================
 -- Utilities
 -- ============================================================================
@@ -129,6 +141,16 @@ local CMD_SPECTRAL_START     = 0x0115
 local CMD_SPECTRAL_STATUS    = 0x0116
 local CMD_SPECTRAL_READ      = 0x0117
 local CMD_SPECTRAL_STOP      = 0x0118
+-- Mode-4 Goertzel (order-tracked bin bank) — see ra4m1/.../goertzel.{h,c}.
+local CMD_GOERTZEL_CONFIG      = 0x0119
+local CMD_GOERTZEL_SET_ORDERS  = 0x011A
+local CMD_GOERTZEL_START       = 0x011B
+local CMD_GOERTZEL_STATUS      = 0x011C
+local CMD_GOERTZEL_READ        = 0x011D
+local CMD_GOERTZEL_STOP        = 0x011E
+local CMD_GOERTZEL_INJECT_RPM  = 0x011F
+
+local GOERTZEL_STATE_NAMES = { [0]="idle", [1]="running", [2]="error" }
 
 -- ---- Spectral host-side PSD math --------------------------------------------
 -- Firmware ships raw Σ|FFT(x·w)|² (counts²) over `frame_count` frames. The
@@ -545,6 +567,141 @@ local function parse_args(argv)
                     bit.band(CMD_SPECTRAL_STOP, 0xFF), bit.band(bit.rshift(CMD_SPECTRAL_STOP, 8), 0xFF),
                 },
                 shell_req = req_id, shell_cmd = CMD_SPECTRAL_STOP,
+            })
+        elseif a == "--send-shell-goertzel-config" then
+            -- Args: SUB_MODE FS_CODE BLOCK_N CHANNEL GATE_ENABLED ACCEL_THRESH MIN_RPM ORDER_COUNT
+            i = i + 1; local sub_mode     = tonumber(argv[i])
+            i = i + 1; local fs_code      = tonumber(argv[i])
+            i = i + 1; local block_n      = tonumber(argv[i])
+            i = i + 1; local channel      = tonumber(argv[i])
+            i = i + 1; local gate_enabled = tonumber(argv[i])
+            i = i + 1; local accel_thresh = tonumber(argv[i])
+            i = i + 1; local min_rpm      = tonumber(argv[i])
+            i = i + 1; local order_count  = tonumber(argv[i])
+            if not sub_mode or sub_mode < 0 or sub_mode > 1   then die("goertzel-config SUB_MODE 0|1 (only 0=Hz implemented)") end
+            if not fs_code or fs_code < 1 or fs_code > 10     then die("goertzel-config FS_CODE 1..10") end
+            if not block_n or block_n < 256 or block_n > 16384 then die("goertzel-config BLOCK_N 256..16384") end
+            if not channel or channel < 0 or channel > 3      then die("goertzel-config CHANNEL 0..3") end
+            if gate_enabled ~= 0 and gate_enabled ~= 1        then die("goertzel-config GATE_ENABLED 0|1") end
+            if not accel_thresh or accel_thresh < 0           then die("goertzel-config ACCEL_THRESH ≥ 0 (RPM/s)") end
+            if not min_rpm or min_rpm < 0                     then die("goertzel-config MIN_RPM ≥ 0 (RPM)") end
+            if not order_count or order_count < 1 or order_count > 32 then die("goertzel-config ORDER_COUNT 1..32") end
+            local req_id  = alloc_shell_req()
+            local payload = {
+                bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                bit.band(CMD_GOERTZEL_CONFIG, 0xFF), bit.band(bit.rshift(CMD_GOERTZEL_CONFIG, 8), 0xFF),
+                sub_mode, fs_code,
+                bit.band(block_n, 0xFF), bit.band(bit.rshift(block_n, 8), 0xFF),
+                channel, gate_enabled, order_count, 0,    -- order_count, pad
+            }
+            pack_f32_le(payload, accel_thresh)
+            pack_f32_le(payload, min_rpm)
+            table.insert(opts.send_seq, {
+                cmd = 0x0109,
+                label = string.format("OP_SHELL_EXEC(goertzel_config sub=%d fs=%d N=%d ch=%d gate=%d K=%d)",
+                                       sub_mode, fs_code, block_n, channel, gate_enabled, order_count),
+                payload = payload,
+                shell_req = req_id, shell_cmd = CMD_GOERTZEL_CONFIG,
+            })
+        elseif a == "--send-shell-goertzel-set-orders" then
+            -- Args: OFFSET ORDER_1 [ORDER_2 ...]   (one call per page; max 30 orders)
+            i = i + 1; local offset = tonumber(argv[i])
+            if not offset or offset < 0 or offset > 31 then die("goertzel-set-orders OFFSET 0..31") end
+            local orders = {}
+            while argv[i+1] and tonumber(argv[i+1]) do
+                i = i + 1; table.insert(orders, tonumber(argv[i]))
+                if #orders > 30 then die("goertzel-set-orders: max 30 orders per call (page across multiple calls for K=32)") end
+            end
+            if #orders == 0 then die("goertzel-set-orders: need ≥1 ORDER") end
+            local req_id  = alloc_shell_req()
+            local payload = {
+                bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                bit.band(CMD_GOERTZEL_SET_ORDERS, 0xFF), bit.band(bit.rshift(CMD_GOERTZEL_SET_ORDERS, 8), 0xFF),
+                offset, #orders,
+            }
+            for _, o in ipairs(orders) do pack_f32_le(payload, o) end
+            table.insert(opts.send_seq, {
+                cmd = 0x0109,
+                label = string.format("OP_SHELL_EXEC(goertzel_set_orders offset=%d count=%d)", offset, #orders),
+                payload = payload,
+                shell_req = req_id, shell_cmd = CMD_GOERTZEL_SET_ORDERS,
+            })
+        elseif a == "--send-shell-goertzel-start" then
+            local req_id = alloc_shell_req()
+            table.insert(opts.send_seq, {
+                cmd = 0x0109, label = "OP_SHELL_EXEC(goertzel_start)",
+                payload = {
+                    bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                    bit.band(CMD_GOERTZEL_START, 0xFF), bit.band(bit.rshift(CMD_GOERTZEL_START, 8), 0xFF),
+                },
+                shell_req = req_id, shell_cmd = CMD_GOERTZEL_START,
+            })
+        elseif a == "--send-shell-goertzel-status" then
+            local req_id = alloc_shell_req()
+            table.insert(opts.send_seq, {
+                cmd = 0x0109, label = "OP_SHELL_EXEC(goertzel_status)",
+                payload = {
+                    bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                    bit.band(CMD_GOERTZEL_STATUS, 0xFF), bit.band(bit.rshift(CMD_GOERTZEL_STATUS, 8), 0xFF),
+                },
+                shell_req = req_id, shell_cmd = CMD_GOERTZEL_STATUS,
+            })
+        elseif a == "--send-shell-goertzel-read" then
+            i = i + 1; local offset = tonumber(argv[i])
+            i = i + 1; local count  = tonumber(argv[i])
+            local reset = 0
+            if argv[i+1] and tonumber(argv[i+1]) then
+                i = i + 1; reset = tonumber(argv[i])
+                if reset ~= 0 and reset ~= 1 then die("goertzel-read RESET 0|1") end
+            end
+            if not offset or offset < 0 or offset > 31 then die("goertzel-read OFFSET 0..31") end
+            if not count or count < 1 or count > 28    then die("goertzel-read COUNT 1..28") end
+            local req_id = alloc_shell_req()
+            table.insert(opts.send_seq, {
+                cmd = 0x0109,
+                label = string.format("OP_SHELL_EXEC(goertzel_read offset=%d count=%d reset=%d)",
+                                       offset, count, reset),
+                payload = {
+                    bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                    bit.band(CMD_GOERTZEL_READ, 0xFF), bit.band(bit.rshift(CMD_GOERTZEL_READ, 8), 0xFF),
+                    bit.band(offset, 0xFF), bit.band(bit.rshift(offset, 8), 0xFF),
+                    bit.band(count,  0xFF), bit.band(bit.rshift(count,  8), 0xFF),
+                    reset,
+                },
+                shell_req = req_id, shell_cmd = CMD_GOERTZEL_READ,
+                shell_ctx = { offset = offset, count = count },
+            })
+        elseif a == "--send-shell-goertzel-stop" then
+            local req_id = alloc_shell_req()
+            table.insert(opts.send_seq, {
+                cmd = 0x0109, label = "OP_SHELL_EXEC(goertzel_stop)",
+                payload = {
+                    bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                    bit.band(CMD_GOERTZEL_STOP, 0xFF), bit.band(bit.rshift(CMD_GOERTZEL_STOP, 8), 0xFF),
+                },
+                shell_req = req_id, shell_cmd = CMD_GOERTZEL_STOP,
+            })
+        elseif a == "--send-shell-goertzel-inject-rpm" then
+            i = i + 1
+            local arg = argv[i]
+            local rpm
+            if arg == "nan" or arg == "NaN" then
+                rpm = 0/0     -- NaN sentinel: chip falls back to encoder
+            else
+                rpm = tonumber(arg)
+                if not rpm then die("goertzel-inject-rpm: RPM must be number or 'nan' (got %s)", tostring(arg)) end
+            end
+            local req_id  = alloc_shell_req()
+            local payload = {
+                bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                bit.band(CMD_GOERTZEL_INJECT_RPM, 0xFF), bit.band(bit.rshift(CMD_GOERTZEL_INJECT_RPM, 8), 0xFF),
+            }
+            pack_f32_le(payload, rpm)
+            table.insert(opts.send_seq, {
+                cmd = 0x0109,
+                label = string.format("OP_SHELL_EXEC(goertzel_inject_rpm %s)", (rpm ~= rpm) and "NaN" or tostring(rpm)),
+                payload = payload,
+                shell_req = req_id, shell_cmd = CMD_GOERTZEL_INJECT_RPM,
             })
         elseif a == "--send-shell-gpio-config" then
             i = i + 1; local pin_label = argv[i]
@@ -976,6 +1133,32 @@ Options:
                       prints {bin, freq, raw, PSD(V²/Hz), dB}.
                       Walk OFFSET=0,30,60,...,510 to cover all 513 bins.
   --send-shell-spectral-stop  Abort capture, return device to MODE_WORKBENCH.
+  --send-shell-goertzel-config SUB_MODE FS_CODE BLOCK_N CHANNEL GATE_ENABLED
+                                ACCEL_THRESH MIN_RPM ORDER_COUNT
+                      Configure mode-4 Goertzel bank (RA4M1). SUB_MODE: 0=Hz
+                      (only sub-mode implemented). FS_CODE 1..10. BLOCK_N
+                      256..16384 (samples per integration). CHANNEL 0..3.
+                      GATE_ENABLED 0|1 (RPM-stability gate). ACCEL_THRESH in
+                      RPM/sec, MIN_RPM in RPM. ORDER_COUNT 1..32.
+                      Must be sent BEFORE --send-shell-goertzel-set-orders.
+  --send-shell-goertzel-set-orders OFFSET O1 [O2 ...]
+                      Set ORDER_COUNT orders starting at OFFSET. Each order is
+                      an f32 multiplier of mechanical shaft frequency. Examples
+                      for motor diagnostics: 1.0 (fundamental), 2.0 (2nd), 3.7
+                      (BPFO), 5.4 (BPFI), 1.7 (BSF), 0.42 (FTF). Max 30 orders
+                      per call; page across calls if K>30.
+  --send-shell-goertzel-start  Switch to MODE_GOERTZEL and begin streaming.
+  --send-shell-goertzel-status Returns state, gate-open flag, last RPM,
+                      and block counters (n_accumulated / n_total).
+  --send-shell-goertzel-read OFFSET COUNT [RESET]
+                      Page out mag²-accumulator bins. OFFSET 0..31, COUNT 1..28,
+                      RESET 0|1 (default 0). Driver prints raw_mag² and per-
+                      block-averaged mag² per bin.
+  --send-shell-goertzel-stop   Abort, return device to MODE_WORKBENCH.
+  --send-shell-goertzel-inject-rpm RPM
+                      Bench-test path: override the encoder reading with the
+                      given RPM for the next block's coefficient refresh + gate
+                      check. Pass 'nan' to re-enable the encoder.
   --send-shell-gpio-config PIN MODE
                       Configure a GPIO pin. PIN is 'D0'..'D10' (Xiao silkscreen)
                       or 'PA0'..'PA31'/'PB0'..'PB31' (raw chip port:pin).
@@ -1497,7 +1680,10 @@ local function decode_s2m_frame()
                                  or expected_cmd == CMD_PWM_TEARDOWN
                                  or expected_cmd == CMD_COUNTER_SETUP or expected_cmd == CMD_COUNTER_RESET
                                  or expected_cmd == CMD_COUNTER_STOP or expected_cmd == CMD_SET_MODE
-                                 or expected_cmd == CMD_SPECTRAL_START or expected_cmd == CMD_SPECTRAL_STOP) and len == 3 then
+                                 or expected_cmd == CMD_SPECTRAL_START or expected_cmd == CMD_SPECTRAL_STOP
+                                 or expected_cmd == CMD_GOERTZEL_CONFIG     or expected_cmd == CMD_GOERTZEL_SET_ORDERS
+                                 or expected_cmd == CMD_GOERTZEL_START      or expected_cmd == CMD_GOERTZEL_STOP
+                                 or expected_cmd == CMD_GOERTZEL_INJECT_RPM) and len == 3 then
                 io.write(string.format("\n  %s: ok", OPCODE_NAMES[0x0109] and "shell" or "shell"))
                 pending_shell_requests[req_id] = nil
             elseif status == 0 and expected_cmd == CMD_SPECTRAL_STATUS and len == 3 + 9 then
@@ -1574,6 +1760,50 @@ local function decode_s2m_frame()
                     io.write(string.format(
                         "\n    %4d  %7.2f   %12.3e   %12.3e   %7.2f",
                         bin, bin * bin_hz, raw, psd_v2_hz, db))
+                end
+                pending_shell_requests[req_id] = nil
+            elseif status == 0 and expected_cmd == CMD_GOERTZEL_STATUS and len == 3 + 20 then
+                -- Result: state:u8 gate_open:u8 pad:u8 pad:u8 last_rpm:f32 rpm_change_rate:f32
+                --         n_blocks_accum:u32 n_blocks_total:u32       (20 bytes)
+                local function u32at(o) return bit.bor(f[o], bit.lshift(f[o+1], 8),
+                                              bit.lshift(f[o+2], 16), bit.lshift(f[o+3], 24)) end
+                local state     = f[11]
+                local gate_open = f[12]
+                local rpm       = u32_to_f32(u32at(15))
+                local rpm_rate  = u32_to_f32(u32at(19))
+                local n_acc     = u32at(23)
+                local n_total   = u32at(27)
+                io.write(string.format(
+                    "\n  goertzel_status: state=%s gate=%s rpm=%.2f drpm/dt=%.2f n_acc=%d n_total=%d",
+                    GOERTZEL_STATE_NAMES[state] or tostring(state),
+                    (gate_open == 1) and "open" or "closed",
+                    rpm, rpm_rate, n_acc, n_total))
+                pending_shell_requests[req_id] = nil
+            elseif status == 0 and expected_cmd == CMD_GOERTZEL_READ and len >= 3 + 6 then
+                -- Result: n_blocks:u32  count:u16  mag2:f32[count]
+                local ctx = pending_shell_ctx[req_id] or { offset = 0 }
+                pending_shell_ctx[req_id] = nil
+                local function u16at(o) return bit.bor(f[o], bit.lshift(f[o+1], 8)) end
+                local function u32at(o) return bit.bor(f[o], bit.lshift(f[o+1], 8),
+                                              bit.lshift(f[o+2], 16), bit.lshift(f[o+3], 24)) end
+                local n_blocks = u32at(11)
+                local n        = u16at(15)
+                local offset   = ctx.offset
+                -- One Goertzel block produces magnitude² = (|X[k]| × N/2)² roughly,
+                -- in counts². Divide by n_blocks for per-block mean. Then to RMS-amplitude
+                -- in volts:  amp ≈ sqrt(mean_mag²) × 2 / N_per_block × LSB_V.
+                -- We don't know N_per_block here (host should track it from CONFIG),
+                -- so print raw magnitude² and per-block-averaged magnitude² — the
+                -- host script tier can apply the rest.
+                io.write(string.format(
+                    "\n  goertzel_read: offset=%d count=%d n_blocks=%d", offset, n, n_blocks))
+                io.write("\n    bin   raw_mag²              mean_mag²/block")
+                local denom = (n_blocks > 0) and n_blocks or 1
+                for k = 0, n - 1 do
+                    local bin = offset + k
+                    local raw = u32_to_f32(u32at(17 + k * 4))
+                    local mean = raw / denom
+                    io.write(string.format("\n    %4d  %16.4e   %16.4e", bin, raw, mean))
                 end
                 pending_shell_requests[req_id] = nil
             elseif status == 0 and expected_cmd == CMD_ADC_CAPTURE and len >= 3 + 3 then

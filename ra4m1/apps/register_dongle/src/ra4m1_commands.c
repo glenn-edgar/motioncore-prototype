@@ -27,6 +27,7 @@
 #include "ra4m1_hal.h"
 #include "mode.h"
 #include "spectral.h"                 // mode 2: averaged power spectrum
+#include "goertzel.h"                 // mode 4: order-tracked Goertzel bank
 #include "bsp/board_api.h"            // board_millis()
 
 // ---- RA4M1-specific command IDs (0x0110+: multi-mode control) --------------
@@ -43,6 +44,15 @@
 #define CMD_SPECTRAL_STATUS ((uint16_t)0x0116)
 #define CMD_SPECTRAL_READ   ((uint16_t)0x0117)
 #define CMD_SPECTRAL_STOP   ((uint16_t)0x0118)
+
+// 0x0119..0x011F: mode-4 Goertzel (order-tracked bin bank) — see goertzel.h.
+#define CMD_GOERTZEL_CONFIG      ((uint16_t)0x0119)
+#define CMD_GOERTZEL_SET_ORDERS  ((uint16_t)0x011A)
+#define CMD_GOERTZEL_START       ((uint16_t)0x011B)
+#define CMD_GOERTZEL_STATUS      ((uint16_t)0x011C)
+#define CMD_GOERTZEL_READ        ((uint16_t)0x011D)
+#define CMD_GOERTZEL_STOP        ((uint16_t)0x011E)
+#define CMD_GOERTZEL_INJECT_RPM  ((uint16_t)0x011F)
 
 // ---- DAC waveform-generator state ------------------------------------------
 // Lives in the shared mode arena — only the workbench mode owns it. Written by
@@ -546,6 +556,16 @@ static void sw_f32(shell_writer_t* w, float f)
     sw_u32(w, bits);
 }
 
+// Read a little-endian float32 from the shell args. Bit-pattern transfer so a
+// NaN or ±Inf payload round-trips unchanged (used by CMD_GOERTZEL_INJECT_RPM).
+static float sr_f32(shell_reader_t* r)
+{
+    uint32_t bits = sr_u32(r);
+    float f;
+    memcpy(&f, &bits, sizeof(f));
+    return f;
+}
+
 // CMD_ANALOG_START — args: empty ; result: empty
 static uint8_t cmd_analog_start(shell_reader_t* args, shell_writer_t* result)
 {
@@ -691,6 +711,170 @@ static uint8_t cmd_spectral_stop(shell_reader_t* args, shell_writer_t* result)
 }
 
 // ============================================================================
+// Goertzel — mode 4: order-tracked bin bank for motor diagnostics.
+// See goertzel.h for the architecture + per-block lifecycle.
+//
+// CONFIG sets scalars, SET_ORDERS pages the f32 order list (K up to 32),
+// START switches to MODE_GOERTZEL + begins streaming. STATUS gives live
+// counters / current RPM / gate state. READ pages mag2 accumulators and
+// optionally resets them. INJECT_RPM overrides the encoder for bench
+// testing without a motor (NaN clears the override).
+// ============================================================================
+
+// CMD_GOERTZEL_CONFIG — args:
+//   sub_mode:u8 fs_code:u8 block_n:u16 channel:u8 gate_enabled:u8
+//   order_count:u8 _pad:u8 accel_thresh:f32 min_rpm:f32
+// result: empty
+static uint8_t cmd_goertzel_config(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    uint8_t  sub_mode     = sr_u8 (args);
+    uint8_t  fs_code      = sr_u8 (args);
+    uint16_t block_n      = sr_u16(args);
+    uint8_t  channel      = sr_u8 (args);
+    uint8_t  gate_enabled = sr_u8 (args);
+    uint8_t  order_count  = sr_u8 (args);
+    (void)                  sr_u8 (args);    // _pad
+    float    accel_thresh = sr_f32(args);
+    float    min_rpm      = sr_f32(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+
+    // CONFIG is the entry into MODE_GOERTZEL: switching now (a) memsets the
+    // shared arena (clean slate) and (b) lets subsequent SET_ORDERS / START
+    // calls write to the arena without colliding with whatever mode owned it
+    // before. mode_set is a no-op if we're already here, so re-CONFIG keeps
+    // working without disturbing per-bin state we haven't touched yet.
+    if (mode_set(MODE_GOERTZEL) != 0u) return SHELL_STATUS_CMD_FAILED;
+
+    if (!goertzel_config(sub_mode, fs_code, block_n, channel,
+                         gate_enabled, accel_thresh, min_rpm, order_count)) {
+        return SHELL_STATUS_BAD_ARGS;
+    }
+    return SHELL_STATUS_OK;
+}
+
+// CMD_GOERTZEL_SET_ORDERS — args: offset:u8 count:u8 orders:f32[count]
+// result: empty.  Requires CONFIG (which entered MODE_GOERTZEL) was called
+// first. Pages to fit K=32 in the 124-byte SHELL_EXEC payload across up to
+// 2 calls (max 30 floats per call).
+static uint8_t cmd_goertzel_set_orders(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    uint8_t offset = sr_u8(args);
+    uint8_t count  = sr_u8(args);
+    if (args->overflow)                       return SHELL_STATUS_BAD_ARGS;
+    if (count == 0u || count > 30u)           return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != (uint16_t)count * 4u) return SHELL_STATUS_BAD_ARGS;
+    if (mode_get() != MODE_GOERTZEL)          return SHELL_STATUS_CMD_FAILED;
+
+    float buf[30];
+    for (uint32_t i = 0; i < count; i++) {
+        buf[i] = sr_f32(args);
+    }
+    if (args->overflow) return SHELL_STATUS_BAD_ARGS;
+
+    if (!goertzel_set_orders(offset, count, buf)) return SHELL_STATUS_BAD_ARGS;
+    return SHELL_STATUS_OK;
+}
+
+// CMD_GOERTZEL_START — args: empty ; result: empty.
+// Requires prior CONFIG + SET_ORDERS. Does NOT switch modes (CONFIG already
+// did) — only kicks the ADC tick + Goertzel state machine.
+static uint8_t cmd_goertzel_start(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    if (sr_remaining(args) != 0)        return SHELL_STATUS_BAD_ARGS;
+    if (mode_get() != MODE_GOERTZEL)    return SHELL_STATUS_CMD_FAILED;
+    if (!goertzel_start())              return SHELL_STATUS_BAD_ARGS;
+    return SHELL_STATUS_OK;
+}
+
+// CMD_GOERTZEL_STATUS — args: empty
+// result: state:u8 gate_open:u8 _pad:u16 last_rpm:f32 rpm_change_rate:f32
+//         n_blocks_accum:u32 n_blocks_total:u32   (20 bytes)
+static uint8_t cmd_goertzel_status(shell_reader_t* args, shell_writer_t* result)
+{
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+
+    uint8_t  state     = 0u;
+    uint8_t  gate_open = 0u;
+    uint32_t n_acc     = 0u;
+    uint32_t n_total   = 0u;
+    float    rpm       = 0.0f;
+    if (mode_get() == MODE_GOERTZEL) {
+        state     = (uint8_t)goertzel_state();
+        gate_open = goertzel_gate_open();
+        n_acc     = goertzel_n_blocks_accumulated();
+        n_total   = goertzel_n_blocks_total();
+        rpm       = goertzel_last_rpm();
+    }
+    sw_u8 (result, state);
+    sw_u8 (result, gate_open);
+    sw_u8 (result, 0u);          // pad
+    sw_u8 (result, 0u);          // pad
+    sw_f32(result, rpm);
+    sw_f32(result, 0.0f);        // reserved for rpm_change_rate (not exposed yet)
+    sw_u32(result, n_acc);
+    sw_u32(result, n_total);
+    return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
+}
+
+// CMD_GOERTZEL_READ — args: offset:u16 count:u16 reset:u8
+// result: n_blocks:u32 count:u16 mag2:f32[count]
+//   count capped at 28 (124-byte payload - 6 byte header / 4 = 29; round to 28 for headroom).
+static uint8_t cmd_goertzel_read(shell_reader_t* args, shell_writer_t* result)
+{
+    uint16_t offset = sr_u16(args);
+    uint16_t count  = sr_u16(args);
+    uint8_t  reset  = sr_u8 (args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+
+    if (count > 28u) count = 28u;
+
+    float    bins[28];
+    uint32_t n_blocks = 0u;
+    uint16_t n        = 0u;
+    if (mode_get() == MODE_GOERTZEL) {
+        n = goertzel_read(offset, count, reset, bins, &n_blocks);
+    }
+    sw_u32(result, n_blocks);
+    sw_u16(result, n);
+    for (uint32_t i = 0; i < n; i++) {
+        sw_f32(result, bins[i]);
+    }
+    return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
+}
+
+// CMD_GOERTZEL_STOP — args: empty ; result: empty.
+static uint8_t cmd_goertzel_stop(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    if (mode_get() == MODE_GOERTZEL) {
+        goertzel_stop();
+        mode_set(MODE_WORKBENCH);
+    }
+    return SHELL_STATUS_OK;
+}
+
+// CMD_GOERTZEL_INJECT_RPM — args: rpm:f32 ; result: empty.
+// NaN re-enables encoder; any finite value overrides the encoder reading for
+// the next block's coefficient refresh + gate check.
+static uint8_t cmd_goertzel_inject_rpm(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    float rpm = sr_f32(args);
+    if (args->overflow)              return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0)     return SHELL_STATUS_BAD_ARGS;
+    if (mode_get() != MODE_GOERTZEL) return SHELL_STATUS_CMD_FAILED;
+
+    goertzel_inject_rpm(rpm);
+    return SHELL_STATUS_OK;
+}
+
+// ============================================================================
 // Mode control — the multi-mode foundation (see mode.h).
 // ============================================================================
 
@@ -742,6 +926,13 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_SPECTRAL_STATUS,    "spectral_status",    cmd_spectral_status    },
     { CMD_SPECTRAL_READ,      "spectral_read",      cmd_spectral_read      },
     { CMD_SPECTRAL_STOP,      "spectral_stop",      cmd_spectral_stop      },
+    { CMD_GOERTZEL_CONFIG,     "goertzel_config",     cmd_goertzel_config     },
+    { CMD_GOERTZEL_SET_ORDERS, "goertzel_set_orders", cmd_goertzel_set_orders },
+    { CMD_GOERTZEL_START,      "goertzel_start",      cmd_goertzel_start      },
+    { CMD_GOERTZEL_STATUS,     "goertzel_status",     cmd_goertzel_status     },
+    { CMD_GOERTZEL_READ,       "goertzel_read",       cmd_goertzel_read       },
+    { CMD_GOERTZEL_STOP,       "goertzel_stop",       cmd_goertzel_stop       },
+    { CMD_GOERTZEL_INJECT_RPM, "goertzel_inject_rpm", cmd_goertzel_inject_rpm },
 };
 
 const shell_cmd_entry_t* chip_commands_table(void)

@@ -57,6 +57,7 @@ extern uint32_t g_pending_commission_instance_id;
 extern bool     shell_pending_push(const uint8_t* payload, uint8_t len);
 extern void     workbench_analog_poll(void);   // ra4m1_commands.c — ADC sampler
 extern void     spectral_pump(void);            // spectral.c — mode-2 FFT pump
+extern void     goertzel_pump(void);            // goertzel.c — mode-4 block finalize
 
 // ----------------------------------------------------------------------------
 // Deferred-reboot plumbing. Two flavors:
@@ -370,6 +371,7 @@ int main(void) {
         // active mode AND a frame has finished capturing. Foreground context
         // so the FFT does not preempt the sample-tick ISR.
         spectral_pump();
+        goertzel_pump();
 
         // Host-reattach edge detection.
         if (tree != NULL) {

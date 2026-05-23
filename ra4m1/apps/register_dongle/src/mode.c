@@ -55,16 +55,20 @@ extern void workbench_periodic_isr(void);   // ra4m1_commands.c
 extern void spectral_on_enter   (void);     // spectral.c
 extern void spectral_on_exit    (void);     // spectral.c
 extern void spectral_periodic_isr(void);    // spectral.c — ADC sample tick
+extern void goertzel_on_enter   (void);     // goertzel.c
+extern void goertzel_on_exit    (void);     // goertzel.c
+extern void goertzel_periodic_isr(void);    // goertzel.c — ADC sample tick + recursion
 
 static const mode_descriptor_t g_modes[MODE_COUNT] = {
     [MODE_WORKBENCH] = { NULL,              NULL,             workbench_periodic_isr },
     [MODE_SPECTRAL]  = { spectral_on_enter, spectral_on_exit, spectral_periodic_isr  },
+    [MODE_GOERTZEL]  = { goertzel_on_enter, goertzel_on_exit, goertzel_periodic_isr  },
     // [MODE_PID] / [MODE_SCURVE] — added with their ports.
 };
 
 // Highest mode that is actually implemented. mode_set() rejects anything above
-// it. Bump this (one line) as modes 3-4 land.
-#define MODE_MAX_IMPLEMENTED  MODE_SPECTRAL
+// it. Bump this (one line) as new modes land.
+#define MODE_MAX_IMPLEMENTED  MODE_GOERTZEL
 
 // ---- mode periodic-timer ISR ----------------------------------------------
 // Installed at vector index VT_SYSTEM_ENTRIES + MODE_PERIODIC_IRQ. Shared by

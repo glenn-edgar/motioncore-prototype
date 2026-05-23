@@ -37,9 +37,10 @@
 
 typedef enum {
     MODE_WORKBENCH = 0,   // reactive HIL command shell
-    MODE_SPECTRAL  = 1,   // (future) FFT / analog processing
+    MODE_SPECTRAL  = 1,   // averaged power spectrum (Welch / rFFT)
     MODE_PID       = 2,   // (future) closed-loop encoder motor control
     MODE_SCURVE    = 3,   // (future) S-curve motion profile (e.g. wiper)
+    MODE_GOERTZEL  = 4,   // order-tracked Goertzel bank (motor diagnostics)
     MODE_COUNT
 } device_mode_t;
 

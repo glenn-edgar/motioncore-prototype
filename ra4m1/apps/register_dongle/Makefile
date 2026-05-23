@@ -52,6 +52,7 @@ SRC_C += \
   ra4m1_hal.c \
   mode.c \
   spectral.c \
+  goertzel.c \
   arm_rfft_fast_init_f32.c \
   arm_rfft_fast_f32.c \
   arm_cfft_f32.c \
