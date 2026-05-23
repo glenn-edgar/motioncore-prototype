@@ -73,14 +73,104 @@ M.device_locations = {
     lacamia1b = "zone3",
 }
 
--- Class hook, run after KB0 publishes the core namespace leaves. The
--- farm_soil namespace is data-driven: per-device <device>/<location>
--- subtrees appear as the moisture KB publishes them, so there is no static
--- class topology to declare here.
-function M.on_namespace_up(session, identity, bb)
-    io.stderr:write(string.format(
-        "FARM_SOIL [%s]: on_namespace_up — device subtrees are published dynamically\n",
-        identity.namespace))
+-- Persistence-topology declaration. Returns the list of leaves under this
+-- robot's namespace that the persistence layer should store, with their kind
+-- (stream = circular per-path buffer of `length` rows; status = UPSERT-by-
+-- path single value) and pre-allocation size. The robot announces this
+-- once on namespace_up and the persistence service uses it to idempotently
+-- construct_kb the matching ltree paths (decision #6/#9: firmware/class IS
+-- the schema; the persistence layer does not know the topology a priori).
+--
+-- Each `path` is the leaf tail under `<namespace>/`; the persistence service
+-- prepends `<class>.<instance>.` and converts `/` -> `.` to derive the
+-- ltree field name (e.g. `cimis/station/sample` -> field name
+-- `farm_soil.lacima01.cimis.station.sample`).
+function M.persistence_topology()
+    local topo = {}
+    for source_id, _ in pairs(M.cimis.sources) do
+        topo[#topo + 1] = {
+            path   = "cimis/" .. source_id .. "/sample",
+            kind   = "stream",
+            length = 30,                       -- ~1 month of daily ETo per source
+            desc   = "CIMIS daily ETo per-day stream (" .. source_id .. ")",
+        }
+        topo[#topo + 1] = {
+            path = "cimis/" .. source_id .. "/latest",
+            kind = "status",
+            desc = "CIMIS daily ETo latest (" .. source_id .. ")",
+        }
+    end
+    for device, location in pairs(M.device_locations) do
+        topo[#topo + 1] = {
+            path   = device .. "/" .. location .. "/latest",
+            kind   = "stream",
+            length = 256,                      -- matches the in-robot ring depth
+            desc   = "soil moisture readings — " .. device .. " / " .. location,
+        }
+    end
+    topo[#topo + 1] = {
+        path = "heartbeat",
+        kind = "status",
+        desc = "robot rolled-up heartbeat",
+    }
+    return topo
+end
+
+-- Publish the persistence topology onto BOTH channels:
+--   <namespace>/persistence_topology
+--       per-namespace channel; ad-hoc consumers (a CLI, a debug tool)
+--       that already know the robot's identity subscribe here.
+--   fleet/admin/persistence_topology_announce
+--       fleet-wide discovery channel; the persistence service subscribes
+--       only here, demuxing class+instance from the payload. The token
+--       binding has no wildcard / string-prefix subscribe, so we cannot
+--       use a `**/persistence_topology` sub; a single shared token is
+--       the workaround.
+--
+-- Called from on_namespace_up (first publish) AND periodically from
+-- main.lua's pump (default cadence below) so a late-joining persistence
+-- service (e.g., persistence restarted while the robot is up) catches the
+-- topology within one cadence and the next data publishes land on its
+-- subs. `silent` suppresses the success log for periodic calls.
+function M.publish_persistence_topology(ps, identity, silent)
+    local cjson = require("cjson")
+    local topo = M.persistence_topology()
+    local payload = cjson.encode({
+        schema   = "persistence_topology/1",
+        class    = identity.class,
+        instance = identity.instance,
+        entries  = topo,
+    })
+    local function pub(key)
+        local ok, err = pcall(function() ps:publish(key, payload) end)
+        if not ok then
+            io.stderr:write(string.format(
+                "FARM_SOIL [%s]: persistence_topology publish to %s failed: %s\n",
+                identity.namespace, key, tostring(err)))
+        end
+        return ok
+    end
+    local ok1 = pub(identity.namespace .. "/persistence_topology")
+    local ok2 = pub("fleet/admin/persistence_topology_announce")
+    if ok1 and ok2 and not silent then
+        io.stderr:write(string.format(
+            "FARM_SOIL [%s]: persistence_topology published (%d entries, 2 channels)\n",
+            identity.namespace, #topo))
+    end
+    return ok1 and ok2
+end
+
+-- Topology re-announce cadence (seconds). Tuned to balance:
+--   * how quickly a late-joining persistence service catches up (≤ this)
+--   * how much wire chatter we add per robot (small payload, infrequent)
+-- 30s gives a worst-case discovery delay of 30s for a persistence restart,
+-- which is comfortably under the slowest data cadence on the robot
+-- (CIMIS at 15 min).
+M.PERSISTENCE_TOPOLOGY_REPUBLISH_S = 30
+
+-- Class hook, run after KB0 publishes the core namespace leaves.
+function M.on_namespace_up(ps, identity, bb)
+    M.publish_persistence_topology(ps, identity, false)
 end
 
 return M

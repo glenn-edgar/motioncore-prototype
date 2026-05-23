@@ -204,6 +204,9 @@ local start_mono_ms      = prev_mono_ms
 local zenoh_announced    = false
 local second_event_count = 0
 local last_summary_ms    = prev_mono_ms
+local last_topo_pub_ms   = prev_mono_ms
+
+local TOPO_REPUBLISH_MS  = (class_spec.PERSISTENCE_TOPOLOGY_REPUBLISH_S or 30) * 1000
 
 while not handle.blackboard.shutdown_requested do
     local cur_mono_ms = clock.now_ms()
@@ -330,6 +333,18 @@ while not handle.blackboard.shutdown_requested do
             id.namespace, second_event_count))
         second_event_count = 0
         last_summary_ms = cur_mono_ms
+    end
+
+    -- Periodic persistence_topology republish — so a late-joining
+    -- persistence service (e.g., restarted while we're up) catches the
+    -- topology within ~PERSISTENCE_TOPOLOGY_REPUBLISH_S seconds and its
+    -- next subscribe-declarations propagate before the next data publish
+    -- (closing both the late-joiner and post-mutation zenoh-pico
+    -- propagation gaps). `silent=true` suppresses the per-republish log.
+    if class_spec.publish_persistence_topology
+       and cur_mono_ms - last_topo_pub_ms >= TOPO_REPUBLISH_MS then
+        pcall(class_spec.publish_persistence_topology, ps, id, true)
+        last_topo_pub_ms = cur_mono_ms
     end
 
     prev_wc = cur_wc
