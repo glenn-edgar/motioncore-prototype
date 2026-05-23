@@ -201,6 +201,7 @@ pcall(ffi.cdef, [[
     int sqlite3_open(const char *filename, sqlite3 **ppDb);
     int sqlite3_close(sqlite3 *db);
     const char *sqlite3_errmsg(sqlite3 *db);
+    int sqlite3_extended_errcode(sqlite3 *db);
 
     // Extension loading
     int sqlite3_enable_load_extension(sqlite3 *db, int onoff);
@@ -354,7 +355,9 @@ local function sql_query(db, sql, params)
             break
         else
             sqlite3_lib.sqlite3_finalize(stmt[0])
-            error(string.format("Step error (%d): %s", rc, sql_errmsg(db)))
+            error(string.format("Step error (%d ext=%d): %s",
+                rc, sqlite3_lib.sqlite3_extended_errcode(db),
+                sql_errmsg(db)))
         end
     end
 

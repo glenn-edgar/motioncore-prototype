@@ -3,7 +3,16 @@
 #
 # Optional env: ZENOH_LOCATOR  (default tcp/127.0.0.1:7447)
 #               SERVICE_ID     (default persistence-1)
-#               PERSISTENCE_DB (default /tmp/persistence.db)
+#               PERSISTENCE_DB (default $REPO_ROOT/var/persistence.db)
+#
+# IMPORTANT: do NOT default PERSISTENCE_DB directly under /tmp on WSL2. The
+# construct_kb stream pre-allocation (hundreds of single-statement inserts)
+# consistently hits SQLITE_IOERR_WRITE (extended code 5898) when the DB lives
+# at /tmp/foo.db — even though bare SQLite to /tmp works fine and /tmp + $HOME
+# are the same ext4 filesystem. A subdir under /tmp works (/tmp/x/foo.db);
+# only the bare /tmp dir is poisoned. Suspect fsync-on-dir flakiness with the
+# 1.6k+ X11/ICE/etc entries that live there. Symptom: crash on the first
+# robot's topology announce. main.lua emits a WARN if it sees this layout.
 #
 # Mirrors fleet_manager/run.sh + adds the build step for ltree.so on first
 # run (sqlite3 load_extension finds /usr/local/lib/ltree.so via its default
@@ -33,6 +42,11 @@ fi
 if [ ! -f /usr/local/lib/ltree.so ] && [ ! -f ./ltree.so ]; then
     echo "persistence/run.sh: building vendored ltree.so" >&2
     (cd "$REPO_ROOT/vendor/c/ltree" && make && sudo make install)
+fi
+
+if [ -z "${PERSISTENCE_DB:-}" ]; then
+    mkdir -p "$REPO_ROOT/var"
+    export PERSISTENCE_DB="$REPO_ROOT/var/persistence.db"
 fi
 
 exec luajit "$SCRIPT_DIR/main.lua" "$@"
