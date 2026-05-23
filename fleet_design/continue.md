@@ -228,21 +228,22 @@ for the four zenoh `.so` files (libzenoh_pubsub / _rpc / _token + libzenohpico).
 These will be replaced by `vendor/lib-aarch64/` once we cross-compile for Pi.
 Override `LD_LIBRARY_PATH` in the caller env to bypass the bench default.
 
-## Resume here (2026-05-23 — slice 2 done)
+## Resume here (2026-05-23 — gateway + dashboard MVP)
 
-**Persistence read interface is now complete.** Slice 1
-(`latest`+`list_kbs`) AND slice 2 (`stream` with cursor pagination +
-size-trim, `latest_stream`, `list_leaves`) are both in. One token-RPC on
-`fleet/persistence/query` dispatched by op; service-announce on
-`fleet/admin/persistence_service_announce` (30 s periodic + immediate
-refresh on new kb). v1 op surface closed. See the
-`persistence-query-api-slice2-2026-05-23` memory for the slice-2
-specifics (id-based cursor, iterative size-trim, library extensions);
-slice-1 memory remains the source for the wire envelope + the two
-empirical gotchas (`fleet/admin/persistence_query` poison key, `/tmp` on
-WSL2). Acid-tested end-to-end against `farm_soil`'s CIMIS sample stream
-(3-page walk at limit=3) + moisture stream (limit=100 trimmed to 6 rows
-under the 4 KB cap).
+**Layers 30 → 40 → 50 are wired end-to-end** for the first time.
+Persistence (layer-30) now has a complete v1 read interface (slices 1+2
+landed earlier same day); on top of that landed an HTTP gateway
+(layer-40, `server/application_gateway/`) that fronts the query RPC and
+serves a single-page dashboard (layer-50, `static/index.html`) — a
+real browser view of live `farm_soil` data via the full
+zenoh-RPC → HTTP → browser path. See
+`application-gateway-dashboard-2026-05-23` memory for the gateway
+specifics (HTTP server choice, route surface, chart auto-detect,
+natural-timestamp display lesson); slice-1+2 memories
+(`persistence-query-api-slice1-2026-05-23`,
+`persistence-query-api-slice2-2026-05-23`) cover the RPC backend it
+sits on. The two empirical gotchas still apply
+(`fleet/admin/persistence_query` poison key, `/tmp` on WSL2).
 
 Two empirical gotchas surfaced and got pinned during the slice-1 acid test:
 - **Poison key**: `fleet/admin/persistence_query` deterministically
@@ -304,6 +305,17 @@ fleet_design/
     main.lua         pump loop now republishes persistence_topology
                      every PERSISTENCE_TOPOLOGY_REPUBLISH_S (= 30 s)
   server/fleet_manager/   the controller (register RPC + heartbeat + registry)
+  server/application_gateway/   layer-40+50 MVP. LuaSocket-based
+                          HTTP/1.1 GET server (no framework) that calls
+                          fleet/persistence/query and exposes JSON +
+                          a single-page dashboard. {main.lua,
+                          lib/{http_server, persistence_client}.lua,
+                          static/index.html, run.sh}. Default
+                          127.0.0.1:8080. Dashboard auto-refreshes every
+                          10 s; stream leaves render inline SVG line
+                          charts with per-metric switcher; uses payload
+                          natural timestamp (entry.received_at / date)
+                          not the DB ingest second.
   server/persistence/     layer-30. Subscribes to fleet-wide
                           `fleet/admin/persistence_topology_announce`,
                           idempotently construct_kb's per-instance
@@ -412,7 +424,9 @@ Engine repo (`~/knowledge_base_assembly`): `77ec769b` time-window leaves.
 gotchas pinned with precise workarounds) · `1d2cb3f` slice 2
 (`stream()`/`latest_stream()`/`list_leaves()`, id-based cursor +
 iterative size-trim; kb_stream gains after_id+order_by; KBDS facade
-gap closed).
+gap closed) · `bbd8944` application_gateway (LuaSocket HTTP + JSON +
+single-page SVG-chart dashboard, natural-timestamp display, cjson
+empty-array fix; layers 40+50 MVP).
 
 ### Bench smoke
 
@@ -435,6 +449,9 @@ unset LUA_CPATH LUA_PATH
 # query the persistence DB over Zenoh (acid-test smoke client):
 unset LUA_CPATH LUA_PATH
 server/persistence/test_query_client.sh
+# HTTP gateway + dashboard (http://127.0.0.1:8080/):
+unset LUA_CPATH LUA_PATH
+server/application_gateway/run.sh &
 # inspect what persistence is storing (direct SQLite, read-only):
 sqlite3 var/persistence.db "SELECT path, label FROM knowledge_base"
 sqlite3 var/persistence.db \
@@ -452,53 +469,51 @@ The vendored bindings are still **client-mode + zenohd-router only** — bench
 and container tests need the `zenohd` router above. Pi Zero 2 deploy (no
 containers) remains a separate, unsolved problem.
 
-## Plan for next session (after 2026-05-23 — slice-2 wrap)
+## Plan for next session (after 2026-05-23 — gateway/dashboard wrap)
 
-Persistence query API v1 (slices 1+2) is DONE. The read interface is
-complete and proven. Natural next pieces:
+Layers 30 → 40 → 50 are all live end-to-end. Slices 1+2 of the query
+API + the gateway/dashboard MVP land the whole "read path" for
+fleet_design. Open work, in rough priority order:
 
-**1. Application-gateway sketch (START HERE).** Layers 40+50 from
-decision #13. A small HTTP server (LuaJIT + minimal HTTP lib, or
-Lua-pico-http, TBD) that **calls the persistence query RPC** (not
-direct SQLite) and exposes JSON over HTTP for browsers. Likely surface:
+**1. Replan.** The user explicitly asked to replan after this wrap.
+Candidates queued below; decide direction with the user first.
 
-- `GET /robots`                          — list (class, instance) pairs
-- `GET /robots/<class>/<inst>/latest`    — every status row for that
-                                            instance + the head of each
-                                            stream
-- `GET /robots/<class>/<inst>/stream/<leaf>?limit=N&since=...`
-                                          — stream rows via the
-                                            paginated RPC op
+**2. Gateway/dashboard hardening (small).** Listed because they're cheap
+and feel-able:
+- Drop the noisy "entry" / "units" / "schema" columns from the
+  pivoted-stream-rows table by default; offer a "raw" toggle.
+- Time-proportional X-axis (currently evenly-spaced) so missing-hour
+  gaps are visible in the moisture chart.
+- "Show more" button to walk pagination cursors in the dashboard.
+- Bind 0.0.0.0 (not 127.0.0.1) if we want to view it from another host.
 
-Read-only — only persistence writes to the DB; everyone else goes
-through `fleet/persistence/query`.
+**3. Decommissioning tool (operator action).** Retire a removed
+`(class, instance)` from the persistence DB — trim rows + kb_info.
+Today schema-removal is no-op-preserve-data. Worth doing before the
+fleet has many test instances accumulated.
 
-**2. Static dashboard.** Smallest possible front-end on top of the
-JSON API. Time-series chart of `cimis.{station,spatial}.sample` ETo
-over the last 30 days; a per-device-location panel for moisture (the
-TTN uplink stream); a fleet-overview grid showing each robot's last
-heartbeat. Defer auth + multi-tenancy.
+**4. Write path.** Everything so far is read-only. If we want a planner
+or operator UI to *issue* commands (set setpoints, force a poll,
+disable a skill), we need a command/RPC channel from gateway →
+robot via Zenoh. Touches the application_logic layer (still unbuilt).
 
-**3. Open follow-ups inherited from persistence:**
-- Explicit decommissioning tool (operator action to retire a removed
-  (class, instance) — trim DB rows + kb_info entry).
-- zenoh-rs binding for true wildcard subs (deferred until a real
-  multi-class operation needs it; see persistence-layer memory).
-- zenoh-pico upgrade — re-test the `fleet/admin/persistence_query`
-  poison key; if fixed upstream, drop the rename workaround.
+**5. Second robot class.** Validates the fleet contract across more
+than one class. fake_robot is the obvious candidate (still scaffold-
+only beyond fake_counter). Or an MCU class (decision #25, deferred).
 
-**4. Container packaging (still open).** `fake_robot`/`farm_soil` and
-`server/{fleet_manager,persistence}` as containers (`FROM
-nanodatacenter/luajit-base`, decision #12). Persistence's `run.sh`
-already auto-builds ltree.so on first run — the Dockerfile can do
-the same at image build. Pi Zero 2 stays bare-process (decision #28).
+**6. Container packaging.** Still open. `fake_robot`/`farm_soil` and
+`server/{fleet_manager,persistence,application_gateway}` as
+containers (`FROM nanodatacenter/luajit-base`, decision #12).
+Persistence's `run.sh` already auto-builds ltree.so on first run —
+the Dockerfile can do the same at image build. Pi Zero 2 stays
+bare-process (decision #28).
 
-**First action:** read this file + the
-`persistence-query-api-slice2-2026-05-23` (and via it, slice-1 +
-layer memories), `farm-soil-robot-2026-05-22`, and `kb-sqlite3-stack`
-memories, then sketch the gateway surface in
-`server/application_gateway/` (currently nonexistent — pick the HTTP
-library first).
+**7. zenoh-pico upgrade.** Re-test the `fleet/admin/persistence_query`
+poison key; if fixed upstream, drop the rename workaround.
+
+**First action next session:** read this file + the
+`application-gateway-dashboard-2026-05-23` and slice-2 memories,
+then pick a direction with the user.
 
 **Reference paths (dev-machine orientation only — NOT used at runtime):**
 The runtime uses `fleet_design/vendor/lua/` exclusively (see `vendor/PROVENANCE.md`).
