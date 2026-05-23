@@ -228,21 +228,40 @@ for the four zenoh `.so` files (libzenoh_pubsub / _rpc / _token + libzenohpico).
 These will be replaced by `vendor/lib-aarch64/` once we cross-compile for Pi.
 Override `LD_LIBRARY_PATH` in the caller env to bypass the bench default.
 
-## Resume here (2026-05-23 evening)
+## Resume here (2026-05-23 late evening)
 
-**The persistence layer is in.** Layer-30 (decision #13) +
-`persistence.db` (decision #15) — what decision #6 has been pointing
-at since 2026-05-19. The vendored `knowledge_base/sqlite3` LuaJIT
-stack is the storage engine; `server/persistence/` is the new
-sister process to `server/fleet_manager/`; `farm_soil` announces
-its topology on `fleet/admin/persistence_topology_announce` (every
-30 s) and persistence does discover → idempotent construct_kb →
-per-leaf subscribe → push_stream_data / set_status_data. See
-`persistence-layer-2026-05-23` memory. **Earlier this same session**,
-the CIMIS skill picked up multi-day backfill (drop the 15:00 cutoff,
-fetch a trailing 7-day window every retry, publish each newly-
-finalized day to both `/sample` stream + `/latest` status leaves) —
-see updated `cimis-skill-2026-05-22` memory.
+**Persistence has a read interface now.** Slice 1 of the query API is
+in: one token-RPC on `fleet/persistence/query` dispatched by op
+(`latest(path)` + `list_kbs()` live; `stream/list_leaves/latest_stream`
+stubbed for slice 2), paired with a service-announce on
+`fleet/admin/persistence_service_announce` that mirrors the
+robot-side topology-announce pattern (30 s periodic + immediate refresh
+when a new kb arrives). Acid-tested end-to-end against `farm_soil`'s
+live heartbeat — see `persistence-query-api-slice1-2026-05-23` memory.
+
+Two empirical gotchas surfaced and got pinned during the acid test:
+- **Poison key**: `fleet/admin/persistence_query` deterministically
+  breaks zenoh-pico's reply routing (server-side `z_query_reply` OK,
+  client times out). 5×5 isolated repro; only this exact string. The
+  query topic was renamed to `fleet/persistence/query`; the announce
+  stays on `fleet/admin/*` for naming parity. Documented in
+  `server/persistence/QUERY_API.md` with the zenoh-pico commit and
+  exact failing keystr.
+- **`/tmp` on WSL2 poisons construct_kb**: defaulting the DB at
+  `/tmp/persistence.db` reliably crashes the stream pre-allocation
+  with `SQLITE_IOERR_WRITE` (ext 5898) — same ext4 fs as `/home`,
+  908 GB free, bare SQLite to `/tmp` works fine, only construct_kb's
+  many-fsync pattern fails. Default DB moved to `<repo>/var/persistence.db`
+  (run.sh creates the dir; `.gitignore` covers it; main.lua emits a
+  WARN if anyone explicitly points the DB at bare `/tmp/foo.db`). See
+  `feedback-no-tmp-for-persistent-files` memory for the general rule.
+
+**Earlier today**, the persistence layer landed (layer-30 + decision #6
+realized — see `persistence-layer-2026-05-23` memory) and the CIMIS
+skill picked up multi-day backfill (drop the 15:00 cutoff, fetch a
+trailing 7-day window every retry, publish each newly-finalized day to
+both `/sample` stream + `/latest` status leaves — see updated
+`cimis-skill-2026-05-22` memory).
 
 ### Layout (updated)
 
@@ -280,12 +299,21 @@ fleet_design/
     main.lua         pump loop now republishes persistence_topology
                      every PERSISTENCE_TOPOLOGY_REPUBLISH_S (= 30 s)
   server/fleet_manager/   the controller (register RPC + heartbeat + registry)
-  server/persistence/     (NEW) layer-30 — subscribes to fleet-wide
+  server/persistence/     layer-30. Subscribes to fleet-wide
                           `fleet/admin/persistence_topology_announce`,
                           idempotently construct_kb's per-instance
                           tables, opens per-leaf data subs, dispatches
                           to push_stream_data / set_status_data.
-                          {main.lua, lib/persistence.lua, run.sh}
+                          NOW ALSO (slice 1, 2026-05-23 late evening)
+                          serves a read RPC on `fleet/persistence/query`
+                          + announces itself on
+                          `fleet/admin/persistence_service_announce`.
+                          {main.lua, lib/{persistence,query_server}.lua,
+                           QUERY_API.md, test_query_client.{lua,sh},
+                           run.sh}.
+                          Default DB now `<repo>/var/persistence.db`
+                          (NOT /tmp — WSL2 hazard, see memory).
+  var/                    (gitignored) bench persistence.db lives here.
 ```
 
 Each robot's `chains/build.lua` requires the shared KB0 builder + its own
@@ -342,6 +370,13 @@ Verified live:
   publishing for 10 s, persistence cold-started; caught the next 30 s
   periodic topology republish, ran schema reconcile (+8 new leaves,
   new kb), opened 8 data subs, began landing heartbeat dispatches.
+- Persistence query API slice 1 (2026-05-23 ~14:00 PDT, final smoke):
+  test client received the service-announce within seconds, called
+  `list_kbs()` → `farm_soil_lacima01 (leaf_count=8)`,
+  `latest(kb_name, "heartbeat")` →
+  `state=operating apps=[moisture=ok,cimis_station=ok,cimis_spatial=ok]`,
+  all three negative envelope checks (unsupported_op / not_found /
+  bad_request) returned the right codes. Exit 0.
 
 ### THE zenoh lesson — publish per-sample, never blobs
 
@@ -367,6 +402,9 @@ republish; three-smoke verified). Parallel RA4M1-track commits
 (`b9da8b7` mode-2 spectral scaffolding · `ed9965d` wrap · `db4a4eb`
 CMSIS-DSP lifted · `83baaed` spectral hardware-verified).
 Engine repo (`~/knowledge_base_assembly`): `77ec769b` time-window leaves.
+2026-05-23 late evening: `6a22566` persistence query RPC slice 1
+(`latest()` + `list_kbs()`, service-announce, envelope + size-cap, two
+gotchas pinned with precise workarounds).
 
 ### Bench smoke
 
@@ -377,16 +415,21 @@ docker run -d --name fleet-zenohd -p 7447:7447/tcp -p 7447:7447/udp \
 # fleet_manager:
 unset LUA_CPATH LUA_PATH
 server/fleet_manager/run.sh &
-# persistence (one-time: cd vendor/c/ltree && sudo make install):
+# persistence (one-time: cd vendor/c/ltree && sudo make install).
+# DB default = <repo>/var/persistence.db — do NOT point at /tmp on
+# WSL2 (poisons construct_kb; main.lua emits a WARN if you try).
 unset LUA_CPATH LUA_PATH
-PERSISTENCE_DB=/tmp/persistence.db server/persistence/run.sh &
+server/persistence/run.sh &
 # farm_soil (needs TTN_BEARER_TOKEN + CIMIS_APP_KEY in farm_soil/secrets/ttn.env):
 unset LUA_CPATH LUA_PATH
 (cd farm_soil && ROBOT_CLASS=farm_soil ROBOT_INSTANCE=lacima01 \
    IDENTITY_DIR=$PWD/identity ./run.sh) &
-# inspect what persistence is storing:
-sqlite3 /tmp/persistence.db "SELECT path, label FROM knowledge_base"
-sqlite3 /tmp/persistence.db \
+# query the persistence DB over Zenoh (acid-test smoke client):
+unset LUA_CPATH LUA_PATH
+server/persistence/test_query_client.sh
+# inspect what persistence is storing (direct SQLite, read-only):
+sqlite3 var/persistence.db "SELECT path, label FROM knowledge_base"
+sqlite3 var/persistence.db \
   "SELECT path, COUNT(*) FROM knowledge_base_stream WHERE valid=1 GROUP BY path"
 # rebuild an IR after a chains/ edit:
 luajit farm_soil/chains/build.lua farm_soil/chains/connection.json
@@ -401,28 +444,35 @@ The vendored bindings are still **client-mode + zenohd-router only** — bench
 and container tests need the `zenohd` router above. Pi Zero 2 deploy (no
 containers) remains a separate, unsolved problem.
 
-## Plan for next session (after 2026-05-23)
+## Plan for next session (after 2026-05-23 late evening)
 
-Persistence is DONE; the natural next slice is the **application_logic +
-application_gateway layers** — layers 40 and 50 in decision #13, the
-"serve the persisted data" tier. The persistence DB now collects
-streams + status rows; the next job is to make them visible / queryable
-from outside.
+Slice 1 of the persistence query API is DONE; the natural next pieces:
 
-**1. Application-gateway sketch (START HERE).** A small HTTP server
-(LuaJIT + minimal HTTP lib, or Lua-pico-http, TBD) that exposes a
-JSON read API over the persistence DB. Likely surface:
+**1. Query API slice 2 (START HERE) — `stream()` + pagination.** Wire
+the deferred ops in `query_server.lua`: `stream(kb_name, path,
+since_ts?, until_ts?, limit?, order?)`, `latest_stream(path)`,
+`list_leaves(kb_name)`. Cursor format documented in
+`server/persistence/QUERY_API.md` (base64 `{order, after_id}` for
+stream). `max_page_rows=100`, `max_reply_bytes=4096` enforced server-
+side. Smoke against `cimis.station.sample` (30-row stream, predictable
+content). Slice 2 is mostly mechanical because the envelope and size-
+cap path are already proven by slice 1.
+
+**2. Application-gateway sketch.** Layers 40+50 from decision #13.
+A small HTTP server (LuaJIT + minimal HTTP lib, or Lua-pico-http, TBD)
+that **calls the persistence query RPC** (not direct SQLite) and
+exposes JSON over HTTP for browsers. Likely surface:
 
 - `GET /robots`                          — list (class, instance) pairs
 - `GET /robots/<class>/<inst>/latest`    — every status row for that
                                             instance + the head of each
                                             stream
 - `GET /robots/<class>/<inst>/stream/<leaf>?limit=N&since=...`
-                                          — list_stream_data with the
-                                            existing kb_stream filters
+                                          — stream rows via the
+                                            paginated RPC op
 
-Built on KBDS (no second persistence DB design). Read-only — the
-service does no writes; the persistence layer is the sole writer.
+Read-only — only persistence writes to the DB; everyone else goes
+through `fleet/persistence/query`.
 
 **2. Static dashboard.** Smallest possible front-end on top of the
 JSON API. Time-series chart of `cimis.{station,spatial}.sample` ETo
@@ -444,9 +494,12 @@ nanodatacenter/luajit-base`, decision #12). Persistence's `run.sh`
 already auto-builds ltree.so on first run — the Dockerfile can do
 the same at image build. Pi Zero 2 stays bare-process (decision #28).
 
-**First action:** read this file + the `persistence-layer-2026-05-23`,
-`farm-soil-robot-2026-05-22`, and `kb-sqlite3-stack` memories, then
-sketch the application_gateway shape.
+**First action:** read this file + the
+`persistence-query-api-slice1-2026-05-23`,
+`persistence-layer-2026-05-23`, `farm-soil-robot-2026-05-22`, and
+`kb-sqlite3-stack` memories, then start slice 2 in
+`server/persistence/lib/query_server.lua` (the deferred ops are
+already stubbed there).
 
 **Reference paths (dev-machine orientation only — NOT used at runtime):**
 The runtime uses `fleet_design/vendor/lua/` exclusively (see `vendor/PROVENANCE.md`).
@@ -467,3 +520,5 @@ The runtime uses `fleet_design/vendor/lua/` exclusively (see `vendor/PROVENANCE.
 - The real controller is `server/fleet_manager/`; `bench_manager/` was retired 2026-05-21.
 - Don't propose chain_tree DSL from API primitives — study `dsl_tests/` + the `chain_tree_dsl_runtime_model.md` memo first.
 - Don't publish multi-KB Zenoh values — zenoh-pico silently drops them. Publish per-sample (small messages); serve bulk data by RPC, one small reply per request.
+- Don't put SQLite-style persistent files in bare `/tmp` on WSL2 — `construct_kb`'s stream pre-allocation crashes with `SQLITE_IOERR_WRITE` (ext 5898). Use `<repo>/var/` for bench artifacts; containers exempt. See `feedback-no-tmp-for-persistent-files`.
+- Don't use `fleet/admin/persistence_query` (or restore the rename without re-testing) — this exact string deterministically breaks zenoh-pico reply routing in commit `88e0ba3`. Other `fleet/admin/*` topics route fine; only this one is poisoned. See `server/persistence/QUERY_API.md` for the repro + provenance.
