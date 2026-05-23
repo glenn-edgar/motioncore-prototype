@@ -1682,3 +1682,124 @@ issue doesn't apply; should work when a real encoder is wired.
 should report the real chip UID instead of the hardcoded dummy; the
 four-chip dongle suite continues with RP2350 and ESP32-C6 ports; cross-repo
 kb_build `class_ids.h` codegen.
+
+### 2026-05-23 wrap — mode 2 spectral scaffolded (not yet built)
+
+WSL-side design + code session. Stopped at "compiled-in-my-head, parse-checked,
+committed." Pi-side build/flash/verify is the next session's first task.
+
+**Locked decisions (do not relitigate without cause):**
+
+| Knob | Value | Why |
+|---|---|---|
+| FFT length `N` | 1024 (fixed in firmware) | RAM budget at ~14 KB spectral overlay; simpler than parametrising twiddle tables. |
+| Sample rate | `fs = 20 kHz / fs_code` for fs_code in 1..10 | Code 1 = 20 kHz fits motor/mains/wiper work; code 10 = 2 kHz for slow processes. Single integer arg. |
+| Bin resolution | 19.53 Hz @ code 1 → 1.95 Hz @ code 10 | Effective resolution wider by Hamming ENBW ≈ 1.36 bins. |
+| `target_frames` | 1..100 (Welch averaging) | Cap matches user request; ~5 s capture at code 1. |
+| Channels | single, chosen at START (0..3 → D1/D2/D3/D5) | Multi-channel parallel doesn't fit 32 KB SRAM at N=1024. |
+| DC handling | per-frame mean-subtract before windowing | Kills DC sidelobe leakage into low-frequency bins — exactly where motor work cares most. |
+| Window | Hamming, precomputed once at START | Closed-form Σw² ≈ 0.3974·N = 406.97 (used by host driver for PSD norm). |
+| PSD math | firmware ships raw counts² + frame_count; **driver does the correction** | Keeps firmware portable; one host implementation of the math. |
+| Overrun guard | fail-loud (state → ERROR + stop) | Silent skip would silently corrupt Welch averages. |
+| Mode arena | bumped 256 B → 16 KB | Spectral overlay is ~14 KB; one place to size for the largest mode. |
+
+**What landed at `b9da8b7`:**
+
+- `ra4m1/apps/register_dongle/vendor/cmsis_dsp/VENDORED.md` — Pi-side lift recipe
+  (clone ARM-software/CMSIS-DSP v1.16.2, copy ~8 specific source files).
+- `mode.h` arena bumped; `mode.c` MODE_SPECTRAL row + MAX_IMPLEMENTED bump.
+- `spectral.{h,c}` (new) — state machine, ISR, foreground FFT pump, API.
+- `ra4m1_commands.c` — `CMD_SPECTRAL_START / STATUS / READ / STOP` at
+  0x0115..0x0118, full handlers.
+- `main.c` — `spectral_pump()` added to the superloop alongside
+  `workbench_analog_poll()`.
+- `Makefile` — `CMSIS_DSP` path var, `Include/` on INC, 8 CMSIS-DSP `.c`
+  files in `SRC_C`, `-DARM_MATH_CM4 -DARM_MATH_DSP -D__FPU_USED=1
+  -DARM_MATH_LOOPUNROLL` flags, vpath entries.
+- `linux/dongle_console/dongle_console.lua` — four
+  `--send-shell-spectral-*` cmds; STATUS decoder caches fs_hz +
+  frame_count for the READ decoder; READ printer reports
+  `{bin, freq_Hz, raw_counts², PSD(V²/Hz), dB}` with full Welch
+  normalization (`/frame_count / (fs · Σw²)` + factor-of-2 one-sided
+  correction + `(vref/16384)²` counts→V² scaling).
+- Help text + parse-check passed via `luajit -e 'loadfile(...)'`.
+
+**Algorithm path (per frame, foreground):**
+
+```
+ADC sample stream (ISR @ fs)
+   → N-sample capture (u16, ping-pong)
+   → compute mean, subtract, multiply by Hamming window  (f32)
+   → arm_rfft_fast_f32 in place (packed real-FFT output)
+   → accumulate |X[k]|² into power_sum[N/2+1]   (f32)
+   → frames_done++; state = DONE when target reached
+```
+
+CMSIS-DSP packed real-FFT layout: `out[0]=DC`, `out[1]=Nyquist`, then
+`out[2k], out[2k+1] = re, im` of bin `k` for `1 ≤ k < N/2`. So
+`SPECTRAL_BINS = N/2 + 1 = 513`.
+
+**Pi-side bring-up steps (next session, first thing):**
+
+1. Lift CMSIS-DSP per `vendor/cmsis_dsp/VENDORED.md` — `git clone --depth 1
+   --branch v1.16.2 https://github.com/ARM-software/CMSIS-DSP.git`, copy
+   the listed files into `vendor/cmsis_dsp/Include/` and
+   `vendor/cmsis_dsp/Source/{TransformFunctions,CommonTables}/`. Fill in
+   the actual SHA pin in `VENDORED.md`.
+2. `make` the register_dongle target. Expect potential trip-ups:
+   - missing `dsp/` subdir headers under `Include/` if a header chain
+     pulls in additional files — extend the `cp -r` step.
+   - `__FPU_USED` / `__FPU_PRESENT` already defined by FSP → duplicate-define
+     warnings: fine.
+   - `ARM_MATH_LOOPUNROLL` may need a different name in v1.16.2 → adjust.
+   - text size after the lift: expect ~50–60 KB total (was 37.8 KB before
+     spectral). Flash budget is 256 KB; fine.
+3. Flash via `raflash write` (no `--verify` — that hangs; the write itself
+   completes; see [[ra4m1_step4_workbench_2026-05-22]]).
+4. Bench-verify with a jumper from D0 (DAC) to D1 (ADC ch 0):
+   ```
+   # Drive 500 Hz DAC sine (existing waveform cmd)
+   dongle_console.lua --frame --chip ra4m1 \
+       --send-shell-dac-waveform-write sine 500 ...
+
+   # Start spectral capture: fs_code=1 (20 kHz), ch=0, frames=100
+   dongle_console.lua --frame --chip ra4m1 \
+       --send-shell-spectral-start 1 0 100
+
+   # Wait ~5 s, poll status
+   dongle_console.lua --frame --chip ra4m1 --send-shell-spectral-status
+
+   # Page reads — STATUS must come first so the READ printer has fs+count
+   dongle_console.lua --frame --chip ra4m1 \
+       --send-shell-spectral-status \
+       --send-shell-spectral-read 0 30 \
+       --send-shell-spectral-read 30 30 \
+       ... --send-shell-spectral-read 510 3
+   ```
+   Expected: a clear peak at bin 26 (`19.53 Hz × 26 = 507.8 Hz`, closest to
+   500), with Hamming sidelobes at ±1 bin (about −43 dB down).
+
+**Known non-obvious trap:** `mode_set(MODE_SPECTRAL)` succeeds but
+`spectral_on_enter` does NOT initialise the rfft instance — that happens
+inside `spectral_start`. So entering the mode without firing START leaves
+the chip in IDLE waiting. Not a bug, just easy to forget.
+
+### Roadmap — future plans (as of 2026-05-23)
+
+**NEXT SESSION — Pi-side spectral bring-up + Goertzel.**
+
+1. CMSIS-DSP lift + first build + first flash + bench-verify (above).
+2. Once a clean PSD on a 500 Hz sine is verified, add **Goertzel** per-bin
+   live tracking — coefficients precomputed on `GOERTZEL_ADD freq_hz`,
+   ISR does sample-time updates, `GOERTZEL_READ` returns current
+   magnitudes. Reuses the same ADC ISR and arena (small per-filter state).
+   Likely 4–8 simultaneous filters; small enough to coexist with the FFT
+   pipeline.
+3. SAMD21 back-port of the analog-collection commands
+   (`ANALOG_START/READ/STOP` + Welford + min/max). Same wire contract; the
+   SAMD21 already has a TC3 ISR doing DAC waveform so the "mode periodic
+   timer" equivalent is in place. (Spectral on SAMD21 is *not* on the
+   menu — M0+ without FPU is the wrong place for it.)
+4. Continue with the previously tracked items: DFU placeholders, SAMD21
+   real chip UID in usb_descriptors, RP2350/ESP32-C6 ports, cross-repo
+   kb_build `class_ids.h` codegen.
