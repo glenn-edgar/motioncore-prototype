@@ -228,18 +228,23 @@ for the four zenoh `.so` files (libzenoh_pubsub / _rpc / _token + libzenohpico).
 These will be replaced by `vendor/lib-aarch64/` once we cross-compile for Pi.
 Override `LD_LIBRARY_PATH` in the caller env to bypass the bench default.
 
-## Resume here (2026-05-23 late evening)
+## Resume here (2026-05-23 — slice 2 done)
 
-**Persistence has a read interface now.** Slice 1 of the query API is
-in: one token-RPC on `fleet/persistence/query` dispatched by op
-(`latest(path)` + `list_kbs()` live; `stream/list_leaves/latest_stream`
-stubbed for slice 2), paired with a service-announce on
-`fleet/admin/persistence_service_announce` that mirrors the
-robot-side topology-announce pattern (30 s periodic + immediate refresh
-when a new kb arrives). Acid-tested end-to-end against `farm_soil`'s
-live heartbeat — see `persistence-query-api-slice1-2026-05-23` memory.
+**Persistence read interface is now complete.** Slice 1
+(`latest`+`list_kbs`) AND slice 2 (`stream` with cursor pagination +
+size-trim, `latest_stream`, `list_leaves`) are both in. One token-RPC on
+`fleet/persistence/query` dispatched by op; service-announce on
+`fleet/admin/persistence_service_announce` (30 s periodic + immediate
+refresh on new kb). v1 op surface closed. See the
+`persistence-query-api-slice2-2026-05-23` memory for the slice-2
+specifics (id-based cursor, iterative size-trim, library extensions);
+slice-1 memory remains the source for the wire envelope + the two
+empirical gotchas (`fleet/admin/persistence_query` poison key, `/tmp` on
+WSL2). Acid-tested end-to-end against `farm_soil`'s CIMIS sample stream
+(3-page walk at limit=3) + moisture stream (limit=100 trimmed to 6 rows
+under the 4 KB cap).
 
-Two empirical gotchas surfaced and got pinned during the acid test:
+Two empirical gotchas surfaced and got pinned during the slice-1 acid test:
 - **Poison key**: `fleet/admin/persistence_query` deterministically
   breaks zenoh-pico's reply routing (server-side `z_query_reply` OK,
   client times out). 5×5 isolated repro; only this exact string. The
@@ -404,7 +409,10 @@ CMSIS-DSP lifted · `83baaed` spectral hardware-verified).
 Engine repo (`~/knowledge_base_assembly`): `77ec769b` time-window leaves.
 2026-05-23 late evening: `6a22566` persistence query RPC slice 1
 (`latest()` + `list_kbs()`, service-announce, envelope + size-cap, two
-gotchas pinned with precise workarounds).
+gotchas pinned with precise workarounds) · `1d2cb3f` slice 2
+(`stream()`/`latest_stream()`/`list_leaves()`, id-based cursor +
+iterative size-trim; kb_stream gains after_id+order_by; KBDS facade
+gap closed).
 
 ### Bench smoke
 
@@ -444,24 +452,15 @@ The vendored bindings are still **client-mode + zenohd-router only** — bench
 and container tests need the `zenohd` router above. Pi Zero 2 deploy (no
 containers) remains a separate, unsolved problem.
 
-## Plan for next session (after 2026-05-23 late evening)
+## Plan for next session (after 2026-05-23 — slice-2 wrap)
 
-Slice 1 of the persistence query API is DONE; the natural next pieces:
+Persistence query API v1 (slices 1+2) is DONE. The read interface is
+complete and proven. Natural next pieces:
 
-**1. Query API slice 2 (START HERE) — `stream()` + pagination.** Wire
-the deferred ops in `query_server.lua`: `stream(kb_name, path,
-since_ts?, until_ts?, limit?, order?)`, `latest_stream(path)`,
-`list_leaves(kb_name)`. Cursor format documented in
-`server/persistence/QUERY_API.md` (base64 `{order, after_id}` for
-stream). `max_page_rows=100`, `max_reply_bytes=4096` enforced server-
-side. Smoke against `cimis.station.sample` (30-row stream, predictable
-content). Slice 2 is mostly mechanical because the envelope and size-
-cap path are already proven by slice 1.
-
-**2. Application-gateway sketch.** Layers 40+50 from decision #13.
-A small HTTP server (LuaJIT + minimal HTTP lib, or Lua-pico-http, TBD)
-that **calls the persistence query RPC** (not direct SQLite) and
-exposes JSON over HTTP for browsers. Likely surface:
+**1. Application-gateway sketch (START HERE).** Layers 40+50 from
+decision #13. A small HTTP server (LuaJIT + minimal HTTP lib, or
+Lua-pico-http, TBD) that **calls the persistence query RPC** (not
+direct SQLite) and exposes JSON over HTTP for browsers. Likely surface:
 
 - `GET /robots`                          — list (class, instance) pairs
 - `GET /robots/<class>/<inst>/latest`    — every status row for that
@@ -481,12 +480,12 @@ TTN uplink stream); a fleet-overview grid showing each robot's last
 heartbeat. Defer auth + multi-tenancy.
 
 **3. Open follow-ups inherited from persistence:**
-- `get_latest_stream_data` aggregator gap in KBDS facade (small
-  upstream patch).
 - Explicit decommissioning tool (operator action to retire a removed
   (class, instance) — trim DB rows + kb_info entry).
 - zenoh-rs binding for true wildcard subs (deferred until a real
   multi-class operation needs it; see persistence-layer memory).
+- zenoh-pico upgrade — re-test the `fleet/admin/persistence_query`
+  poison key; if fixed upstream, drop the rename workaround.
 
 **4. Container packaging (still open).** `fake_robot`/`farm_soil` and
 `server/{fleet_manager,persistence}` as containers (`FROM
@@ -495,11 +494,11 @@ already auto-builds ltree.so on first run — the Dockerfile can do
 the same at image build. Pi Zero 2 stays bare-process (decision #28).
 
 **First action:** read this file + the
-`persistence-query-api-slice1-2026-05-23`,
-`persistence-layer-2026-05-23`, `farm-soil-robot-2026-05-22`, and
-`kb-sqlite3-stack` memories, then start slice 2 in
-`server/persistence/lib/query_server.lua` (the deferred ops are
-already stubbed there).
+`persistence-query-api-slice2-2026-05-23` (and via it, slice-1 +
+layer memories), `farm-soil-robot-2026-05-22`, and `kb-sqlite3-stack`
+memories, then sketch the gateway surface in
+`server/application_gateway/` (currently nonexistent — pick the HTTP
+library first).
 
 **Reference paths (dev-machine orientation only — NOT used at runtime):**
 The runtime uses `fleet_design/vendor/lua/` exclusively (see `vendor/PROVENANCE.md`).
