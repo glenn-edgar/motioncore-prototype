@@ -228,39 +228,64 @@ for the four zenoh `.so` files (libzenoh_pubsub / _rpc / _token + libzenohpico).
 These will be replaced by `vendor/lib-aarch64/` once we cross-compile for Pi.
 Override `LD_LIBRARY_PATH` in the caller env to bypass the bench default.
 
-## Resume here (2026-05-22 evening)
+## Resume here (2026-05-23 evening)
 
-**farm_soil has its second skill — CIMIS daily-ETo, two KB instances —
-built and verified against the live et.water.ca.gov API.** Slices A–D
-complete. The shared `robot_common/lib/clock.lua` gained Pacific civil
-time. See the `cimis-skill-2026-05-22` memory.
+**The persistence layer is in.** Layer-30 (decision #13) +
+`persistence.db` (decision #15) — what decision #6 has been pointing
+at since 2026-05-19. The vendored `knowledge_base/sqlite3` LuaJIT
+stack is the storage engine; `server/persistence/` is the new
+sister process to `server/fleet_manager/`; `farm_soil` announces
+its topology on `fleet/admin/persistence_topology_announce` (every
+30 s) and persistence does discover → idempotent construct_kb →
+per-leaf subscribe → push_stream_data / set_status_data. See
+`persistence-layer-2026-05-23` memory. **Earlier this same session**,
+the CIMIS skill picked up multi-day backfill (drop the 15:00 cutoff,
+fetch a trailing 7-day window every retry, publish each newly-
+finalized day to both `/sample` stream + `/latest` status leaves) —
+see updated `cimis-skill-2026-05-22` memory.
 
 ### Layout (updated)
 
 ```
 fleet_design/
-  vendor/lua/        ct_* runtime + zenoh bindings (vendored)
+  vendor/lua/        ct_* runtime + zenoh bindings + (NEW 2026-05-23)
+                     23 kb_sqlite3 Lua files (sqlite3_helpers,
+                     knowledge_base_manager, construct_* family,
+                     kb_data_structures, kb_status_table, kb_stream,
+                     kb_query_support, kb_rpc_*, kb_link_*, bit_mask_*)
+  vendor/c/ltree/    (NEW) C source for the SQLite ltree extension —
+                     PostgreSQL-style hierarchical path queries.
+                     Bench: `sudo make install` -> /usr/local/lib/ltree.so;
+                     Container/Pi: run.sh auto-builds.
   robot_common/      shared
     chains/          {connection.lua (KB0 builder),
                       connection_user_functions.lua}
-    lib/             {identity, clock (now with pacific_now /
-                      california_today / california_yesterday +
-                      Hinnant date arithmetic + DST rule),
-                      zenoh_session, zenoh_rpc_session, app_heartbeat}
+    lib/             {identity, clock (Hinnant date arithmetic +
+                      US-Pacific DST rule), zenoh_session,
+                      zenoh_rpc_session, app_heartbeat}
     tests/           test_clock.lua (28 deterministic checks)
   fake_robot/        the generic test robot — class_spec, chains/build.lua,
                      the fake_counter app KB
   farm_soil/         the soil-moisture + ET-reference robot
-    class_spec.lua   declares moisture + cimis (station + spatial) KBs
+    class_spec.lua   declares moisture + cimis KBs +
+                     persistence_topology() + publish_persistence_topology
     chains/build.lua assembles 4 KBs into one IR (67 nodes)
     chains/          connection.json, moisture.lua + user_fns,
-                     cimis.lua + user_fns
+                     cimis.lua + user_fns (multi-day backfill)
     lib/             {decoder, ttn_client, moisture,
                       cimis_client, cimis_decoder}
     tests/           {test_decoder, test_moisture, test_ttn_client,
                       test_cimis_decoder, test_cimis_client}
     secrets/ttn.env  TTN_BEARER_TOKEN + CIMIS_APP_KEY (gitignored)
+    main.lua         pump loop now republishes persistence_topology
+                     every PERSISTENCE_TOPOLOGY_REPUBLISH_S (= 30 s)
   server/fleet_manager/   the controller (register RPC + heartbeat + registry)
+  server/persistence/     (NEW) layer-30 — subscribes to fleet-wide
+                          `fleet/admin/persistence_topology_announce`,
+                          idempotently construct_kb's per-instance
+                          tables, opens per-leaf data subs, dispatches
+                          to push_stream_data / set_status_data.
+                          {main.lua, lib/persistence.lua, run.sh}
 ```
 
 Each robot's `chains/build.lua` requires the shared KB0 builder + its own
@@ -281,12 +306,19 @@ Zenoh fabric. Standalone mode (#17) — no DCS, SQLite-only, local zenohd.
 - **`sample` RPC** (`farm_soil/<instance>/sample`) — pull one ring entry by
   index (0 = newest); ad-hoc queries + gap backfill.
 - **cimis_station + cimis_spatial KBs** — two KB instances of one CIMIS
-  skill module. Each runs a Pacific 09:00–15:00 daily-gate state machine
-  (4 gates: already-recorded / pre-window / post-window / in-window → fetch);
-  on success records yesterday's ASCE ETo in memory and publishes once on
-  `…/cimis/<source>/latest`. 15 min retry between attempts. The two-KB
-  pattern (one module, N instances by source/target — the **skill-KB
-  taxonomy**) is reusable for any future multi-source skill.
+  skill module. **As of 2026-05-23**, each runs a 3-gate state machine
+  (up-to-date / pre-window / in-window-gap-pending) — the 15:00 cutoff
+  was dropped. Each in-window tick fetches a trailing
+  `lookback_days = 7` window ending yesterday, then publishes every
+  newly-finalized day in date order onto BOTH leaves:
+  `…/cimis/<source>/sample` (stream — durable per-day record)
+  and `…/cimis/<source>/latest` (status — last-write-wins).
+  The 09:00 start remains: before that, CIMIS posts today's row as
+  provisional and the filter cannot reliably reject it. 15 min retry
+  between attempts; retrying past 15:00 / overnight is fine — the
+  robot self-heals gaps end-to-end. The two-KB pattern (one module,
+  N instances by source/target — the **skill-KB taxonomy**) is
+  reusable for any future multi-source skill.
 - **per-KB `repost` RPC** (`farm_soil/<instance>/cimis/<source>/repost`) —
   empty request, returns the latest recorded reading JSON or the literal
   `null`. Solves late-subscriber catch-up (zenoh-pico has no retained
@@ -295,14 +327,21 @@ Zenoh fabric. Standalone mode (#17) — no DCS, SQLite-only, local zenohd.
   `{ts, state, apps}`, rolling up each app KB's stamped health.
 
 Verified live:
-- moisture: 64–65 real uplinks/fetch from the lacima ranch (3 sensing
+- moisture: 64–67 real uplinks/fetch from the lacima ranch (3 sensing
   points) — per-sample published + received, the `sample` RPC, heartbeats.
-- CIMIS (2026-05-22 15:00 PDT, two-phase smoke):
-  in-window — both KBs fetched 2026-05-21 ETo (station 237 = 0.25 in,
-  zip 92562 = 0.20 in), published, repost RPC echoed each;
-  post-window with fresh state — both KBs stamped
-  `degraded: missed window for 2026-05-21 (now 15:04 PDT)`,
-  no fetch, repost RPC returned `null`.
+- CIMIS (2026-05-23 10:32 PDT, fresh-state smoke): both KBs ran the
+  full 7-day backfill (2026-05-16..05-22) in chronological order onto
+  both `/sample` and `/latest` leaves; 28 wire publishes received by an
+  independent subscriber in publication order; repost RPC returned the
+  freshest day for both sources.
+- Persistence (2026-05-23 10:55 PDT): cold persistence.db, robot first,
+  persistence subscribed → 74 valid stream rows (7 CIMIS station + 67
+  moisture) + 3 status rows. Read-back via KBDS:get_status_data and
+  kb.stream:get_latest_stream_data matches the wire byte-for-byte.
+- Late-joining persistence (2026-05-23 11:31 PDT): robot up first +
+  publishing for 10 s, persistence cold-started; caught the next 30 s
+  periodic topology republish, ran schema reconcile (+8 new leaves,
+  new kb), opened 8 data subs, began landing heartbeat dispatches.
 
 ### THE zenoh lesson — publish per-sample, never blobs
 
@@ -318,9 +357,15 @@ storage — which is why the robot holds the ring in memory and serves it by RPC
 KB0 + lib → robot_common · `7bbf981` farm_soil skill modules · `d53ab75`
 farm_soil scaffold + moisture KB · `6f6ac8c` republish RPC · `88ebd0b`
 per-sample publish + `sample` RPC · `7ae3cd6` slice 5 (KB0 app-KB
-heartbeat) · `c4b91b4` wrap (continue.md 2026-05-22) · *this commit*
-farm_soil CIMIS skill (slices A–D — Pacific clock, cimis_client + decoder,
-two KB instances, repost RPC, live-verified).
+heartbeat) · `c4b91b4` wrap (continue.md 2026-05-22) · `7954c52` CIMIS
+skill (slices A–D — Pacific clock, cimis_client + decoder, two KB
+instances, repost RPC, live-verified). 2026-05-23: `f68d1c1` CIMIS
+multi-day backfill (drop 15:00 cutoff, 7-day lookback, sample+latest
+leaves) · `59f473c` persistence layer (vendor kb_sqlite3 stack,
+server/persistence/, robot-side topology announce + 30s periodic
+republish; three-smoke verified). Parallel RA4M1-track commits
+(`b9da8b7` mode-2 spectral scaffolding · `ed9965d` wrap · `db4a4eb`
+CMSIS-DSP lifted · `83baaed` spectral hardware-verified).
 Engine repo (`~/knowledge_base_assembly`): `77ec769b` time-window leaves.
 
 ### Bench smoke
@@ -329,60 +374,79 @@ Engine repo (`~/knowledge_base_assembly`): `77ec769b` time-window leaves.
 # zenohd router:
 docker run -d --name fleet-zenohd -p 7447:7447/tcp -p 7447:7447/udp \
   eclipse/zenoh --listen tcp/0.0.0.0:7447 --listen udp/0.0.0.0:7447
-# controller:
-LUA_CPATH="/usr/local/lib/lua/5.1/?.so;;" server/fleet_manager/run.sh &
-# farm_soil (needs the TTN token in farm_soil/secrets/ttn.env):
-ROBOT_CLASS=farm_soil ROBOT_INSTANCE=lacima01 \
-  LUA_CPATH="/usr/local/lib/lua/5.1/?.so;;" farm_soil/run.sh
+# fleet_manager:
+unset LUA_CPATH LUA_PATH
+server/fleet_manager/run.sh &
+# persistence (one-time: cd vendor/c/ltree && sudo make install):
+unset LUA_CPATH LUA_PATH
+PERSISTENCE_DB=/tmp/persistence.db server/persistence/run.sh &
+# farm_soil (needs TTN_BEARER_TOKEN + CIMIS_APP_KEY in farm_soil/secrets/ttn.env):
+unset LUA_CPATH LUA_PATH
+(cd farm_soil && ROBOT_CLASS=farm_soil ROBOT_INSTANCE=lacima01 \
+   IDENTITY_DIR=$PWD/identity ./run.sh) &
+# inspect what persistence is storing:
+sqlite3 /tmp/persistence.db "SELECT path, label FROM knowledge_base"
+sqlite3 /tmp/persistence.db \
+  "SELECT path, COUNT(*) FROM knowledge_base_stream WHERE valid=1 GROUP BY path"
 # rebuild an IR after a chains/ edit:
 luajit farm_soil/chains/build.lua farm_soil/chains/connection.json
 ```
+
+`unset LUA_CPATH LUA_PATH` is important — the host's interactive shell
+has Lua-5.4-ABI paths set by luarocks that crash LuaJIT's cjson loader.
+The run.sh scripts set the correct LuaJIT-ABI paths only if the env is
+empty.
 
 The vendored bindings are still **client-mode + zenohd-router only** — bench
 and container tests need the `zenohd` router above. Pi Zero 2 deploy (no
 containers) remains a separate, unsolved problem.
 
-## Plan for next session (2026-05-23 — persistence layer)
+## Plan for next session (after 2026-05-23)
 
-**1. Persistence app (START HERE).** A `server/` layer (sister to
-`fleet_manager/`) that subscribes to the per-sample reading streams the
-robots publish — moisture's `<ns>/<device>/<location>/latest` (~hourly
-per sensing point, ~540 B each) AND CIMIS's `<ns>/cimis/<source>/latest`
-(daily, one per source) — and writes them to local SQLite. The robot is
-the upstream sole writer; persistence is the durable central copy (the
-robot only buffers 256 moisture readings + one ETo value per source). This
-is decision #6 finally landing.
+Persistence is DONE; the natural next slice is the **application_logic +
+application_gateway layers** — layers 40 and 50 in decision #13, the
+"serve the persisted data" tier. The persistence DB now collects
+streams + status rows; the next job is to make them visible / queryable
+from outside.
 
-Design questions to settle first:
-- One persistence process per robot class, or one shared across the fleet?
-  (Decision #13 said one process per layer — favors one shared.)
-- Schema: separate tables per measurement family
-  (`moisture_reading`, `cimis_eto`, …) or a single generic
-  `(class, instance, key, ts, value, unit, qc, raw_json)` row table?
-  The Python `skills/cimis/db.py` precedent is one table per family — but
-  fleet-wide a generic table might compose better with the planned
-  dashboards layer.
-- Subscription scope: per-robot keys (`farm_soil/lacima01/**`) or
-  fleet-wide wildcards (`**/cimis/*/latest`, `**/<device>/*/latest`)?
-- Idempotency: same PK as the Python skill
-  (`target_kind,target,date,item`) for CIMIS; per-sample moisture wants
-  something like `(class,instance,device,location,received_at,f_cnt)`.
-- Backfill: persistence app can call CIMIS itself (with a wider lookback)
-  to fill gaps the robot missed (post-15:00 misses, restarts in idle
-  hours). Worth a thought — keeps the gap-self-heal property the robot's
-  narrow-window design dropped.
+**1. Application-gateway sketch (START HERE).** A small HTTP server
+(LuaJIT + minimal HTTP lib, or Lua-pico-http, TBD) that exposes a
+JSON read API over the persistence DB. Likely surface:
 
-**2. Local web servers.** Sister `server/` layer(s) that serve the
-persisted data — likely a small JSON HTTP API + a static dashboard. Open:
-one server per persistence DB, or one server reading whatever DBs exist?
+- `GET /robots`                          — list (class, instance) pairs
+- `GET /robots/<class>/<inst>/latest`    — every status row for that
+                                            instance + the head of each
+                                            stream
+- `GET /robots/<class>/<inst>/stream/<leaf>?limit=N&since=...`
+                                          — list_stream_data with the
+                                            existing kb_stream filters
 
-**3. Container packaging (still open).** `fake_robot`/`farm_soil` and
-`server/` as containers (`FROM nanodatacenter/luajit-base`, decision #12).
-The Pi Zero 2 runs the bare process.
+Built on KBDS (no second persistence DB design). Read-only — the
+service does no writes; the persistence layer is the sole writer.
 
-**First action:** read this file + the `cimis-skill-2026-05-22`,
-`farm-soil-robot-2026-05-22`, and `chain-tree-dsl-runtime-model` memories,
-then settle the persistence design questions above.
+**2. Static dashboard.** Smallest possible front-end on top of the
+JSON API. Time-series chart of `cimis.{station,spatial}.sample` ETo
+over the last 30 days; a per-device-location panel for moisture (the
+TTN uplink stream); a fleet-overview grid showing each robot's last
+heartbeat. Defer auth + multi-tenancy.
+
+**3. Open follow-ups inherited from persistence:**
+- `get_latest_stream_data` aggregator gap in KBDS facade (small
+  upstream patch).
+- Explicit decommissioning tool (operator action to retire a removed
+  (class, instance) — trim DB rows + kb_info entry).
+- zenoh-rs binding for true wildcard subs (deferred until a real
+  multi-class operation needs it; see persistence-layer memory).
+
+**4. Container packaging (still open).** `fake_robot`/`farm_soil` and
+`server/{fleet_manager,persistence}` as containers (`FROM
+nanodatacenter/luajit-base`, decision #12). Persistence's `run.sh`
+already auto-builds ltree.so on first run — the Dockerfile can do
+the same at image build. Pi Zero 2 stays bare-process (decision #28).
+
+**First action:** read this file + the `persistence-layer-2026-05-23`,
+`farm-soil-robot-2026-05-22`, and `kb-sqlite3-stack` memories, then
+sketch the application_gateway shape.
 
 **Reference paths (dev-machine orientation only — NOT used at runtime):**
 The runtime uses `fleet_design/vendor/lua/` exclusively (see `vendor/PROVENANCE.md`).
