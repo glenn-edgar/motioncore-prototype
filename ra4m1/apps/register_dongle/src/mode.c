@@ -52,15 +52,19 @@ static uint32_t g_ram_vectors[VT_ENTRIES] __attribute__((aligned(256)));
 // fill their rows when those ports land — no change to the dispatch core.
 
 extern void workbench_periodic_isr(void);   // ra4m1_commands.c
+extern void spectral_on_enter   (void);     // spectral.c
+extern void spectral_on_exit    (void);     // spectral.c
+extern void spectral_periodic_isr(void);    // spectral.c — ADC sample tick
 
 static const mode_descriptor_t g_modes[MODE_COUNT] = {
-    [MODE_WORKBENCH] = { NULL, NULL, workbench_periodic_isr },
-    // [MODE_SPECTRAL] / [MODE_PID] / [MODE_SCURVE] — added with their ports.
+    [MODE_WORKBENCH] = { NULL,              NULL,             workbench_periodic_isr },
+    [MODE_SPECTRAL]  = { spectral_on_enter, spectral_on_exit, spectral_periodic_isr  },
+    // [MODE_PID] / [MODE_SCURVE] — added with their ports.
 };
 
 // Highest mode that is actually implemented. mode_set() rejects anything above
-// it. Bump this (one line) as modes 2-4 land.
-#define MODE_MAX_IMPLEMENTED  MODE_WORKBENCH
+// it. Bump this (one line) as modes 3-4 land.
+#define MODE_MAX_IMPLEMENTED  MODE_SPECTRAL
 
 // ---- mode periodic-timer ISR ----------------------------------------------
 // Installed at vector index VT_SYSTEM_ENTRIES + MODE_PERIODIC_IRQ. Shared by

@@ -61,11 +61,15 @@ typedef struct {
 
 // ---- shared mode RAM arena -------------------------------------------------
 // Per-mode working state overlays here — only the active mode owns it, and
-// nothing in it survives a mode switch. Step 4 stores only the workbench DAC
-// waveform state; modes 2-4 add their own (larger) views later, at which point
-// MODE_ARENA_SIZE grows to the largest mode. 8-aligned for u32/struct members.
+// nothing in it survives a mode switch. Workbench's DAC-waveform state is
+// ~30 bytes; spectral (mode 2) dominates with two u16 capture buffers, an f32
+// Hamming window, an f32 rfft scratch, an f32 power accumulator, and the
+// CMSIS-DSP rfft instance — together ~14 KB at N=1024. 16 KB leaves headroom
+// for the rfft instance and any later struct growth. 8-aligned for u32/struct
+// members; the f32 buffers don't need stricter alignment for CMSIS-DSP's
+// rfft_fast on M4 (no Helium / no DCache).
 
-#define MODE_ARENA_SIZE  256u
+#define MODE_ARENA_SIZE  16384u
 extern uint8_t g_mode_arena[MODE_ARENA_SIZE] __attribute__((aligned(8)));
 
 // ---- foundation API --------------------------------------------------------

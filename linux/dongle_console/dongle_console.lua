@@ -124,6 +124,39 @@ local CMD_GET_MODE           = 0x0111
 local CMD_ANALOG_START       = 0x0112
 local CMD_ANALOG_READ        = 0x0113
 local CMD_ANALOG_STOP        = 0x0114
+-- Mode-2 spectral (averaged power spectrum) — see ra4m1/.../spectral.{h,c}.
+local CMD_SPECTRAL_START     = 0x0115
+local CMD_SPECTRAL_STATUS    = 0x0116
+local CMD_SPECTRAL_READ      = 0x0117
+local CMD_SPECTRAL_STOP      = 0x0118
+
+-- ---- Spectral host-side PSD math --------------------------------------------
+-- Firmware ships raw Σ|FFT(x·w)|² (counts²) over `frame_count` frames. The
+-- driver converts to PSD here. Constants for the fixed N=1024 Hamming window:
+--   Σw² ≈ N·(0.54² + 0.46²/2) = 1024 · 0.3974 = 406.97
+-- PSD[k] = power_sum[k] / frame_count / (fs · Σw²) · (2 if 0<k<N/2 else 1)
+-- Units: input is ADC counts; multiply by (vref/adc_full)² to get V²/Hz.
+local SPECTRAL_N           = 1024
+local SPECTRAL_BINS        = SPECTRAL_N / 2 + 1     -- 513
+local SPECTRAL_HAMMING_W2  = 1024 * 0.3974          -- ≈ 406.97
+local SPECTRAL_FS_TABLE    = {                       -- fs_code -> fs_hz
+    [1]  = 20000,         [2]  = 10000,         [3]  = 20000/3,
+    [4]  = 5000,          [5]  = 4000,          [6]  = 20000/6,
+    [7]  = 20000/7,       [8]  = 2500,          [9]  = 20000/9,
+    [10] = 2000,
+}
+local SPECTRAL_CH_LABEL    = { [0]="D1/AN0", [1]="D2/AN1", [2]="D3/AN2", [3]="D5/AN22" }
+local SPECTRAL_STATE_NAMES = { [0]="idle", [1]="running", [2]="done", [3]="error" }
+
+-- per-request context for paged SPECTRAL_READ (offset is needed to map the
+-- reply's bins[i] back to absolute bin index k = offset+i).
+local pending_shell_ctx = {}
+
+-- Last spectral STATUS observed — provides fs_hz + frame_count for the
+-- READ decoder's PSD correction. Updated by the STATUS reply parser; the
+-- READ printer falls back to assumed values (fs_code=1, frame_count=1) if no
+-- STATUS has landed yet so the output is still self-contained.
+local g_spectral_last_status = nil
 
 -- request_id -> command_id map for in-flight shell calls. Populated by
 -- send_m2s_frame when emitting OP_SHELL_EXEC; consulted by the OP_SHELL_REPLY
@@ -442,6 +475,76 @@ local function parse_args(argv)
                     bit.band(CMD_ANALOG_STOP, 0xFF), bit.band(bit.rshift(CMD_ANALOG_STOP, 8), 0xFF),
                 },
                 shell_req = req_id, shell_cmd = CMD_ANALOG_STOP,
+            })
+        elseif a == "--send-shell-spectral-start" then
+            i = i + 1; local fs_code = tonumber(argv[i])
+            i = i + 1; local channel = tonumber(argv[i])
+            i = i + 1; local frames  = tonumber(argv[i])
+            if not fs_code or fs_code < 1 or fs_code > 10 then
+                die("spectral-start FS_CODE must be 1..10 (got %s)", tostring(argv[i-2]))
+            end
+            if not channel or channel < 0 or channel > 3 then
+                die("spectral-start CHANNEL must be 0..3 (got %s)", tostring(argv[i-1]))
+            end
+            if not frames or frames < 1 or frames > 100 then
+                die("spectral-start FRAMES must be 1..100 (got %s)", tostring(argv[i]))
+            end
+            local req_id = alloc_shell_req()
+            table.insert(opts.send_seq, {
+                cmd = 0x0109,
+                label = string.format("OP_SHELL_EXEC(spectral_start fs_code=%d ch=%d frames=%d)",
+                                      fs_code, channel, frames),
+                payload = {
+                    bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                    bit.band(CMD_SPECTRAL_START, 0xFF), bit.band(bit.rshift(CMD_SPECTRAL_START, 8), 0xFF),
+                    bit.band(fs_code, 0xFF),
+                    bit.band(channel, 0xFF),
+                    bit.band(frames, 0xFF), bit.band(bit.rshift(frames, 8), 0xFF),
+                },
+                shell_req = req_id, shell_cmd = CMD_SPECTRAL_START,
+            })
+        elseif a == "--send-shell-spectral-status" then
+            local req_id = alloc_shell_req()
+            table.insert(opts.send_seq, {
+                cmd = 0x0109, label = "OP_SHELL_EXEC(spectral_status)",
+                payload = {
+                    bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                    bit.band(CMD_SPECTRAL_STATUS, 0xFF), bit.band(bit.rshift(CMD_SPECTRAL_STATUS, 8), 0xFF),
+                },
+                shell_req = req_id, shell_cmd = CMD_SPECTRAL_STATUS,
+            })
+        elseif a == "--send-shell-spectral-read" then
+            i = i + 1; local offset = tonumber(argv[i])
+            i = i + 1; local count  = tonumber(argv[i])
+            if not offset or offset < 0 or offset >= SPECTRAL_BINS then
+                die("spectral-read OFFSET must be 0..%d (got %s)",
+                    SPECTRAL_BINS - 1, tostring(argv[i-1]))
+            end
+            if not count or count < 1 or count > 30 then
+                die("spectral-read COUNT must be 1..30 (got %s)", tostring(argv[i]))
+            end
+            local req_id = alloc_shell_req()
+            table.insert(opts.send_seq, {
+                cmd = 0x0109,
+                label = string.format("OP_SHELL_EXEC(spectral_read offset=%d count=%d)", offset, count),
+                payload = {
+                    bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                    bit.band(CMD_SPECTRAL_READ, 0xFF), bit.band(bit.rshift(CMD_SPECTRAL_READ, 8), 0xFF),
+                    bit.band(offset, 0xFF), bit.band(bit.rshift(offset, 8), 0xFF),
+                    bit.band(count,  0xFF), bit.band(bit.rshift(count,  8), 0xFF),
+                },
+                shell_req = req_id, shell_cmd = CMD_SPECTRAL_READ,
+                shell_ctx = { offset = offset, count = count },
+            })
+        elseif a == "--send-shell-spectral-stop" then
+            local req_id = alloc_shell_req()
+            table.insert(opts.send_seq, {
+                cmd = 0x0109, label = "OP_SHELL_EXEC(spectral_stop)",
+                payload = {
+                    bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                    bit.band(CMD_SPECTRAL_STOP, 0xFF), bit.band(bit.rshift(CMD_SPECTRAL_STOP, 8), 0xFF),
+                },
+                shell_req = req_id, shell_cmd = CMD_SPECTRAL_STOP,
             })
         elseif a == "--send-shell-gpio-config" then
             i = i + 1; local pin_label = argv[i]
@@ -854,6 +957,25 @@ Options:
   --send-shell-analog-read    Read {n, mean, stddev, min, max} per channel for
                       the interval since the last read; resets the accumulators.
   --send-shell-analog-stop    Stop analog collection.
+  --send-shell-spectral-start FS_CODE CH FRAMES
+                      Begin mode-2 averaged power-spectrum capture (RA4M1).
+                      FS_CODE: sample-rate divisor 1..10  (1=20 kHz, 2=10 kHz,
+                      3=20/3 kHz, ..., 10=2 kHz). CH: 0..3 → D1/D2/D3/D5.
+                      FRAMES: 1..100 (Welch averages, ~51 ms × FRAMES at fs_code=1).
+                      Switches the device into MODE_SPECTRAL automatically.
+                      Example: --send-shell-spectral-start 1 0 100
+  --send-shell-spectral-status
+                      Query state (idle|running|done|error), frames_done /
+                      target, fs_code/Hz, channel. Issue between START and
+                      READ — its fs_hz+frame_count are used by the READ
+                      printer to compute correct PSD(V²/Hz)/dB.
+  --send-shell-spectral-read OFFSET COUNT
+                      Page out the raw counts² accumulator bins. OFFSET:
+                      0..512.  COUNT: 1..30 (libcomm payload cap).  Driver
+                      computes PSD using last STATUS (fs_hz, frame_count) and
+                      prints {bin, freq, raw, PSD(V²/Hz), dB}.
+                      Walk OFFSET=0,30,60,...,510 to cover all 513 bins.
+  --send-shell-spectral-stop  Abort capture, return device to MODE_WORKBENCH.
   --send-shell-gpio-config PIN MODE
                       Configure a GPIO pin. PIN is 'D0'..'D10' (Xiao silkscreen)
                       or 'PA0'..'PA31'/'PB0'..'PB31' (raw chip port:pin).
@@ -1207,9 +1329,13 @@ end
 local function send_m2s_frame(fd, entry)
     local wire, seq = encode_m2s(entry.cmd, entry.payload)
     -- Stash request_id -> command_id so the OP_SHELL_REPLY decoder can
-    -- pick a command-specific pretty-printer when the reply lands.
+    -- pick a command-specific pretty-printer when the reply lands. Optional
+    -- per-command context (e.g. SPECTRAL_READ's offset) goes alongside.
     if entry.shell_req and entry.shell_cmd then
         pending_shell_requests[entry.shell_req] = entry.shell_cmd
+        if entry.shell_ctx then
+            pending_shell_ctx[entry.shell_req] = entry.shell_ctx
+        end
     end
     -- Hex-dump what we're about to write
     local hex = {}
@@ -1370,8 +1496,85 @@ local function decode_s2m_frame()
             elseif status == 0 and (expected_cmd == CMD_PWM_CONFIG or expected_cmd == CMD_PWM_SET
                                  or expected_cmd == CMD_PWM_TEARDOWN
                                  or expected_cmd == CMD_COUNTER_SETUP or expected_cmd == CMD_COUNTER_RESET
-                                 or expected_cmd == CMD_COUNTER_STOP or expected_cmd == CMD_SET_MODE) and len == 3 then
+                                 or expected_cmd == CMD_COUNTER_STOP or expected_cmd == CMD_SET_MODE
+                                 or expected_cmd == CMD_SPECTRAL_START or expected_cmd == CMD_SPECTRAL_STOP) and len == 3 then
                 io.write(string.format("\n  %s: ok", OPCODE_NAMES[0x0109] and "shell" or "shell"))
+                pending_shell_requests[req_id] = nil
+            elseif status == 0 and expected_cmd == CMD_SPECTRAL_STATUS and len == 3 + 9 then
+                -- Result: state:u8 frames_done:u32 frames_target:u16 fs_code:u8 channel:u8
+                local function u16at(o) return bit.bor(f[o], bit.lshift(f[o+1], 8)) end
+                local function u32at(o) return bit.bor(f[o], bit.lshift(f[o+1], 8),
+                                              bit.lshift(f[o+2], 16), bit.lshift(f[o+3], 24)) end
+                local state         = f[11]
+                local frames_done   = u32at(12)
+                local frames_target = u16at(16)
+                local fs_code       = f[18]
+                local channel       = f[19]
+                local fs_hz         = SPECTRAL_FS_TABLE[fs_code] or 0
+                io.write(string.format(
+                    "\n  spectral_status: state=%s frames=%d/%d fs_code=%d (%.0f Hz) ch=%d (%s)",
+                    SPECTRAL_STATE_NAMES[state] or tostring(state),
+                    frames_done, frames_target, fs_code, fs_hz,
+                    channel, SPECTRAL_CH_LABEL[channel] or "?"))
+                -- Save for the READ decoder so it can scale PSD correctly.
+                if fs_hz > 0 then
+                    g_spectral_last_status = {
+                        fs_code      = fs_code,
+                        fs_hz        = fs_hz,
+                        frame_count  = (frames_done > 0) and frames_done or 1,
+                        channel      = channel,
+                        state        = state,
+                    }
+                end
+                pending_shell_requests[req_id] = nil
+            elseif status == 0 and expected_cmd == CMD_SPECTRAL_READ and len >= 3 + 2 then
+                -- Result: count:u16  bins:f32[count]   (counts²-domain accumulator)
+                -- The driver applies the PSD correction (Welch normalization +
+                -- one-sided factor + V²/Hz scaling) and prints raw / PSD / dB.
+                local ctx = pending_shell_ctx[req_id] or { offset = 0 }
+                pending_shell_ctx[req_id] = nil
+                local function u16at(o) return bit.bor(f[o], bit.lshift(f[o+1], 8)) end
+                local function u32at(o) return bit.bor(f[o], bit.lshift(f[o+1], 8),
+                                              bit.lshift(f[o+2], 16), bit.lshift(f[o+3], 24)) end
+                local n      = u16at(11)
+                local offset = ctx.offset
+
+                -- Pull the latest STATUS we observed for fs + frame_count. If
+                -- the user hasn't issued one yet, fall back to assumptions and
+                -- label them in the header — better than silently using wrong
+                -- numbers. The recommended bench order is: START → STATUS →
+                -- (poll STATUS until DONE) → READ pages.
+                local st = g_spectral_last_status
+                local fs_hz, frame_count, src
+                if st then
+                    fs_hz       = st.fs_hz
+                    frame_count = st.frame_count
+                    src         = string.format("from STATUS (fs_code=%d, frames=%d)",
+                                                st.fs_code, st.frame_count)
+                else
+                    fs_hz       = SPECTRAL_FS_TABLE[1]   -- 20 kHz
+                    frame_count = 1
+                    src         = "ASSUMED fs_code=1, frame_count=1 (no STATUS observed)"
+                end
+                local bin_hz = fs_hz / SPECTRAL_N
+                local LSB_V  = 3.3 / 16384.0
+                local LSB_V2 = LSB_V * LSB_V
+                local norm   = 1.0 / (frame_count * fs_hz * SPECTRAL_HAMMING_W2)
+
+                io.write(string.format(
+                    "\n  spectral_read: offset=%d count=%d  [%s]", offset, n, src))
+                io.write(
+                    "\n    bin   freq(Hz)   raw_pow         PSD(V²/Hz)     dB")
+                for k = 0, n - 1 do
+                    local bin = offset + k
+                    local raw = u32_to_f32(u32at(13 + k * 4))
+                    local one_sided = (bin > 0 and bin < SPECTRAL_N / 2) and 2.0 or 1.0
+                    local psd_v2_hz = raw * norm * one_sided * LSB_V2
+                    local db = (psd_v2_hz > 0) and (10.0 * math.log10(psd_v2_hz)) or -200.0
+                    io.write(string.format(
+                        "\n    %4d  %7.2f   %12.3e   %12.3e   %7.2f",
+                        bin, bin * bin_hz, raw, psd_v2_hz, db))
+                end
                 pending_shell_requests[req_id] = nil
             elseif status == 0 and expected_cmd == CMD_ADC_CAPTURE and len >= 3 + 3 then
                 -- Result: num_channels:u8  num_samples:u16  samples:u16[num_channels*num_samples]

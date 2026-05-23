@@ -14,6 +14,7 @@
 TINYUSB    := ../../vendor/tinyusb
 SENGINE_RT := $(abspath $(CURDIR)/../../../s_engine/runtime)
 LIBCOMM    := $(CURDIR)/vendor/libcomm
+CMSIS_DSP  := $(CURDIR)/vendor/cmsis_dsp
 
 include $(TINYUSB)/examples/build_system/make/make.mk
 
@@ -34,6 +35,7 @@ INC += \
   $(CURDIR) \
   $(SENGINE_RT) \
   $(LIBCOMM) \
+  $(CMSIS_DSP)/Include \
   $(TOP)/hw \
   $(FSP_INC)/api \
   $(FSP_INC)/instances \
@@ -49,6 +51,15 @@ SRC_C += \
   ra4m1_commands.c \
   ra4m1_hal.c \
   mode.c \
+  spectral.c \
+  arm_rfft_fast_init_f32.c \
+  arm_rfft_fast_f32.c \
+  arm_cfft_f32.c \
+  arm_cfft_init_f32.c \
+  arm_cfft_radix8_f32.c \
+  arm_bitreversal2.c \
+  arm_common_tables.c \
+  arm_const_structs.c \
   register_dongle_v2_module_rom.c \
   frame.c \
   s_engine_module.c \
@@ -65,8 +76,17 @@ SRC_C += \
 # separately-maintained app + engine + libcomm code.
 CFLAGS += -Wno-error
 
+# CMSIS-DSP build switches for the M4F (ARM_MATH_CM4 selects the M4 path;
+# ARM_MATH_DSP enables single-cycle MAC; __FPU_USED=1 enables FP intrinsics).
+# The FSP startup already turns the FPU on at boot. ARM_MATH_LOOPUNROLL is
+# the canonical flag for CMSIS-DSP's hand-tuned inner loops.
+CFLAGS += -DARM_MATH_CM4 -DARM_MATH_DSP -D__FPU_PRESENT=1 \
+          -D__FPU_USED=1 -DARM_MATH_LOOPUNROLL
+
 include $(TINYUSB)/examples/build_system/make/rules.mk
 
 # Bare SRC_C names resolve via vpath: app sources + chain ROM (src/),
-# s_engine runtime, vendored libcomm, FSP flash driver.
-vpath %.c $(CURDIR)/src $(SENGINE_RT) $(LIBCOMM) $(FSP_FLASH_SRC)
+# s_engine runtime, vendored libcomm, FSP flash driver, vendored CMSIS-DSP.
+vpath %.c $(CURDIR)/src $(SENGINE_RT) $(LIBCOMM) $(FSP_FLASH_SRC) \
+          $(CMSIS_DSP)/Source/TransformFunctions \
+          $(CMSIS_DSP)/Source/CommonTables

@@ -26,16 +26,23 @@
 #include "vendor/libcomm/opcodes.h"   // SHELL_STATUS_*
 #include "ra4m1_hal.h"
 #include "mode.h"
+#include "spectral.h"                 // mode 2: averaged power spectrum
 #include "bsp/board_api.h"            // board_millis()
 
 // ---- RA4M1-specific command IDs (0x0110+: multi-mode control) --------------
 // 0x0100..0x010E are the shared chip commands defined in shell_commands.h.
 
-#define CMD_SET_MODE      ((uint16_t)0x0110)
-#define CMD_GET_MODE      ((uint16_t)0x0111)
-#define CMD_ANALOG_START  ((uint16_t)0x0112)
-#define CMD_ANALOG_READ   ((uint16_t)0x0113)
-#define CMD_ANALOG_STOP   ((uint16_t)0x0114)
+#define CMD_SET_MODE        ((uint16_t)0x0110)
+#define CMD_GET_MODE        ((uint16_t)0x0111)
+#define CMD_ANALOG_START    ((uint16_t)0x0112)
+#define CMD_ANALOG_READ     ((uint16_t)0x0113)
+#define CMD_ANALOG_STOP     ((uint16_t)0x0114)
+
+// 0x0115..0x0118: mode-2 spectral (averaged power spectrum) — see spectral.h.
+#define CMD_SPECTRAL_START  ((uint16_t)0x0115)
+#define CMD_SPECTRAL_STATUS ((uint16_t)0x0116)
+#define CMD_SPECTRAL_READ   ((uint16_t)0x0117)
+#define CMD_SPECTRAL_STOP   ((uint16_t)0x0118)
 
 // ---- DAC waveform-generator state ------------------------------------------
 // Lives in the shared mode arena — only the workbench mode owns it. Written by
@@ -589,6 +596,101 @@ static uint8_t cmd_analog_stop(shell_reader_t* args, shell_writer_t* result)
 }
 
 // ============================================================================
+// Spectral — mode 2: averaged power spectrum. See spectral.h for the model.
+// SPECTRAL_START switches mode 1 → mode 2 + begins capture; STOP returns to
+// mode 1. STATUS / READ are read-only and tolerate the wrong mode (returning
+// IDLE state / 0 floats) so the host can poll safely after a STOP.
+// ============================================================================
+
+// CMD_SPECTRAL_START — args: fs_code:u8 channel:u8 target_frames:u16
+//                     result: empty
+static uint8_t cmd_spectral_start(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    uint8_t  fs_code        = sr_u8 (args);
+    uint8_t  channel        = sr_u8 (args);
+    uint16_t target_frames  = sr_u16(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+
+    // Switch into MODE_SPECTRAL (mode_set runs the old mode's on_exit + new
+    // mode's on_enter). If we're already there, mode_set is a no-op.
+    if (mode_set(MODE_SPECTRAL) != 0u) return SHELL_STATUS_CMD_FAILED;
+
+    if (!spectral_start(fs_code, channel, target_frames)) {
+        return SHELL_STATUS_BAD_ARGS;
+    }
+    return SHELL_STATUS_OK;
+}
+
+// CMD_SPECTRAL_STATUS — args: empty
+// result: state:u8 frames_done:u32 frames_target:u16 fs_code:u8 channel:u8
+//         (9 bytes total)
+static uint8_t cmd_spectral_status(shell_reader_t* args, shell_writer_t* result)
+{
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+
+    // Read state from the spectral module. If we're not in MODE_SPECTRAL the
+    // arena bytes belong to another mode — report IDLE/zero so the host's
+    // poll path doesn't misinterpret garbage.
+    uint8_t  state         = SPECTRAL_STATE_IDLE;
+    uint32_t frames_done   = 0u;
+    uint16_t frames_target = 0u;
+    uint8_t  fs_code       = 0u;
+    if (mode_get() == MODE_SPECTRAL) {
+        state         = (uint8_t)spectral_state();
+        frames_done   = spectral_frames_done();
+        frames_target = spectral_target_frames();
+        fs_code       = spectral_fs_code();
+    }
+    sw_u8 (result, state);
+    sw_u32(result, frames_done);
+    sw_u16(result, frames_target);
+    sw_u8 (result, fs_code);
+    // channel is only meaningful while we own the arena; emit 0 outside.
+    sw_u8 (result, 0u);
+    return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
+}
+
+// CMD_SPECTRAL_READ — args: offset:u16 count:u16
+// result: count:u16  bins:f32[count]
+// count caps at 30 (SHELL_RESULT_MAX=125 → 2 header + 30*4 = 122 bytes).
+static uint8_t cmd_spectral_read(shell_reader_t* args, shell_writer_t* result)
+{
+    uint16_t offset = sr_u16(args);
+    uint16_t count  = sr_u16(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+
+    if (count > 30u) count = 30u;
+
+    float bins[30];
+    uint16_t n = 0u;
+    if (mode_get() == MODE_SPECTRAL) {
+        n = spectral_read_bins(offset, count, bins);
+    }
+    sw_u16(result, n);
+    for (uint32_t i = 0; i < n; i++) {
+        sw_f32(result, bins[i]);
+    }
+    return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
+}
+
+// CMD_SPECTRAL_STOP — args: empty ; result: empty.
+// Aborts the capture and drops back to MODE_WORKBENCH.
+static uint8_t cmd_spectral_stop(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+
+    if (mode_get() == MODE_SPECTRAL) {
+        spectral_stop();
+        mode_set(MODE_WORKBENCH);
+    }
+    return SHELL_STATUS_OK;
+}
+
+// ============================================================================
 // Mode control — the multi-mode foundation (see mode.h).
 // ============================================================================
 
@@ -636,6 +738,10 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_ANALOG_START,       "analog_start",       cmd_analog_start       },
     { CMD_ANALOG_READ,        "analog_read",        cmd_analog_read        },
     { CMD_ANALOG_STOP,        "analog_stop",        cmd_analog_stop        },
+    { CMD_SPECTRAL_START,     "spectral_start",     cmd_spectral_start     },
+    { CMD_SPECTRAL_STATUS,    "spectral_status",    cmd_spectral_status    },
+    { CMD_SPECTRAL_READ,      "spectral_read",      cmd_spectral_read      },
+    { CMD_SPECTRAL_STOP,      "spectral_stop",      cmd_spectral_stop      },
 };
 
 const shell_cmd_entry_t* chip_commands_table(void)

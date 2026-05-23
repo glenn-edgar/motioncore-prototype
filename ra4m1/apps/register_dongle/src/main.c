@@ -56,6 +56,7 @@ extern void     register_dongle_load_commissioning(void);
 extern uint32_t g_pending_commission_instance_id;
 extern bool     shell_pending_push(const uint8_t* payload, uint8_t len);
 extern void     workbench_analog_poll(void);   // ra4m1_commands.c — ADC sampler
+extern void     spectral_pump(void);            // spectral.c — mode-2 FFT pump
 
 // ----------------------------------------------------------------------------
 // Deferred-reboot plumbing. Two flavors:
@@ -363,6 +364,12 @@ int main(void) {
         // unless ANALOG_START is active; runs in this main-loop context so it
         // never delays the DAC-waveform / PWM-dither ISRs.
         workbench_analog_poll();
+
+        // Mode-2 spectral pump — picks up filled ADC capture buffers, runs
+        // window + rfft + |X[k]|² accumulation. No-op unless SPECTRAL is the
+        // active mode AND a frame has finished capturing. Foreground context
+        // so the FFT does not preempt the sample-tick ISR.
+        spectral_pump();
 
         // Host-reattach edge detection.
         if (tree != NULL) {
