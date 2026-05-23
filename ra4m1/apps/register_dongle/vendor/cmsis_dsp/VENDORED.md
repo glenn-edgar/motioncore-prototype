@@ -53,8 +53,9 @@ cp CMSIS-DSP/Source/CommonTables/arm_const_structs.c              "$DST/Source/C
 After the first lift, record the exact CMSIS-DSP tag/SHA below.
 
 ## Files (filled in after first lift)
-- Tag/SHA used: _to be filled in_
-- Lifted on:    _to be filled in_
+- Tag/SHA used: `v1.16.2` / `d5717e454fec0337bef114a21f1d2d01d74f2701`
+- Lifted on:    2026-05-23 (Pi-side build host)
+- Build verified: register_dongle.elf links clean; 56,725 B text / 26,704 B RAM (81%).
 
 ## Build wiring
 The Makefile in `ra4m1/apps/register_dongle/` adds:
