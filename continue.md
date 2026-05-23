@@ -1784,11 +1784,40 @@ CMSIS-DSP packed real-FFT layout: `out[0]=DC`, `out[1]=Nyquist`, then
 inside `spectral_start`. So entering the mode without firing START leaves
 the chip in IDLE waiting. Not a bug, just easy to forget.
 
+### 2026-05-23 evening — spectral bench-verified
+
+Pi-side bring-up done in one pass from WSL via SSH:
+
+* CMSIS-DSP v1.16.2 lifted to Pi tree (SHA `d5717e4`), VENDORED.md SHA
+  recorded, committed `db4a4eb`.
+* First build clean: **56,725 B text / 26,704 B RAM (81%)**.
+* Flashed via `raflash write` (erase size bumped from `0xA000` to
+  `0x10000` for the bigger binary).
+* End-to-end verified with PWM-square stimulus on D8 → D1: fundamental
+  peak at bin 51 (996 Hz, -5 dB), 3rd harmonic at bin 154 (3 kHz, -12 dB),
+  5th at bin 256 (5 kHz, -14 dB). DC bin 7 orders of magnitude smaller
+  than fundamental.
+
+**Two gotchas worth recording** (also in
+`memory/ra4m1_spectral_scaffolding_2026-05-23.md`):
+
+1. **PWM has a 733 Hz lower floor.** `hal_pwm_config` uses GPT3 which is
+   16-bit (period = 48,000,000 / freq must fit 65,536). The original
+   bench-verify recipe specified PWM 500 Hz — that silently returns
+   `SHELL_STATUS_BAD_ARGS` and D8 stays at its default level. Use ≥1 kHz.
+2. **DAC waveform and spectral are mutually exclusive on GPT0.** The DAC
+   sine stepper is `workbench_periodic_isr`, which is GPT0's callback;
+   `mode_set(MODE_SPECTRAL)` repurposes GPT0 for the ADC tick and freezes
+   the DAC at its last sample. The original recipe (DAC sine → ADC
+   loopback) doesn't work because of this. PWM is the right stimulus
+   because GPT3 is independent.
+
 ### Roadmap — future plans (as of 2026-05-23)
 
-**NEXT SESSION — Pi-side spectral bring-up + Goertzel.**
+**NEXT SESSION — Goertzel + SAMD21 analog back-port.**
 
-1. CMSIS-DSP lift + first build + first flash + bench-verify (above).
+1. ~~CMSIS-DSP lift + first build + first flash + bench-verify (above).~~
+   **Done 2026-05-23 evening.**
 2. Once a clean PSD on a 500 Hz sine is verified, add **Goertzel** per-bin
    live tracking — coefficients precomputed on `GOERTZEL_ADD freq_hz`,
    ISR does sample-time updates, `GOERTZEL_READ` returns current
