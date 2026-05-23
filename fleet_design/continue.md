@@ -515,11 +515,12 @@ The aligned architectural pattern (see
    fire (or trigger via a one-shot test publisher), confirm phone
    gets the message.
 
-**Open Track-1 question to ask the user before starting**:
-internal chain_tree timer (24-h `tick_delay`) vs external systemd
-trigger (one-shot via Zenoh RPC). Python demo went external; internal
-is simpler. Trade: external is easier to override/test, internal is
-self-contained.
+**Locked (2026-05-23 evening)**: digest fires from an **internal
+chain_tree timer** (24-h `tick_delay` inside the robot), NOT an
+external `systemd.timer` + Zenoh RPC. Keeps the controller container
+self-contained. Don't mirror the Python demo's external-trigger
+pattern. No remaining open Track-1 questions — proceed straight to
+step 1 on resume.
 
 ### Track 2 — Rancho water daily usage skill (FIRST CONCRETE USER)
 
@@ -583,9 +584,9 @@ images.
 
 **First action 2026-05-24**: read this file + the
 `discord-integration-architecture-2026-05-23` and
-`next-tracks-2026-05-24` memories, ask the user about the internal-
-vs-external Track-1 timer question, then begin Track-1 step 1
-(`server/notification_service/` skeleton).
+`next-tracks-2026-05-24` memories, then begin Track-1 step 1
+(`server/notification_service/` skeleton). The timer question is
+locked — internal `tick_delay`, no systemd trigger.
 
 **Reference paths (dev-machine orientation only — NOT used at runtime):**
 The runtime uses `fleet_design/vendor/lua/` exclusively (see `vendor/PROVENANCE.md`).
