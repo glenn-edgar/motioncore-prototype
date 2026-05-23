@@ -34,15 +34,26 @@ M.ttn = {
 -- sources secrets/ttn.env). Spatial targets are zip codes ONLY (coordinate
 -- forms are blocked by et.water.ca.gov's WAF, verified live 2026-05-22).
 --
--- The daily-gate semantics: each KB tries to fetch yesterday's finalized
--- ASCE ETo every retry_s seconds between window_start_h and window_end_h
--- Pacific civil time. On success, it publishes once on
--- `<namespace>/cimis/<source>/latest` and idles until the next Pacific day.
+-- Daily-gate semantics (per KB): each retry_s seconds, run the gate.
+--   * pre-window  (Pacific hour < window_start_h) -> idle, ok.
+--   * in-window   (>= window_start_h, gap exists) -> fetch the last
+--                 lookback_days through yesterday, publish every newly-
+--                 finalized day in order, advance last_recorded_date.
+--   * up-to-date  (last_recorded_date == yesterday) -> idle, ok.
+--
+-- window_start_h is 09:00 Pacific because CIMIS posts today's row earlier
+-- in the day as a provisional/partial value the filter cannot reliably
+-- reject. After 09:00 the Qc=="A" station flag and the spatial-today-
+-- 0.0-with-blank-Qc trap are both stable. There is NO post-window cutoff:
+-- the robot keeps retrying past 15:00 / overnight until the gap closes.
+-- Publishes go to two leaves per source:
+--   * <namespace>/cimis/<source>/latest  — status (last-write-wins)
+--   * <namespace>/cimis/<source>/sample  — stream (one per finalized day)
 M.cimis = {
     api_base       = "https://et.water.ca.gov/api/data",
     data_items     = "day-asce-eto",
     window_start_h = 9,            -- inclusive (Pacific civil)
-    window_end_h   = 15,           -- exclusive
+    lookback_days  = 7,            -- multi-day fetch window for gap-self-heal
     retry_s        = 900,          -- 15 minutes between attempts
     sources = {
         -- station 237 = Temecula East II (closest to the Murrieta site).
