@@ -1812,23 +1812,66 @@ Pi-side bring-up done in one pass from WSL via SSH:
    loopback) doesn't work because of this. PWM is the right stimulus
    because GPT3 is independent.
 
+### 2026-05-23 late evening — Goertzel mode-4 done + WDT design locked
+
+* **MODE_GOERTZEL shipped** (`00ce42b`): order-tracked block-mode bank,
+  K≤32 bins each pinned to a shaft order, encoder-driven coefficient
+  recompute per block, RPM-stability gate, warm-up block discarded.
+  Wire surface: CONFIG / SET_ORDERS / START / STATUS / READ / STOP /
+  INJECT_RPM opcodes 0x0119..0x011F.
+* **Quasi-PWM verified** (no motors until next week): 1 kHz square →
+  fundamental at order 1.0 (mech 1 kHz at injected 60 kRPM), 3rd/5th/7th
+  harmonics at theoretical 1/N² ratios, even orders ~10⁻⁹ of fund.
+  Coefficient recompute proven by halving inject RPM — peak moved
+  cleanly from order 1.0 to order 2.0.
+* **Application design dialog locked** (memory:
+  [[goertzel_done_2026-05-23]]): gearbox motors 50–200 RPM output ×
+  300:1 = 15–60 kRPM motor; encoder on motor shaft (4 ticks/motor-rev);
+  sub-mode A only (Hz-bin + gate); sub-mode B (order tracking) skipped
+  for this encoder; host owns bearing geometry, chip just tracks orders.
+* **Two operating cases handled by gate-toggle**: constant-RPM motor
+  (gate=0 or gate with stable RPM), and PtP s-curve motion (gate=1 with
+  accel_thresh — only integrate during constant-velocity plateaus, the
+  output is sparse but accumulates SNR across visits).
+
+**Open issue — chip hangs after sustained ISR-running (the WDT
+motivator):** repros with both gate=0 and gate=1. USB descriptor still
+answers but CDC ACM dies. Recovery requires physical reset. Tests with
+~3–5 sec delays got their replies BEFORE the hang fired; shorter
+delays catch it. Root cause unknown without a debug-log channel that
+doesn't share the dead CDC path.
+
+* **WDT pattern locked** (memory: [[wdt_layer2_pet_from_s_engine]]):
+  pet from inside the s_engine chain pump (NOT C main loop), so DSL
+  liveness is the contract. Applies to all chip ports — RA4M1 first,
+  SAMD21 / RP2350 / ESP32-C6 follow the same pattern. Includes
+  `WDT_HOLD(window_ms)` escape hatch, build-time `WDT_DISABLE` toggle,
+  RSTSR1 capture at boot integrated with the reboot_cause plumbing.
+
 ### Roadmap — future plans (as of 2026-05-23)
 
-**NEXT SESSION — Goertzel + SAMD21 analog back-port.**
+**NEXT SESSION — WDT + Goertzel hang root-cause + motor bring-up.**
 
-1. ~~CMSIS-DSP lift + first build + first flash + bench-verify (above).~~
-   **Done 2026-05-23 evening.**
-2. Once a clean PSD on a 500 Hz sine is verified, add **Goertzel** per-bin
-   live tracking — coefficients precomputed on `GOERTZEL_ADD freq_hz`,
-   ISR does sample-time updates, `GOERTZEL_READ` returns current
-   magnitudes. Reuses the same ADC ISR and arena (small per-filter state).
-   Likely 4–8 simultaneous filters; small enough to coexist with the FFT
-   pipeline.
-3. SAMD21 back-port of the analog-collection commands
-   (`ANALOG_START/READ/STOP` + Welford + min/max). Same wire contract; the
-   SAMD21 already has a TC3 ISR doing DAC waveform so the "mode periodic
-   timer" equivalent is in place. (Spectral on SAMD21 is *not* on the
-   menu — M0+ without FPU is the wrong place for it.)
-4. Continue with the previously tracked items: DFU placeholders, SAMD21
-   real chip UID in usb_descriptors, RP2350/ESP32-C6 ports, cross-repo
-   kb_build `class_ids.h` codegen.
+1. **Build WDT layer 1+2** per the locked pattern. Auto-recover from
+   the goertzel-running hang in ≤3 sec. Capture and emit the reset
+   cause in the first post-boot OP_DBG_LOG. Build flag `WDT_DISABLE`
+   for active debugging.
+2. **Root-cause the goertzel post-START hang.** With WDT in place,
+   iteration is fast. Likely suspects: encoder reads with floating
+   D9/D10 picking up RF, FPU exception during cosf, ISR/pump race on
+   partially-aligned float fields, or stack overflow from per-block
+   K-bin scratch. Add a logic-analyzer-visible GPIO heartbeat from
+   main loop to confirm starvation vs hardfault.
+3. **Motors arrive** — connect encoder to D9/D10, drive motor at known
+   RPM, verify the full RPM-tracking + bearing-fault-bin path. Run
+   sub-mode A under both constant-RPM (case 1) and PtP-with-plateau
+   (case 2 with gate=1).
+4. **SAMD21 back-port of the analog-collection commands**
+   (`ANALOG_START/READ/STOP` + Welford + min/max). Same wire contract;
+   SAMD21 already has a TC3 ISR doing DAC waveform so the "mode
+   periodic timer" equivalent is in place. Goertzel on SAMD21 is *not*
+   on the menu — M0+ without FPU is the wrong place for it. WDT on
+   SAMD21 *is* on the menu per the locked pattern.
+5. Long-tail: DFU placeholders, SAMD21 real chip UID in
+   usb_descriptors, RP2350/ESP32-C6 ports, cross-repo kb_build
+   `class_ids.h` codegen.
