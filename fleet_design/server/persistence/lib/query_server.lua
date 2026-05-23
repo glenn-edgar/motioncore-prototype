@@ -7,6 +7,11 @@
 
 local cjson = require("cjson")
 
+-- Empty Lua tables encode as `[]` not `{}`. All v1 ops that can return
+-- empty values return them as arrays (stream rows, list_kbs, list_leaves).
+-- No op returns a semantically-empty object.
+cjson.encode_empty_table_as_object(false)
+
 local M = {}
 M.__index = M
 
