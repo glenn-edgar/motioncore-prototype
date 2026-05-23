@@ -1855,7 +1855,7 @@ doesn't share the dead CDC path.
 1. **Build WDT layer 1+2** per the locked pattern. Auto-recover from
    the goertzel-running hang in ≤3 sec. Capture and emit the reset
    cause in the first post-boot OP_DBG_LOG. Build flag `WDT_DISABLE`
-   for active debugging.
+   for active debugging. See [[wdt-layer2-pet-from-s-engine]].
 2. **Root-cause the goertzel post-START hang.** With WDT in place,
    iteration is fast. Likely suspects: encoder reads with floating
    D9/D10 picking up RF, FPU exception during cosf, ISR/pump race on
@@ -1866,12 +1866,53 @@ doesn't share the dead CDC path.
    RPM, verify the full RPM-tracking + bearing-fault-bin path. Run
    sub-mode A under both constant-RPM (case 1) and PtP-with-plateau
    (case 2 with gate=1).
-4. **SAMD21 back-port of the analog-collection commands**
+4. **Integrate FFT + Goertzel test workflows.** Confirm both modes
+   coexist over a session, document the canonical test pattern. Gate
+   to the motor-control modes below.
+5. **`encoder_read / reset / setup` shell commands.** Expose the
+   already-implemented GPT1 quadrature counter as host-callable ops
+   (per [[ra4m1-modes-2-3-4-roadmap]]). PWM access (GPT3) is already
+   safe during any active mode — independent timer.
+6. **MODE_PID** — single-motor closed loop: 1-2 current sensors + the
+   GPT1 encoder + PWM on D8 + 1-2 GPIO H-bridge direction pins. A0 is
+   the reserved-free pin for an optional 2nd current sensor or bus-
+   voltage sense.
+7. **MODE_SCURVE** — encoder-position s-curve motion profile.
+   Cascades cleanly with MODE_PID (SCURVE generates position setpoint
+   stream, PID closes the loop). The two cases of motor work map onto
+   it: constant-RPM = SCURVE "hold velocity", PtP = SCURVE with
+   plateau + gate=1 goertzel during the plateau.
+8. **SAMD21 back-port of the analog-collection commands**
    (`ANALOG_START/READ/STOP` + Welford + min/max). Same wire contract;
    SAMD21 already has a TC3 ISR doing DAC waveform so the "mode
    periodic timer" equivalent is in place. Goertzel on SAMD21 is *not*
    on the menu — M0+ without FPU is the wrong place for it. WDT on
    SAMD21 *is* on the menu per the locked pattern.
-5. Long-tail: DFU placeholders, SAMD21 real chip UID in
-   usb_descriptors, RP2350/ESP32-C6 ports, cross-repo kb_build
-   `class_ids.h` codegen.
+
+**LATER — single-tree dongle / RS-485 slave build** (see
+[[single-tree-dongle-slave-build]]).
+One source tree per chip, build-time `ROLE=dongle|slave` flag picks
+USB CDC vs RS-485 9-bit MPCM transport. ≥90% of code shared
+(libcomm, s_engine, all chip command handlers, all modes), only the
+transport layer and a few boot-trigger / arbitration details differ.
+Keystone is `comm_transport_t` abstraction; SLIP dropped on RS-485
+(MPCM address byte is the natural frame boundary). Commissioning
+extends to include `rs485_addr:u8`. Steps:
+   a. Refactor: introduce `comm_transport.h`, push USB CDC behind it.
+      Pure code reshape, no new behavior. Worth slotting in early
+      during any quiet window (e.g., between motor sessions).
+   b. RS-485 transport impl (MPCM RX/TX ISR + SCI/SERCOM init + DE/RE
+      pin for transceiver).
+   c. Commissioning extension (`rs485_addr`).
+   d. First slave build, bench-verify with router-emulator on Pi.
+   e. Two-chip bus: one dongle, one slave, dongle bridges Pi→slave
+      over RS-485.
+
+Two SAMD21-specific concerns for slave builds: (1) DFLL48M loses USB
+SOF reference → falls back to internal RC cal, may cap baud rate;
+(2) transceiver DE/RE pin allocation. RA4M1 unaffected (external
+crystal on Xiao).
+
+**Long-tail:** DFU placeholders, SAMD21 real chip UID in
+usb_descriptors, RP2350/ESP32-C6 ports, cross-repo kb_build
+`class_ids.h` codegen.
