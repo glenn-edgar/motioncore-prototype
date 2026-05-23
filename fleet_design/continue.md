@@ -469,51 +469,123 @@ The vendored bindings are still **client-mode + zenohd-router only** — bench
 and container tests need the `zenohd` router above. Pi Zero 2 deploy (no
 containers) remains a separate, unsolved problem.
 
-## Plan for next session (after 2026-05-23 — gateway/dashboard wrap)
+## Plan for next session (2026-05-24 — three tracks, Discord first)
 
-Layers 30 → 40 → 50 are all live end-to-end. Slices 1+2 of the query
-API + the gateway/dashboard MVP land the whole "read path" for
-fleet_design. Open work, in rough priority order:
+Framing: **fleet_design is a framework for all robot controllers, not
+just farm_soil.** Three parallel tracks emerged from this wrap; do
+them in order, but each one EXERCISES or DEPENDS on the prior. Be
+willing to revise after each — the user's framing: *feel our way
+through, not lock-step.*
 
-**1. Replan.** The user explicitly asked to replan after this wrap.
-Candidates queued below; decide direction with the user first.
+### Track 1 — Discord integration (DO THIS FIRST)
 
-**2. Gateway/dashboard hardening (small).** Listed because they're cheap
-and feel-able:
-- Drop the noisy "entry" / "units" / "schema" columns from the
-  pivoted-stream-rows table by default; offer a "raw" toggle.
-- Time-proportional X-axis (currently evenly-spaced) so missing-hour
-  gaps are visible in the moisture chart.
-- "Show more" button to walk pagination cursors in the dashboard.
-- Bind 0.0.0.0 (not 127.0.0.1) if we want to view it from another host.
+The aligned architectural pattern (see
+`discord-integration-architecture-2026-05-23` memory) is:
 
-**3. Decommissioning tool (operator action).** Retire a removed
-`(class, instance)` from the persistence DB — trim rows + kb_info.
-Today schema-removal is no-op-preserve-data. Worth doing before the
-fleet has many test instances accumulated.
+- **Robot owns content, service owns transport.** Robot publishes the
+  *finished message body* on a Zenoh event topic; the new
+  `server/notification_service/` does only topic → webhook POST. No
+  schema knowledge in the service, no Discord knowledge in the robot.
+- **LuaJIT in-tree, not Python sidecar.** Port the 109-line
+  `~/robot_person/skills/discord/main.py` + `webhook_client.py` to
+  ~80 lines of LuaJIT using `socket.http` + LuaSec for HTTPS. Reuses
+  the existing single-runtime container; no Python/venv added.
+- **Push-only v1.** Bot/pull (slash commands, ack buttons) is real
+  scope and waits until push has a week of real use.
+- **One webhook, one channel.** Severity routing is config-only and
+  ships in v2 when a CRITICAL event actually exists to route.
 
-**4. Write path.** Everything so far is read-only. If we want a planner
-or operator UI to *issue* commands (set setpoints, force a poll,
-disable a skill), we need a command/RPC channel from gateway →
-robot via Zenoh. Touches the application_logic layer (still unbuilt).
+**Concrete v1 steps:**
+1. `server/notification_service/main.lua` + `lib/discord_webhook.lua`
+   (LuaJIT port — handle 2000-char truncation, 204 success, the
+   Cloudflare-friendly `User-Agent` gotcha, no retry on 429 yet).
+2. Subscribe to one well-known token `fleet/notify/digest/daily`
+   (same well-known-channel workaround as
+   `fleet/admin/persistence_topology_announce` —
+   per-class/per-instance subscription would need token-per-key + a
+   discovery channel; defer until needed).
+3. Add a chain_tree leaf in `farm_soil/chains/` that on a 24-h timer
+   reads the moisture + CIMIS streams the robot already publishes,
+   formats a text body (port `~/robot_person/robots/farm_soil/format.py`
+   — pure Lua, ~60 lines, engine-free), and publishes on the digest
+   topic.
+4. Hardcode the webhook URL in `server/notification_service/secrets/discord.env`
+   (gitignored). Document in continue.md and the new memory.
+5. Smoke: kill stack cleanly, restart, wait for the daily timer to
+   fire (or trigger via a one-shot test publisher), confirm phone
+   gets the message.
 
-**5. Second robot class.** Validates the fleet contract across more
-than one class. fake_robot is the obvious candidate (still scaffold-
-only beyond fake_counter). Or an MCU class (decision #25, deferred).
+**Open Track-1 question to ask the user before starting**:
+internal chain_tree timer (24-h `tick_delay`) vs external systemd
+trigger (one-shot via Zenoh RPC). Python demo went external; internal
+is simpler. Trade: external is easier to override/test, internal is
+self-contained.
 
-**6. Container packaging.** Still open. `fake_robot`/`farm_soil` and
-`server/{fleet_manager,persistence,application_gateway}` as
-containers (`FROM nanodatacenter/luajit-base`, decision #12).
-Persistence's `run.sh` already auto-builds ltree.so on first run —
-the Dockerfile can do the same at image build. Pi Zero 2 stays
-bare-process (decision #28).
+### Track 2 — Rancho water daily usage skill (FIRST CONCRETE USER)
 
-**7. zenoh-pico upgrade.** Re-test the `fleet/admin/persistence_query`
-poison key; if fixed upstream, drop the rename workaround.
+**Motivation (locked, personally important):** Glenn lost $1000 to a
+bad pump that went undetected. The Rancho water skill exists to
+**make that not happen again**. It is the first end-to-end real-user
+validation of the Discord framework. Track-2 cannot start until
+Track-1 push lands.
 
-**First action next session:** read this file + the
-`application-gateway-dashboard-2026-05-23` and slice-2 memories,
-then pick a direction with the user.
+Open work needed for Track-2 design (next session, after Discord
+v1):
+
+- **Data source**: where does the daily water-meter reading come
+  from? City API? On-premise meter with pulse counter / Modbus?
+  TTN / LoRaWAN? Needs a discovery conversation with the user before
+  any code. Drives schema, polling cadence, identity.
+- **Anomaly detection**: simple rule (today's usage vs trailing 7-day
+  mean, alert on > N% delta), OR threshold-based (>X gal/day = leak;
+  <Y gal/day during scheduled pump cycle = pump failure). Pick the
+  one that catches the $1000 incident in retro — if data exists from
+  that period.
+- **Output**: piggybacks Track-1. Daily summary → digest channel
+  (push v1 surface); pump-failure alert → eventually CRITICAL
+  channel (push v2). For v1, both go to the single channel with
+  clear severity prefix in the text body.
+- **Skill shape**: separate `rancho_water` robot (parallel to
+  `farm_soil`)? Or a skill-KB inside farm_soil? Probably separate
+  robot — different data source, different cadence, different
+  identity. Validates fleet_design's "framework for all robots"
+  thesis.
+
+### Track 3 — HTTP / dashboard beef-up (QUEUED, do last)
+
+Listed in priority order, all small (gateway/dashboard memory has
+the full inventory):
+- Drop noisy `entry` / `units` / `schema` columns from the pivoted
+  stream-rows table by default; "raw" toggle to expand.
+- Time-proportional X-axis (currently evenly-spaced index).
+- "Show more" button to walk pagination cursors in-browser.
+- Bind `0.0.0.0` (not 127.0.0.1) so the dashboard is reachable from
+  the phone on the same Wi-Fi.
+- Live-update push channel: persistence republishes
+  `fleet/persistence/<kb>/<path>/latest` on every write; gateway
+  forwards via Server-Sent Events to the browser. Real-time graphs.
+  Mid-size: probably one session.
+
+After Track-3, **container packaging** (still deferred) becomes the
+natural next thing — at that point all four server processes
+(`fleet_manager`, `persistence`, `application_gateway`,
+`notification_service`) are stable and benefit from being baked into
+images.
+
+### Held / lower-priority
+
+- Decommissioning tool (operator action to retire a removed
+  `(class, instance)` — trim DB rows + kb_info).
+- zenoh-pico upgrade (re-test the `fleet/admin/persistence_query`
+  poison key; drop rename workaround if fixed).
+- Second robot class beyond `farm_soil` + `rancho_water` (e.g. MCU
+  class per decision #25).
+
+**First action 2026-05-24**: read this file + the
+`discord-integration-architecture-2026-05-23` and
+`next-tracks-2026-05-24` memories, ask the user about the internal-
+vs-external Track-1 timer question, then begin Track-1 step 1
+(`server/notification_service/` skeleton).
 
 **Reference paths (dev-machine orientation only — NOT used at runtime):**
 The runtime uses `fleet_design/vendor/lua/` exclusively (see `vendor/PROVENANCE.md`).
