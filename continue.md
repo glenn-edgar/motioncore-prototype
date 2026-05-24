@@ -2031,3 +2031,55 @@ RA4M1 slave role once WDT verifies there.
   verification simultaneously green-lights the dongle role AND the
   bus_controller role — bus_controller actually needs the WDT more,
   since a hung bus_controller blacks out the whole slow bus.
+
+---
+
+## 2026-05-24 mid-day — SAMD21 WDT verified ✅
+
+Layer-2 WDT shipped on `samd21/apps/register_dongle` and bench-verified
+end-to-end on hardware. The architectural bet held: SAMD21 PM/RSTC
+resets all peripherals (incl. USB CTRLA) cleanly on warm reset, so the
+RA4M1 USB FS trap doesn't apply here.
+
+### What's running
+
+- `samd21_hal.c` / `.h` — `hal_wdt_init` (GCLK5 ← OSCULP32K /32 = 1024 Hz,
+  PER=4K → 4 s timeout, 16× margin on the 250 ms s_engine tick),
+  `hal_wdt_pet`, `hal_capture_reset_cause` (PM->RCAUSE snapshot).
+- `main.c` — RCAUSE captured first, `hal_wdt_init()` after `board_init`,
+  strong override of `s_engine_chip_wdt_pet`, `[BOOT] rstsr=0xNN` emit.
+- `samd21_commands.c` — `CMD_TEST_HANG` (0x0120): `__disable_irq` + spin.
+- `s_engine/runtime/s_engine_node.c` — weak `s_engine_chip_wdt_pet` hook
+  + pet call at top of `s_expr_node_tick` (restored after RA4M1 revert).
+- `linux/dongle_console/dongle_console.lua` — `--send-shell-test-hang`.
+
+Build text=38072 (+~240 B over pre-WDT), data=128, bss=5552 (5.5 KB of 32 KB).
+
+### Bench evidence
+
+| Event | Observed |
+|---|---|
+| `--send-shell-test-hang` issued | Chip silent within 1 tick |
+| WDT bite | USB device# 4→5 within 1 s of disconnect |
+| Re-enum same VID/PID | `2886:802f register_dongle` returns |
+| First post-bite OP_DBG_LOG | `text: "[BOOT] rstsr=0x20"` (RCAUSE bit 5 = WDT) |
+| Sync ladder post-bite | REGISTER → L1_DONE → OPERATIONAL all green |
+| s2m+m2s round-trip post-bite | OP_MANIFEST_REPLY received |
+
+Net: `bus_controller` AND `dongle` roles on SAMD21 are unblocked. Both
+need this exact recovery primitive. See
+[[samd21-wdt-verified-2026-05-24]] memory.
+
+### What's next (when ready)
+
+Slice 1 of the 2026-05-23 PM plan is now done. Remaining queue:
+
+2. Port the multi-mode foundation to SAMD21 register_dongle (VTOR reloc
+   + mode periodic ISR + mode dispatch + chip_commands extension).
+   Workbench mode first.
+3. Sketch interlock-mode scenarios (E-stop / current-limit /
+   heartbeat-watchdog).
+4. Fork `bus_controller` app — strip HIL modes, add RS-485 master on
+   D6/D7, polling scheduler, ack table.
+5. RA4M1 slave-mode WDT verification (once SAMD21 slave transport lands).
+6. I2C sensor integration on SAMD21.
