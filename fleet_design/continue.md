@@ -228,6 +228,45 @@ for the four zenoh `.so` files (libzenoh_pubsub / _rpc / _token + libzenohpico).
 These will be replaced by `vendor/lib-aarch64/` once we cross-compile for Pi.
 Override `LD_LIBRARY_PATH` in the caller env to bypass the bench default.
 
+## Resume here (2026-05-24 — multi-robot dashboard smoke + packaging next)
+
+**Tracks 1 + 2 done; dashboard smoke green for both robots.** Glenn
+spent ~30 min poking at the application_gateway dashboard with
+`farm_soil/lacima01` (3 moisture + 2 CIMIS + heartbeat) and
+`rancho_water/main` (usage/sample + usage/latest + heartbeat) both
+live. Three UX gaps surfaced and got fixed inline (see
+`dashboard-polish-2026-05-24` memory): status-leaf hourly charts,
+leaves cache refresh-on-every-tick, stream view de-noised to just
+the operationally-useful metrics. Result: moisture stream view
+went from 11 chart metrics + 9 noisy table columns →
+3 metrics + 5 clean columns. Generic fixes — any future robot
+benefits.
+
+The smoke also surfaced **three gotchas worth fixing before deploy**:
+
+- **Gateway heap corruption** under sustained polling
+  (`malloc(): unsorted double linked list corrupted` from inside
+  the zenoh-pico FFI). Recovery is one pkill + relaunch. Auto-
+  restart in container will mask, but the underlying bug is real.
+- **Persistence boot-race recurs for every new robot** —
+  publisher fires data within ~200 ms of its topology announce,
+  persistence's sub-declarations haven't propagated back yet, data
+  is silently dropped. Hit BOTH robots this smoke; rancho_water
+  got a per-robot fix (boot_settle wait_time(5)), but the systemic
+  fix is one edit to shared KB0 (`robot_common/chains/connection.lua`):
+  insert `wait_time(5)` between `NAMESPACE_UP_HOOK` and
+  `SPAWN_APP_KBS`. Single change covers every present and future
+  robot class. **Do this before container packaging.**
+- **Dashboard leaves cache** locked in stale partial topology
+  until hard-reload — fixed in 16ea37b (always re-fetch).
+
+Next is **container packaging** — decision #12 in the locked
+decisions list, deferred since 2026-05-19 with "do this once all
+the layers are stable". They are now (5 server processes:
+fleet_manager, persistence, application_gateway,
+notification_service, plus zenohd; 2 robot classes). See the new
+Plan section at the bottom.
+
 ## Resume here (2026-05-24 — Rancho water robot landed)
 
 **Track-2 of the three-track plan landed same day as Track-1.** New
@@ -562,7 +601,71 @@ The vendored bindings are still **client-mode + zenohd-router only** — bench
 and container tests need the `zenohd` router above. Pi Zero 2 deploy (no
 containers) remains a separate, unsolved problem.
 
-## Plan for next session (2026-05-25 — Track 3, or first real-use feedback)
+## Plan for next session (2026-05-25 — packaging + deploy)
+
+The five server processes (`fleet_manager`, `persistence`,
+`application_gateway`, `notification_service`, plus `zenohd`) and
+two robot classes (`farm_soil`, `rancho_water`) are all stable.
+Time to bake them into images and stand them up on a real target.
+
+**First action 2026-05-25**: land the systemic boot-race fix before
+anything else (one `wait_time(5)` between `NAMESPACE_UP_HOOK` and
+`SPAWN_APP_KBS` in `robot_common/chains/connection.lua`, then
+rebuild both robots' IRs). Without this, every fresh-DB deploy will
+silently drop initial data. ~10 minutes; smoke-verify by wiping
+`var/persistence.db` and confirming all leaves land on the first
+boot of each robot.
+
+Then container packaging, decision #12. Open questions to align
+on up-front:
+
+1. **Per-process or per-controller image?** Five processes; ship
+   one image per process (5 images) or one image that runs them
+   all under a supervisor? Operationally I lean per-process —
+   matches the decision-#13 "five layers, five processes" framing,
+   gives per-layer restart and per-layer logs, and a supervisor
+   is one more thing to maintain. Open to "one image per
+   controller" if deploy-time simplicity wins.
+
+2. **Compose vs systemd vs k8s for v1?** The target is **Pi Zero 2
+   bare process** per decision #28, so a real production deploy is
+   actually bare LuaJIT + systemd unit per process — no container
+   runtime on a Pi Zero 2. Containers are for dev / staging / fleet
+   controller (the not-Pi-side). So we probably want BOTH: a
+   docker-compose for the laptop/Mac dev experience, and systemd
+   unit files for the Pi.
+
+3. **Image base?** Likely `debian:bookworm-slim` or
+   `ubuntu:24.04` — we need LuaJIT + LuaSocket + LuaSec + SQLite +
+   curl. Alpine adds musl-vs-glibc friction with the zenoh-pico
+   binding's prebuilt `.so` (currently aarch64 GNU/Linux), so
+   probably not Alpine v1.
+
+4. **Where does `zenohd` live in the picture?** Decision #16:
+   `zenohd is NOT platform infrastructure — it ships inside this
+   container; serves only the robots under this controller.` That
+   means each controller deployment includes its own zenohd; not
+   shared. Easy with compose; with systemd it's one more unit.
+
+5. **Secrets handling at deploy.** Today secrets live in
+   `farm_soil/secrets/ttn.env` and
+   `server/notification_service/secrets/discord.env`. For
+   containers we need either env-var injection at `docker run`
+   time, or bind-mounted `secrets/` dirs. For Pi systemd, the
+   `secrets/*.env` files persist in `/etc/fleet_design/secrets/`
+   and units `EnvironmentFile=` them. No vault yet.
+
+**Held / lower-priority** (don't pick these up before packaging):
+- v2 Discord severity routing (waits for Track-2 alert listener).
+- Track-2 anomaly listener (reads rancho's `LeakDetected` /
+  `ExceededFlowThreshold` flags from persistence, pushes CRITICAL).
+- Track-3 dashboard items (time-proportional X-axis, "show more"
+  pagination, 0.0.0.0 bind, live-update SSE channel). Move into
+  follow-up once deploy works.
+- Gateway heap-corruption chase (needs sanitizer-built zenoh-pico).
+- Decommissioning tool. zenoh-pico upgrade.
+
+## Plan archive (2026-05-25 — Track 3, or first real-use feedback)
 
 Tracks 1 and 2 both landed 2026-05-24. The natural next thing is
 **Track-3 (HTTP / dashboard beef-up)**, but it should be pre-empted by
