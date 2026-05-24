@@ -228,6 +228,56 @@ for the four zenoh `.so` files (libzenoh_pubsub / _rpc / _token + libzenohpico).
 These will be replaced by `vendor/lib-aarch64/` once we cross-compile for Pi.
 Override `LD_LIBRARY_PATH` in the caller env to bypass the bench default.
 
+## Resume here (2026-05-25 morning — check the overnight gateway)
+
+**FIRST THING TO CHECK:** how often did the application_gateway
+crash overnight, and is it currently up?
+
+```sh
+# Quick triage — from the repo root:
+cd ~/motioncore-prototype/fleet_design
+
+# 1. Is the container alive? (Up X minutes/hours)
+docker ps --filter name=fleet --format '{{.Names}}\t{{.Status}}'
+
+# 2. How many crashes overnight? (each line is one unique-signature crash event)
+grep crash packaging/wsl/var/logs/supervisor.log
+
+# 3. How many container restarts? (every flap → +1 boot)
+grep -c container_boot packaging/wsl/var/logs/supervisor.log
+
+# 4. Is the morning Discord digest in the log? (fires at 09:00 PDT)
+docker logs fleet 2>&1 | grep -E 'digest delivered|daily_pull.*published'
+
+# 5. Dashboard still serving?
+curl -s http://127.0.0.1:8080/api/robots | head -c 200
+```
+
+**Expected if everything went well:** 1 boot, 0 crashes, container
+"Up many hours", Discord digest fired at 09:00. The container left
+running last night was a real-world test of:
+- whole-container restart machinery
+- persistence Bug 2 fix (rehydrate from DB on restart)
+- whether the gateway heap-corruption bug (rc=134, the known
+  zenoh-pico FFI heap-corruption thing — see
+  `[[dashboard-polish-2026-05-24]]`) bites under steady-state
+  load without dashboard polling, or only when humans poke at it
+
+**If gateway crashed N times overnight:** that confirms the bug
+fires under just-the-heartbeat/persistence-republish background
+traffic, not only under dashboard polling. That would escalate the
+"rebuild zenoh-pico with AddressSanitizer to chase it" task from
+"someday" to "before Pi deploy." If 0 crashes, the bug is dashboard-
+polling-induced only and lower priority.
+
+After triage: continue the **container deploy to Pi 4 at
+192.168.1.66** track. The image already runs unchanged on arm64
+(WSL bench is Apple Silicon arm64, same as Pi 4). Just need to
+move the bits over and set `NETWORK_MODE=host` in the Pi's
+fleet.env.
+
+---
+
 ## Resume here (2026-05-24 — multi-robot dashboard smoke + packaging next)
 
 **Tracks 1 + 2 done; dashboard smoke green for both robots.** Glenn
