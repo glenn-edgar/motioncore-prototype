@@ -30,11 +30,15 @@ do
     }, "2026-05-23")
     contains(out, "rancho_water daily report — 2026-05-23", "header")
     contains(out, "Hourly usage", "table header")
+    contains(out, "hour    GPH    GPM     HCF", "column header includes HCF")
     contains(out, "01:00", "hour row 01")
     contains(out, "02:00", "hour row 02")
     contains(out, "03:00", "hour row 03")
     contains(out, "  135", "GPH 135 right-aligned (int)")
     contains(out, "    2", "GPM 2 right-aligned (int)")
+    contains(out, " 0.180", "HCF for 135 GPH = 0.180 (135/748.052)")
+    contains(out, " 0.009", "HCF for 7 GPH = 0.009")
+    contains(out, " 0.000", "HCF for 0 GPH = 0.000")
     contains(out, "Total: 1234 gal (8.50 HCF)", "total formatted")
 end
 

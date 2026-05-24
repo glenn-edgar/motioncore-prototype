@@ -23,6 +23,14 @@
 
 local M = {}
 
+-- Hundred Cubic Feet -> gallons. 1 HCF == 748.052 US gallons exactly
+-- (https://www.usbr.gov/lc/region/g4000/wtrweights.pdf). Rancho's API
+-- ships per-hour HCF as INT only — 135 GPH (=0.18 HCF) rounds to 0.0 in
+-- their response. We compute the real fractional HCF from GPH ourselves
+-- so the column has meaningful values at low flow rates; the daily
+-- TotalHCF still comes from the API (it's the billing-authoritative value).
+M.HCF_TO_GAL = 748.052
+
 local function fmt_int(value)
     if value == nil then return "?" end
     return string.format("%d", math.floor(value + 0.5))
@@ -57,19 +65,23 @@ function M.format_daily_report(data, date_iso)
         "",
     }
 
-    -- Hourly table.
-    lines[#lines + 1] = "Hourly usage (gallons / minute):"
+    -- Hourly table. HCF computed from GPH (the API per-hour HCF is INT
+    -- and reads 0.0 for any sub-748-gph hour, which on this meter is
+    -- almost every hour).
+    lines[#lines + 1] = "Hourly usage:"
     local usage = data.Usage
     if type(usage) ~= "table" or #usage == 0 then
         lines[#lines + 1] = "  (no data)"
     else
-        lines[#lines + 1] = "  hour    GPH    GPM"
+        lines[#lines + 1] = "  hour    GPH    GPM     HCF"
         for _, row in ipairs(usage) do
+            local hcf = row.GPH and (row.GPH / M.HCF_TO_GAL) or nil
             lines[#lines + 1] = string.format(
-                "  %s  %s  %s",
+                "  %s  %s  %s  %s",
                 hour_of(row.ReadTime),
                 pad_left(fmt_int(row.GPH), 5),
-                pad_left(fmt_int(row.GPM), 5))
+                pad_left(fmt_int(row.GPM), 5),
+                pad_left(fmt_num(hcf, 3), 6))
         end
     end
 
