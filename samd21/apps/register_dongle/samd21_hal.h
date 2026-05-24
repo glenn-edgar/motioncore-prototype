@@ -43,3 +43,12 @@ void hal_wdt_pet(void);    // refresh: write 0xA5 to WDT.CLEAR
 
 void    hal_capture_reset_cause(void);   // call ONCE, very early in main()
 uint8_t hal_get_reset_cause(void);       // returns the captured snapshot
+
+// ---- Static peripheral initialisation --------------------------------------
+// Brings up always-on peripherals (DAC, ADC, eventually I2C + RS-485) at boot,
+// before the s_engine starts. Their pins are statically reserved — GPIO
+// commands refuse them via pin_is_reserved() in samd21_commands.c. Call once
+// after hal_wdt_init(); idempotent thanks to per-peripheral g_*_initialized
+// guards.
+
+void samd21_peripherals_init(void);

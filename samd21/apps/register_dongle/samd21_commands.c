@@ -29,6 +29,21 @@ static bool validate_pin(uint8_t port, uint8_t pin) {
     return port <= 1u && pin <= 31u;
 }
 
+// Pins statically owned by always-on peripherals — GPIO commands refuse them.
+// D0 = PA02 (DAC0 output, init'd at boot by samd21_peripherals_init)
+// D4 = PA08 (I2C SDA, SERCOM2)
+// D5 = PA09 (I2C SCL, SERCOM2)
+// D6 = PB08 (RS-485 TX, SERCOM4) — reserved even pre-RS-485-init
+// D7 = PB09 (RS-485 RX, SERCOM4) — reserved even pre-RS-485-init
+static bool pin_is_reserved(uint8_t port, uint8_t pin) {
+    if (port == 0u && pin ==  2u) return true;  // D0 / DAC
+    if (port == 0u && pin ==  8u) return true;  // D4 / SDA
+    if (port == 0u && pin ==  9u) return true;  // D5 / SCL
+    if (port == 1u && pin ==  8u) return true;  // D6 / UART TX
+    if (port == 1u && pin ==  9u) return true;  // D7 / UART RX
+    return false;
+}
+
 // ---------- CMD_GPIO_CONFIG -----------------------------------------------
 // args:   port:u8  pin:u8  mode:u8
 // result: empty
@@ -42,6 +57,7 @@ static uint8_t cmd_gpio_config(shell_reader_t* args, shell_writer_t* result) {
     if (args->overflow)        return SHELL_STATUS_BAD_ARGS;
     if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
     if (!validate_pin(port, pin)) return SHELL_STATUS_BAD_ARGS;
+    if (pin_is_reserved(port, pin)) return SHELL_STATUS_BAD_ARGS;
     if (mode > GPIO_MODE_INPUT_PULLDOWN) return SHELL_STATUS_BAD_ARGS;
 
     const uint32_t mask = (1u << pin);
@@ -84,6 +100,7 @@ static uint8_t cmd_gpio_write(shell_reader_t* args, shell_writer_t* result) {
     if (args->overflow)         return SHELL_STATUS_BAD_ARGS;
     if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
     if (!validate_pin(port, pin)) return SHELL_STATUS_BAD_ARGS;
+    if (pin_is_reserved(port, pin)) return SHELL_STATUS_BAD_ARGS;
     if (level > 1u)              return SHELL_STATUS_BAD_ARGS;
 
     const uint32_t mask = (1u << pin);
@@ -103,6 +120,7 @@ static uint8_t cmd_gpio_read(shell_reader_t* args, shell_writer_t* result) {
     if (args->overflow)         return SHELL_STATUS_BAD_ARGS;
     if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
     if (!validate_pin(port, pin)) return SHELL_STATUS_BAD_ARGS;
+    if (pin_is_reserved(port, pin)) return SHELL_STATUS_BAD_ARGS;
 
     uint8_t level = (uint8_t)((PORT->Group[port].IN.reg >> pin) & 1u);
     sw_u8(result, level);
@@ -112,10 +130,10 @@ static uint8_t cmd_gpio_read(shell_reader_t* args, shell_writer_t* result) {
 // ============================================================================
 // DAC — single channel on PA02 (D0). 10-bit, AVCC reference (0..3.3V).
 //
-// First call to any DAC command lazily initialises clocks + reference + pin
-// mux. Subsequent calls just write DAC->DATA. CMD_DAC_STOP (later) will tear
-// down the waveform-generator timer but leaves the DAC enabled (last sample
-// held).
+// Statically initialised at boot via samd21_peripherals_init() — PA02 is a
+// hard-reserved pin in the dongle/slave role (GPIO commands refuse it via
+// pin_is_reserved). CMD_DAC_STOP only tears down the waveform-generator
+// timer; the DAC stays enabled with the last sample held.
 // ============================================================================
 
 static bool g_dac_initialized = false;
@@ -612,4 +630,15 @@ const shell_cmd_entry_t* chip_commands_table(void) {
 
 uint8_t chip_commands_count(void) {
     return (uint8_t)(sizeof(g_chip_commands) / sizeof(g_chip_commands[0]));
+}
+
+// ============================================================================
+// samd21_peripherals_init — boot-time init of statically-allocated peripherals.
+// Called once from main() after hal_wdt_init(). DAC + ADC are always-on; their
+// pins (PA02 for DAC) are locked out from GPIO commands via pin_is_reserved.
+// I2C (SERCOM2) and RS-485 (SERCOM4) will hook in here in later commits.
+// ============================================================================
+void samd21_peripherals_init(void) {
+    dac_init();
+    adc_init();
 }

@@ -270,6 +270,11 @@ int main(void) {
     // site lives in the s_engine chain pump (s_expr_node_tick).
     hal_wdt_init();
 
+    // Bring up always-on peripherals (DAC, ADC, and future I2C/RS-485) once,
+    // pre-engine. Pins they own are reserved from GPIO commands by
+    // pin_is_reserved() in samd21_commands.c.
+    samd21_peripherals_init();
+
     tusb_rhport_init_t const rhport_init = {
         .role  = TUSB_ROLE_DEVICE,
         .speed = TUSB_SPEED_AUTO,
