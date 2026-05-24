@@ -228,6 +228,44 @@ for the four zenoh `.so` files (libzenoh_pubsub / _rpc / _token + libzenohpico).
 These will be replaced by `vendor/lib-aarch64/` once we cross-compile for Pi.
 Override `LD_LIBRARY_PATH` in the caller env to bypass the bench default.
 
+## Resume here (2026-05-24 — Discord push framework)
+
+**Track-1 of the three-track plan landed.** Layer-60 `notification_service`
+is live, and `farm_soil` has a daily-digest leaf. End-to-end verified
+twice on the bench: a synthetic publisher AND a real `farm_soil` boot
+both delivered through to Discord (HTTP 204) via the LuaSec HTTPS POST.
+See `discord-push-done-2026-05-24` memory for what was built and
+`discord-integration-architecture-2026-05-23` for the locked pattern.
+
+What's in:
+- `server/notification_service/` — token sub on `fleet/notify/digest/daily`
+  → `lib/discord_webhook.lua` POST. `_post` injection seam for tests.
+  Secret in gitignored `secrets/discord.env`. Offline unit tests +
+  `tests/post_test_digest.sh` wire smoke.
+- `robot_common/lib/format_table.lua` — pure-Lua port of
+  `~/robot_person/robots/farm_soil/format.py` (engine-free, testable).
+- `farm_soil/chains/digest.lua` + `digest_user_functions.lua` —
+  24-h `tick_delay` column; reads in-memory state (no persistence
+  round-trip); publishes `{schema, class, instance, body}` envelope.
+- `farm_soil/class_spec.lua app_kbs` += `"digest"`; IR rebuilt to 78 nodes.
+
+Two small things noted during the bench run:
+- **First boot-time digest races the other app KBs.** At boot the digest
+  one_shot may fire BEFORE moisture/CIMIS have populated, yielding a
+  near-empty body. Acceptable for v1 (24-h cycles after that are full);
+  fix when needed by either staggering `app_kbs` spawn order or by
+  swapping the column shape to wait→digest→reset.
+- **LuaSec return shape**: `https.request` returns `(r, c, h, sline)`,
+  not `(code, h, s)` — `r == 1` flags success, `c` is the HTTP status.
+  Initial port had it wrong (read `r` as the status), printed
+  `HTTP 1 table:` errors despite Discord returning 204. Pattern carried
+  into `lib/discord_webhook.lua` with a comment so the next port
+  (ntfy/Slack) gets it right.
+
+Next is Track-2 (Rancho water), but it needs an open conversation
+about data source / anomaly rule / robot shape — see the Plan section
+below for the questions to ask before any code.
+
 ## Resume here (2026-05-23 — gateway + dashboard MVP)
 
 **Layers 30 → 40 → 50 are wired end-to-end** for the first time.
@@ -305,6 +343,13 @@ fleet_design/
     main.lua         pump loop now republishes persistence_topology
                      every PERSISTENCE_TOPOLOGY_REPUBLISH_S (= 30 s)
   server/fleet_manager/   the controller (register RPC + heartbeat + registry)
+  server/notification_service/  (NEW 2026-05-24) layer-60 push.
+                          Token sub on fleet/notify/digest/daily →
+                          discord_webhook POST via LuaSec.
+                          {main.lua, lib/discord_webhook.lua, run.sh,
+                          secrets/{.gitignore, discord.env.example},
+                          tests/{test_discord_webhook, post_test_digest}}.
+                          Robot owns content, service owns transport.
   server/application_gateway/   layer-40+50 MVP. LuaSocket-based
                           HTTP/1.1 GET server (no framework) that calls
                           fleet/persistence/query and exposes JSON +
@@ -452,6 +497,12 @@ server/persistence/test_query_client.sh
 # HTTP gateway + dashboard (http://127.0.0.1:8080/):
 unset LUA_CPATH LUA_PATH
 server/application_gateway/run.sh &
+# notification service (needs DISCORD_WEBHOOK_URL in
+# server/notification_service/secrets/discord.env — gitignored):
+unset LUA_CPATH LUA_PATH
+server/notification_service/run.sh &
+# wire smoke (publishes one synthetic digest → real Discord POST):
+server/notification_service/tests/post_test_digest.sh
 # inspect what persistence is storing (direct SQLite, read-only):
 sqlite3 var/persistence.db "SELECT path, label FROM knowledge_base"
 sqlite3 var/persistence.db \
@@ -469,7 +520,43 @@ The vendored bindings are still **client-mode + zenohd-router only** — bench
 and container tests need the `zenohd` router above. Pi Zero 2 deploy (no
 containers) remains a separate, unsolved problem.
 
-## Plan for next session (2026-05-24 — three tracks, Discord first)
+## Plan for next session (2026-05-25 — Track 2: Rancho water)
+
+Track-1 (Discord push) is done — see Resume here (2026-05-24). The
+next session opens Track-2: the **Rancho water daily-usage skill**.
+This is the first real-user validation of the push framework
+(motivation: Glenn lost ~$1000 to a bad pump that ran undetected;
+this skill exists to make that not happen again).
+
+**Don't start coding until the data-source conversation happens.**
+Four questions to put to the user up front:
+
+1. **Data source for the water-meter reading.** City API? On-premise
+   meter with a pulse counter / Modbus / TTN-LoRaWAN bridge? Picks
+   the schema, the polling cadence, the skill's identity.
+2. **Anomaly rule.** Trailing-7-day-mean delta? Hard upper threshold
+   (leak)? Hard lower threshold during a scheduled pump-cycle window
+   (pump failure)? If usage data from the $1000 incident exists, use
+   it to validate the rule choice before committing to one.
+3. **Skill shape.** Separate `rancho_water` robot (parallel to
+   `farm_soil`, different identity, different cadence, different
+   source) OR a skill-KB inside an existing robot? Separate is the
+   second-robot test of the "framework for all robots" thesis.
+4. **Severity routing.** v1 push is one webhook, one channel — fine
+   for the daily-summary digest. The pump-failure alert needs
+   *some* distinction (severity prefix in the body for v1? promote
+   to v2 routing?). Decide which v1 lever to use before coding.
+
+Track-3 (HTTP/dashboard beef-up) stays queued behind Track-2 unless
+Track-2 surfaces a real-time-visualization need that promotes the
+live-update SSE channel into Track-2.5.
+
+**First action 2026-05-25**: read this section, read
+`next-tracks-2026-05-24` + `discord-push-done-2026-05-24` memories,
+then put the four Track-2 questions above to the user. No code
+before alignment.
+
+## Plan archive (2026-05-24 — three tracks, Discord first; TRACK 1 DONE)
 
 Framing: **fleet_design is a framework for all robot controllers, not
 just farm_soil.** Three parallel tracks emerged from this wrap; do
