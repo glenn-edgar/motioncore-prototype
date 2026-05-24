@@ -110,6 +110,15 @@ const shell_cmd_entry_t* shell_find_cmd(uint16_t command_id);
 // only; no reply frame is ever produced (the command never returns).
 #define CMD_TEST_HANG         ((uint16_t)0x0120)
 
+// 0x0130..0x0133: I2C master (SERCOM2 on D4=SDA / D5=SCL, 100 kHz).
+// Statically initialised at boot via samd21_peripherals_init(); D4/D5 are
+// hard-reserved from GPIO via pin_is_reserved(). Polling-mode in v1
+// (no DMA / no ISR); layer-2 WDT catches bus hangs.
+#define CMD_I2C_WRITE         ((uint16_t)0x0130)  // START + addr(W) + data[..] + STOP
+#define CMD_I2C_READ          ((uint16_t)0x0131)  // START + addr(R) + read N + STOP
+#define CMD_I2C_WRITE_READ    ((uint16_t)0x0132)  // write reg, repeated START, read N
+#define CMD_I2C_SCAN          ((uint16_t)0x0133)  // probe 0x08..0x77, return ACK list
+
 // GPIO mode codes for CMD_GPIO_CONFIG.
 #define GPIO_MODE_INPUT          0u
 #define GPIO_MODE_OUTPUT         1u

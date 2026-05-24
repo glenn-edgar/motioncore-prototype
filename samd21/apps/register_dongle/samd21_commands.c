@@ -665,6 +665,215 @@ static uint8_t cmd_adc_capture(shell_reader_t* args, shell_writer_t* result) {
     return SHELL_STATUS_OK;
 }
 
+// ============================================================================
+// I2C master — SERCOM2 on D4=PA08 (SDA) / D5=PA09 (SCL), 100 kHz.
+//
+// PMUX function D selects SERCOM2 PAD[0]/[1] on PA08/PA09. Statically
+// initialised at boot via samd21_peripherals_init(); D4/D5 are reserved
+// from GPIO commands by pin_is_reserved().
+//
+// Smart mode disabled; we drive CTRLB.CMD + ACKACT explicitly so error
+// paths (NACK / bus error / arb lost) can issue STOP cleanly.
+//
+// BAUD = (f_GCLK / (2 × f_SCL)) - 5 = (48 MHz / 200 kHz) - 5 = 235.
+// Rise time term ignored — acceptable for the slow-bus role.
+//
+// Polling-mode. Bus hangs are caught by layer-2 WDT (max ~4 s).
+// ============================================================================
+
+#define I2C_SERCOM           SERCOM2
+#define I2C_GCLK_ID_CORE     SERCOM2_GCLK_ID_CORE
+#define I2C_GCLK_ID_SLOW     SERCOM2_GCLK_ID_SLOW
+#define I2C_BAUD_100K        235u
+
+static void i2c_init(void) {
+    // 1. Bus clock.
+    PM->APBCMASK.reg |= PM_APBCMASK_SERCOM2;
+
+    // 2. SERCOM2 core + slow clocks → GCLK0 (48 MHz).
+    GCLK->CLKCTRL.reg = (uint16_t)(GCLK_CLKCTRL_ID(I2C_GCLK_ID_CORE)
+                                 | GCLK_CLKCTRL_GEN_GCLK0
+                                 | GCLK_CLKCTRL_CLKEN);
+    while (GCLK->STATUS.bit.SYNCBUSY) { /* spin */ }
+    GCLK->CLKCTRL.reg = (uint16_t)(GCLK_CLKCTRL_ID(I2C_GCLK_ID_SLOW)
+                                 | GCLK_CLKCTRL_GEN_GCLK0
+                                 | GCLK_CLKCTRL_CLKEN);
+    while (GCLK->STATUS.bit.SYNCBUSY) { /* spin */ }
+
+    // 3. Reset SERCOM2.
+    I2C_SERCOM->I2CM.CTRLA.bit.SWRST = 1;
+    while (I2C_SERCOM->I2CM.SYNCBUSY.bit.SWRST) { /* spin */ }
+
+    // 4. Configure as I2C master, 300 ns SDA hold, smart mode OFF.
+    I2C_SERCOM->I2CM.CTRLA.reg =
+        SERCOM_I2CM_CTRLA_MODE_I2C_MASTER |
+        SERCOM_I2CM_CTRLA_SDAHOLD(2);
+
+    // 5. 100 kHz baud.
+    I2C_SERCOM->I2CM.BAUD.reg = SERCOM_I2CM_BAUD_BAUD(I2C_BAUD_100K);
+
+    // 6. PMUX PA08/PA09 → function D (SERCOM-ALT = SERCOM2 PAD[0]/[1]).
+    PORT->Group[0].PINCFG[8].bit.PMUXEN = 1;
+    PORT->Group[0].PMUX[4].bit.PMUXE    = PORT_PMUX_PMUXE_D_Val;  // PA08 even
+    PORT->Group[0].PINCFG[9].bit.PMUXEN = 1;
+    PORT->Group[0].PMUX[4].bit.PMUXO    = PORT_PMUX_PMUXO_D_Val;  // PA09 odd
+
+    // 7. Enable.
+    I2C_SERCOM->I2CM.CTRLA.bit.ENABLE = 1;
+    while (I2C_SERCOM->I2CM.SYNCBUSY.bit.ENABLE) { /* spin */ }
+
+    // 8. Force bus state to IDLE (1). On power-up the controller reports
+    //    UNKNOWN (0) and refuses transactions until told the bus is idle.
+    I2C_SERCOM->I2CM.STATUS.bit.BUSSTATE = 1;
+    while (I2C_SERCOM->I2CM.SYNCBUSY.bit.SYSOP) { /* spin */ }
+}
+
+// --- low-level helpers --------------------------------------------------
+
+// Wait for either MB (master TX done) or SB (slave reply ready). No timeout
+// in v1; relies on layer-2 WDT to catch a wedged bus.
+static void i2c_wait_complete(void) {
+    while (!(I2C_SERCOM->I2CM.INTFLAG.reg
+            & (SERCOM_I2CM_INTFLAG_MB | SERCOM_I2CM_INTFLAG_SB))) { /* spin */ }
+}
+
+// Returns true on bus-level failure (BUSERR or ARBLOST). RXNACK is checked
+// separately by callers because it's a "remote replied" condition vs a
+// "wire broke" condition.
+static bool i2c_bus_error(void) {
+    return (I2C_SERCOM->I2CM.STATUS.bit.BUSERR != 0)
+        || (I2C_SERCOM->I2CM.STATUS.bit.ARBLOST != 0);
+}
+
+static void i2c_stop(void) {
+    I2C_SERCOM->I2CM.CTRLB.bit.CMD = 3;  // STOP
+    while (I2C_SERCOM->I2CM.SYNCBUSY.bit.SYSOP) { /* spin */ }
+}
+
+// START + addr, write or read direction. Returns true if address ACKed.
+// On NACK or bus error, leaves the bus in an indeterminate state; caller
+// must issue STOP to recover (i2c_stop()).
+static bool i2c_start(uint8_t addr, bool read) {
+    I2C_SERCOM->I2CM.ADDR.reg = ((uint32_t)addr << 1) | (read ? 1u : 0u);
+    i2c_wait_complete();
+    if (i2c_bus_error()) return false;
+    return (I2C_SERCOM->I2CM.STATUS.bit.RXNACK == 0);
+}
+
+// Write one byte. Returns true if ACKed.
+static bool i2c_write_byte(uint8_t data) {
+    I2C_SERCOM->I2CM.DATA.reg = data;
+    i2c_wait_complete();
+    if (i2c_bus_error()) return false;
+    return (I2C_SERCOM->I2CM.STATUS.bit.RXNACK == 0);
+}
+
+// Read one byte. If is_last, the next-byte ACK is set to NACK (signals
+// the slave we're done). Caller should follow last-byte read with i2c_stop().
+static uint8_t i2c_read_byte(bool is_last) {
+    // ACKACT must be set BEFORE reading DATA (reading DATA triggers next byte).
+    I2C_SERCOM->I2CM.CTRLB.bit.ACKACT = is_last ? 1 : 0;
+    while (I2C_SERCOM->I2CM.SYNCBUSY.bit.SYSOP) { /* spin */ }
+    uint8_t data = (uint8_t)I2C_SERCOM->I2CM.DATA.reg;
+    if (!is_last) {
+        // Trigger next byte read (CMD=2 = read).
+        I2C_SERCOM->I2CM.CTRLB.bit.CMD = 2;
+        while (I2C_SERCOM->I2CM.SYNCBUSY.bit.SYSOP) { /* spin */ }
+        i2c_wait_complete();
+    }
+    return data;
+}
+
+// --- shell commands ----------------------------------------------------
+
+#define I2C_MAX_WRITE_LEN  32u  // fits within shell args + leaves frame headroom
+#define I2C_MAX_READ_LEN   60u  // fits within shell result_message budget
+
+// CMD_I2C_WRITE: addr:u8 (7-bit), data:u8[1..32]
+// Sequence: START + addr(W) + data... + STOP. NACK at any byte → STOP + BAD_ARGS.
+static uint8_t cmd_i2c_write(shell_reader_t* args, shell_writer_t* result) {
+    (void)result;
+    uint8_t addr = sr_u8(args);
+    if (args->overflow)             return SHELL_STATUS_BAD_ARGS;
+    if (addr > 0x7Fu)               return SHELL_STATUS_BAD_ARGS;
+    uint16_t n = sr_remaining(args);
+    if (n == 0u || n > I2C_MAX_WRITE_LEN) return SHELL_STATUS_BAD_ARGS;
+
+    if (!i2c_start(addr, false)) { i2c_stop(); return SHELL_STATUS_BAD_ARGS; }
+    for (uint16_t i = 0; i < n; i++) {
+        uint8_t b = sr_u8(args);
+        if (!i2c_write_byte(b)) { i2c_stop(); return SHELL_STATUS_BAD_ARGS; }
+    }
+    i2c_stop();
+    return SHELL_STATUS_OK;
+}
+
+// CMD_I2C_READ: addr:u8, count:u8 (1..60)
+// Sequence: START + addr(R) + read count bytes + STOP.
+// Returns bytes read on success.
+static uint8_t cmd_i2c_read(shell_reader_t* args, shell_writer_t* result) {
+    uint8_t addr  = sr_u8(args);
+    uint8_t count = sr_u8(args);
+    if (args->overflow)            return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0)   return SHELL_STATUS_BAD_ARGS;
+    if (addr > 0x7Fu)              return SHELL_STATUS_BAD_ARGS;
+    if (count == 0u || count > I2C_MAX_READ_LEN) return SHELL_STATUS_BAD_ARGS;
+
+    if (!i2c_start(addr, true)) { i2c_stop(); return SHELL_STATUS_BAD_ARGS; }
+    for (uint8_t i = 0; i < count; i++) {
+        uint8_t b = i2c_read_byte(i == (count - 1u));
+        sw_u8(result, b);
+        if (result->overflow) { i2c_stop(); return SHELL_STATUS_RESULT_TOO_BIG; }
+    }
+    i2c_stop();
+    return SHELL_STATUS_OK;
+}
+
+// CMD_I2C_WRITE_READ: addr:u8, write_count:u8, read_count:u8, write_data:u8[write_count]
+// Sequence: START + addr(W) + write_data + repeated-START + addr(R) + read read_count + STOP.
+// The canonical sensor pattern: "set register pointer, then read N bytes".
+static uint8_t cmd_i2c_write_read(shell_reader_t* args, shell_writer_t* result) {
+    uint8_t addr        = sr_u8(args);
+    uint8_t write_count = sr_u8(args);
+    uint8_t read_count  = sr_u8(args);
+    if (args->overflow)             return SHELL_STATUS_BAD_ARGS;
+    if (addr > 0x7Fu)               return SHELL_STATUS_BAD_ARGS;
+    if (write_count == 0u || write_count > I2C_MAX_WRITE_LEN) return SHELL_STATUS_BAD_ARGS;
+    if (read_count  == 0u || read_count  > I2C_MAX_READ_LEN)  return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != write_count) return SHELL_STATUS_BAD_ARGS;
+
+    // Write phase
+    if (!i2c_start(addr, false)) { i2c_stop(); return SHELL_STATUS_BAD_ARGS; }
+    for (uint8_t i = 0; i < write_count; i++) {
+        uint8_t b = sr_u8(args);
+        if (!i2c_write_byte(b)) { i2c_stop(); return SHELL_STATUS_BAD_ARGS; }
+    }
+    // Repeated START to switch to read phase (no STOP between).
+    if (!i2c_start(addr, true)) { i2c_stop(); return SHELL_STATUS_BAD_ARGS; }
+    for (uint8_t i = 0; i < read_count; i++) {
+        uint8_t b = i2c_read_byte(i == (read_count - 1u));
+        sw_u8(result, b);
+        if (result->overflow) { i2c_stop(); return SHELL_STATUS_RESULT_TOO_BIG; }
+    }
+    i2c_stop();
+    return SHELL_STATUS_OK;
+}
+
+// CMD_I2C_SCAN: no args. Probes 0x08..0x77 with a zero-byte write.
+// Returns: addresses:u8[N] (only addresses that ACKed).
+static uint8_t cmd_i2c_scan(shell_reader_t* args, shell_writer_t* result) {
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    for (uint8_t addr = 0x08u; addr <= 0x77u; addr++) {
+        bool acked = i2c_start(addr, false);
+        i2c_stop();
+        if (acked) {
+            sw_u8(result, addr);
+            if (result->overflow) return SHELL_STATUS_RESULT_TOO_BIG;
+        }
+    }
+    return SHELL_STATUS_OK;
+}
+
 // ---------- CMD_TEST_HANG -------------------------------------------------
 // Layer-2 WDT bench probe. Disables IRQs and spins; the layer-2 WDT bites
 // after ~4 s and the chip resets. Never returns a reply frame.
@@ -686,6 +895,10 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_DAC_WAVEFORM_WRITE,  "dac_waveform_write", cmd_dac_waveform_write },
     { CMD_DAC_STOP,            "dac_stop",           cmd_dac_stop           },
     { CMD_ADC_CAPTURE,         "adc_capture",        cmd_adc_capture        },
+    { CMD_I2C_WRITE,           "i2c_write",          cmd_i2c_write          },
+    { CMD_I2C_READ,            "i2c_read",           cmd_i2c_read           },
+    { CMD_I2C_WRITE_READ,      "i2c_write_read",     cmd_i2c_write_read     },
+    { CMD_I2C_SCAN,            "i2c_scan",           cmd_i2c_scan           },
     { CMD_TEST_HANG,           "test_hang",          cmd_test_hang          },
 };
 
@@ -706,4 +919,5 @@ uint8_t chip_commands_count(void) {
 void samd21_peripherals_init(void) {
     dac_init();
     adc_init();
+    i2c_init();
 }

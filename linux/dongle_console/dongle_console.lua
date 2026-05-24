@@ -124,6 +124,11 @@ local CMD_DAC_WAVEFORM_WRITE = 0x0105
 local CMD_DAC_STOP           = 0x0106
 local CMD_ADC_CAPTURE        = 0x0107
 -- 0x0108..0x010E: VACATED on SAMD21 (PWM/counter removed); see shell_commands.h.
+-- I2C master on SAMD21 SERCOM2 D4=SDA/D5=SCL @ 100 kHz; statically init'd at boot.
+local CMD_I2C_WRITE          = 0x0130
+local CMD_I2C_READ           = 0x0131
+local CMD_I2C_WRITE_READ     = 0x0132
+local CMD_I2C_SCAN           = 0x0133
 -- Layer-2 WDT bench probe — disables IRQs and spins; chip resets ~4 s
 -- later. No reply frame; absence is the success signal. (SAMD21 build.)
 local CMD_TEST_HANG          = 0x0120
@@ -453,6 +458,92 @@ local function parse_args(argv)
                 payload    = payload,
                 shell_req  = req_id,
                 shell_cmd  = cmd_id,
+            })
+        elseif a == "--send-shell-i2c-write" then
+            -- Args: ADDR(hex or dec)  DATA_BYTE [DATA_BYTE ...]
+            -- DATA_BYTEs accept hex (0xNN) or decimal (0..255). Up to 32 bytes.
+            i = i + 1; local addr = tonumber(argv[i])
+            if not addr or addr < 0 or addr > 0x7F then die("i2c-write ADDR 0..0x7F") end
+            local data = {}
+            while i + 1 <= #argv and not argv[i+1]:match("^%-%-") do
+                i = i + 1
+                local v = tonumber(argv[i])
+                if not v or v < 0 or v > 255 then die("i2c-write DATA byte 0..255 (got %s)", argv[i]) end
+                table.insert(data, v)
+            end
+            if #data == 0 or #data > 32 then die("i2c-write needs 1..32 data bytes") end
+            local req_id = alloc_shell_req()
+            local cmd_id = CMD_I2C_WRITE
+            local payload = {
+                bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                bit.band(cmd_id, 0xFF), bit.band(bit.rshift(cmd_id, 8), 0xFF),
+                addr,
+            }
+            for _, b in ipairs(data) do table.insert(payload, b) end
+            table.insert(opts.send_seq, {
+                cmd = 0x0109,
+                label = string.format("OP_SHELL_EXEC(i2c_write 0x%02X, %d bytes)", addr, #data),
+                payload = payload, shell_req = req_id, shell_cmd = cmd_id,
+            })
+        elseif a == "--send-shell-i2c-read" then
+            -- Args: ADDR  COUNT (1..60)
+            i = i + 1; local addr = tonumber(argv[i])
+            i = i + 1; local count = tonumber(argv[i])
+            if not addr or addr < 0 or addr > 0x7F then die("i2c-read ADDR 0..0x7F") end
+            if not count or count < 1 or count > 60 then die("i2c-read COUNT 1..60") end
+            local req_id = alloc_shell_req()
+            local cmd_id = CMD_I2C_READ
+            local payload = {
+                bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                bit.band(cmd_id, 0xFF), bit.band(bit.rshift(cmd_id, 8), 0xFF),
+                addr, count,
+            }
+            table.insert(opts.send_seq, {
+                cmd = 0x0109,
+                label = string.format("OP_SHELL_EXEC(i2c_read 0x%02X x%d)", addr, count),
+                payload = payload, shell_req = req_id, shell_cmd = cmd_id,
+            })
+        elseif a == "--send-shell-i2c-write-read" then
+            -- Args: ADDR  READ_COUNT  WRITE_BYTE [WRITE_BYTE ...]
+            -- Canonical sensor pattern: write register pointer(s) then read N bytes.
+            i = i + 1; local addr = tonumber(argv[i])
+            i = i + 1; local read_count = tonumber(argv[i])
+            if not addr or addr < 0 or addr > 0x7F then die("i2c-write-read ADDR 0..0x7F") end
+            if not read_count or read_count < 1 or read_count > 60 then
+                die("i2c-write-read READ_COUNT 1..60") end
+            local write_data = {}
+            while i + 1 <= #argv and not argv[i+1]:match("^%-%-") do
+                i = i + 1
+                local v = tonumber(argv[i])
+                if not v or v < 0 or v > 255 then die("write byte 0..255 (got %s)", argv[i]) end
+                table.insert(write_data, v)
+            end
+            if #write_data == 0 or #write_data > 32 then die("i2c-write-read needs 1..32 write bytes") end
+            local req_id = alloc_shell_req()
+            local cmd_id = CMD_I2C_WRITE_READ
+            local payload = {
+                bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                bit.band(cmd_id, 0xFF), bit.band(bit.rshift(cmd_id, 8), 0xFF),
+                addr, #write_data, read_count,
+            }
+            for _, b in ipairs(write_data) do table.insert(payload, b) end
+            table.insert(opts.send_seq, {
+                cmd = 0x0109,
+                label = string.format("OP_SHELL_EXEC(i2c_write_read 0x%02X w%d r%d)",
+                                       addr, #write_data, read_count),
+                payload = payload, shell_req = req_id, shell_cmd = cmd_id,
+            })
+        elseif a == "--send-shell-i2c-scan" then
+            local req_id = alloc_shell_req()
+            local cmd_id = CMD_I2C_SCAN
+            local payload = {
+                bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                bit.band(cmd_id, 0xFF), bit.band(bit.rshift(cmd_id, 8), 0xFF),
+            }
+            table.insert(opts.send_seq, {
+                cmd = 0x0109,
+                label = "OP_SHELL_EXEC(i2c_scan 0x08..0x77)",
+                payload = payload, shell_req = req_id, shell_cmd = cmd_id,
             })
         elseif a == "--send-shell-get-mode" then
             local req_id = alloc_shell_req()
@@ -1007,6 +1098,20 @@ Options:
                       (SAMD21). Disables IRQs and spins; chip resets in ~4 s.
                       Success = chip re-enumerates and the next sync ladder
                       sees [BOOT] rstsr=0x20 (RCAUSE bit 5 = WDT).
+  --send-shell-i2c-write ADDR BYTE [BYTE ...]
+                      I2C write: START + addr(W) + bytes + STOP (SAMD21
+                      D4=SDA / D5=SCL @ 100 kHz). ADDR is 7-bit (0x08..0x77).
+                      Up to 32 bytes. NACK → BAD_ARGS.
+  --send-shell-i2c-read ADDR COUNT
+                      I2C read: START + addr(R) + read COUNT bytes + STOP.
+                      COUNT 1..60. Returns the bytes.
+  --send-shell-i2c-write-read ADDR READ_COUNT WRITE_BYTE [WRITE_BYTE ...]
+                      Canonical sensor pattern: write register pointer(s)
+                      then repeated-START + read READ_COUNT bytes.
+                      e.g. --send-shell-i2c-write-read 0x76 6 0xF7  (BMP280 measurement)
+  --send-shell-i2c-scan
+                      Probe 0x08..0x77 with a zero-byte write. Returns
+                      list of addresses that ACKed.
   --send-shell-get-mode    Query the device operating mode (RA4M1; 0=workbench).
   --send-shell-set-mode N  Set the device operating mode (RA4M1).
   --send-shell-analog-start   Begin background analog collection (RA4M1) — a
