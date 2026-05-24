@@ -1916,3 +1916,117 @@ crystal on Xiao).
 **Long-tail:** DFU placeholders, SAMD21 real chip UID in
 usb_descriptors, RP2350/ESP32-C6 ports, cross-repo kb_build
 `class_ids.h` codegen.
+
+---
+
+## 2026-05-23 PM → 2026-05-24 — RA4M1 dongle ruled out, SAMD21 takes the wheel
+
+**Today's outcome (RA4M1 register_dongle):** WDT slices 1+2 reverted.
+The chain-pump-pet pattern (slice-1) bit cleanly via `CMD_TEST_HANG`,
+but the post-bite CDC TX recovery (slice-2) failed across four
+variants: bare MSTPB11 cycle, gated cycle, FSP-style USB SFR clears +
+MSTP cycle, and SFR clears alone. In each warm attempt the chip
+re-enumerated as USB, but CDC TX bytes never flowed again until power
+cycle. Memories updated:
+[[wdt-layer2-pet-from-s-engine]] (REVERTED + 4 attempts),
+[[ra4m1-warm-reset-preserves-state]] (chip-level pattern stands, USB
+recovery exception noted),
+[[single-tree-dongle-slave-build]] (3 roles, chip→role mapping,
+SAMD21 D6/D7 pins). Commit `4218707` (−266/+1 lines).
+
+The XIAO RA4M1 does not expose NRESET on a header pin → no external-WDT
+escape. So **RA4M1 is dropped from the dongle role** for production. It
+remains a candidate for the **slave role** specifically (RS-485 transport
+has no equivalent of CDC-session-state preservation; warm-reset recovery
+is fundamentally smaller-surface), contingent on the same WDT pattern
+being verified to work in slave mode. M4+FPU+CMSIS-DSP is a real
+capability gap vs SAMD21 M0+ that justifies keeping RA4M1 in the suite.
+
+### Three roles per chip (locked 2026-05-23 PM)
+
+| Role | Transport | HIL modes | Why |
+|---|---|---|---|
+| `bus_controller` | USB-CDC (host) + RS-485 master (slaves) | none | Production-shippable; slow-bus master; pure transport infrastructure (≈25–30 KB) |
+| `dongle` | USB-CDC only | full | Benchwork + standalone HIL |
+| `slave` | RS-485 9-bit MPCM | full | HIL modes behind a bus_controller |
+
+### Chip eligibility (chip → roles)
+
+| Chip | Crystal? | USB-warm-reset OK? | bus_controller | dongle | slave |
+|---|---|---|---|---|---|
+| SAMD21 (XIAO M0) | no, DFLL+OSC8M ~±1% | TBV | ✓ | ✓ | ✓ |
+| RA4M1 (XIAO M4+FPU) | no, HOCO ~±1% | ❌ (empirical) | ✗ | ✗ | ✓ TBV |
+| RP2350 (Pico 2 W) | yes, 12 MHz XOSC | TBV | ✓ | ✓ | ✓ |
+| ESP32-C6 | yes, 40 MHz XOSC | TBV | ✓ | ✓ | ✓ |
+
+### Bus split (locked)
+
+- **Slow safety bus** ~115k: SAMD21 master + slow-cohort slaves
+  (SAMD21, RA4M1). Baud capped by no-crystal cohort's tolerance budget
+  at higher rates.
+- **Fast control bus** 400k+: crystal-cohort master (RP2350 or
+  ESP32-C6) + crystal-cohort slaves. Future scope.
+- **Two USB ACMs to Pi in v1** — one bus_controller per bus, each
+  Pi-side container talks to its own bus_controller.
+
+### SAMD21 RS-485 pin assignment
+
+- `D6 / PB08` = TX  (SERCOM4 PAD0)
+- `D7 / PB09` = RX  (SERCOM4 PAD1)
+- DE/RE for auto-direction transceiver: TBD, likely `D8` (SCK default,
+  currently unused in register_dongle).
+
+These are the natural UART pair on the XIAO silkscreen and don't
+conflict with the existing register_dongle HIL pin set (D0..D3, D5).
+
+### Tomorrow's plan — slice list
+
+1. **SAMD21 WDT verification** (~30 min bench). Port the WDT pattern
+   from RA4M1 (HAL pet + s_engine pet site + reset-cause capture +
+   `CMD_TEST_HANG`). Trigger test_hang and check whether CDC TX
+   recovers after the bite. Architectural intuition is yes (SAMD21
+   warm reset resets ALL peripherals via PM/RSTC, USB CTRLA has an
+   SWRST bit — completely different from RA4M1's "core only" model),
+   but verify before committing.
+2. **If WDT green → port operating modes to SAMD21.** Multi-mode
+   foundation (VTOR reloc + mode periodic ISR + mode dispatch table +
+   chip_commands extension pattern) carries over from RA4M1. SAMD21
+   TCC/TC timers map functionally onto RA4M1 GPTs. Workbench mode
+   first (already exists; just folded into the new mode dispatch).
+   Goertzel/spectral are **not** on the menu — M0+ no FPU.
+3. **Interlock scenarios** — start sketching what safety operations
+   the SAMD21 should execute autonomously (independent of the Pi
+   host). Candidates: e-stop debounce + propagate, current-limit
+   shutdown, watchdog-of-watchdogs (slow heartbeat from Pi → kill
+   outputs on miss). These become specific modes (`MODE_INTERLOCK_*`)
+   or behaviors of the bus_controller's chain.
+4. **(Later)** `bus_controller` firmware variant. Once WDT + modes
+   land, fork a new SAMD21 app `bus_controller` (sibling to
+   `register_dongle`) — strip the HIL modes, add RS-485 master
+   transport on D6/D7, polling scheduler, ack table. Skeleton can
+   reuse most of register_dongle's main loop.
+5. **(Later)** RA4M1 slave-mode WDT verification. Once SAMD21 slave
+   transport lands, fork an RA4M1 slave build, add WDT, trigger
+   `CMD_TEST_HANG` over RS-485. If RS-485 recovers cleanly → RA4M1
+   slave role is production-viable.
+6. **(Later)** I2C sensor integration on SAMD21 — adds an
+   `I2C_*` command set to the bus_controller (or a dedicated mode on
+   the dongle). Sensors hang off the SAMD21 directly.
+
+**Encoder + motor work paused** until physical motor hardware arrives.
+RA4M1 step 4 encoder shell commands stay deferred; the RA4M1 modes
+2/3/4 roadmap ([[ra4m1-modes-2-3-4-roadmap]]) remains valid for the
+RA4M1 slave role once WDT verifies there.
+
+### Why this re-org is the right call
+
+- **Production-shippable infrastructure separated from benchwork.** The
+  bus_controller is dedicated transport — no HIL surface area, no GPT
+  ISRs, no DSP, just RS-485 master plumbing. Much easier to certify.
+- **Chip-role discipline.** No chip pretends to be everything. RA4M1
+  goes where its compute matters (slave). SAMD21 takes the role where
+  its accessible reset behavior matters (controller / safety).
+- **WDT investment pays off twice next session.** SAMD21 WDT
+  verification simultaneously green-lights the dongle role AND the
+  bus_controller role — bus_controller actually needs the WDT more,
+  since a hung bus_controller blacks out the whole slow bus.
