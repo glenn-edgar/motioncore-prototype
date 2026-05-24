@@ -1973,11 +1973,12 @@ capability gap vs SAMD21 M0+ that justifies keeping RA4M1 in the suite.
 
 - `D6 / PB08` = TX  (SERCOM4 PAD0)
 - `D7 / PB09` = RX  (SERCOM4 PAD1)
-- DE/RE for auto-direction transceiver: TBD, likely `D8` (SCK default,
-  currently unused in register_dongle).
+- **No DE/RE pin** — auto-direction-sensing transceiver per §2 (locked
+  2026-05-11). Inter-frame gap rule from §2 covers the turnaround.
 
-These are the natural UART pair on the XIAO silkscreen and don't
-conflict with the existing register_dongle HIL pin set (D0..D3, D5).
+Natural UART pair on the XIAO silkscreen; no conflict with the existing
+register_dongle HIL pin set (D0..D3, D5). D8 stays free for whatever
+the slave / bus_controller chain wants (e.g., a debug LED or aux signal).
 
 ### Tomorrow's plan — slice list
 
