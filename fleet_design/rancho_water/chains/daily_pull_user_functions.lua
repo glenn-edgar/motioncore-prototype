@@ -42,16 +42,46 @@ local function pacific_yesterday(epoch)
     return string.format("%04d-%02d-%02d", y, m, d)
 end
 
--- Build the per-day published envelope (small, stream-safe).
-local function usage_envelope(id, date_iso, raw_json_body)
-    -- raw_json_body is the literal API JSON; we wrap it so the persistence
-    -- layer can demux by class/instance/date without parsing first.
+-- Compact hourly array for the persistence envelope. Each entry shrinks
+-- from Rancho's ~140-byte JSON ({"Code":"","HCF":0,"GPH":...,"GPM":...,
+-- "ThresholdHCF":0,"ThresholdGPH":0,"ExceededThreshold":false,"ReadTime":
+-- "...T03:00:00"}) to ~30 bytes ({"h":"03","gph":135,"gpm":2}).
+local function hourly_compact(usage)
+    if type(usage) ~= "table" then return nil end
+    local arr = {}
+    for _, row in ipairs(usage) do
+        local h = (type(row.ReadTime) == "string"
+                   and row.ReadTime:match("T(%d%d):")) or "??"
+        arr[#arr + 1] = { h = h, gph = row.GPH, gpm = row.GPM }
+    end
+    return arr
+end
+
+-- Build the per-day published envelope. Compact form is mandatory: the raw
+-- Rancho API body is ~3.8 KB, and zenoh-pico SILENTLY DROPS multi-KB
+-- payloads (see farm-soil-robot-2026-05-22 memory). With hourly_compact
+-- the envelope lands at ~800 bytes — safely under any fragment limit.
+local function usage_envelope(id, date_iso, data)
+    data = data or {}
     return cjson.encode({
-        schema     = SCHEMA_USAGE,
-        class      = id.class,
-        instance   = id.instance,
-        date       = date_iso,
-        raw        = raw_json_body,
+        schema   = SCHEMA_USAGE,
+        class    = id.class,
+        instance = id.instance,
+        date     = date_iso,
+        -- Day-level numbers — what a dashboard "today" panel needs.
+        total_gallons = data.TotalGallons,
+        total_hcf     = data.TotalHCF,
+        day_of_week   = data.DayOfWeek,
+        -- Rancho's own anomaly flags (we don't act on these in v1, but
+        -- the dashboard and any v2 alert listener will).
+        leak_detected              = data.LeakDetected,
+        exceeded_flow_threshold    = data.ExceededFlowThreshold,
+        exceeded_runtime_threshold = data.ExceededRuntimeThreshold,
+        threshold_gallons          = data.ThresholdGallons,
+        threshold_hcf              = data.ThresholdHCF,
+        threshold_hours            = data.ThresholdHours,
+        -- The per-hour series — compact form for the chart.
+        hourly = hourly_compact(data.Usage),
     })
 end
 
@@ -141,8 +171,9 @@ M.one_shot.DAILY_PULL = function(handle, _node)
         log(id, "digest publish FAILED: %s", tostring(perr1))
     end
 
-    -- Publish 2+3: persistence leaves (stream + status). Same envelope.
-    local usage_payload = usage_envelope(id, target_date, body)
+    -- Publish 2+3: persistence leaves (stream + status). Compact envelope —
+    -- the raw API body cannot be persisted as-is (zenoh-pico drops it).
+    local usage_payload = usage_envelope(id, target_date, data)
     local sample_key = id.namespace .. "/usage/sample"
     local latest_key = id.namespace .. "/usage/latest"
     local pok2, perr2 = pcall(function() ps:publish(sample_key, usage_payload) end)
