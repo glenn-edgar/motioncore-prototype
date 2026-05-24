@@ -27,6 +27,7 @@ local body = table.concat({
     "=== farm_soil daily report — 2026-05-24 (SMOKE) ===",
     "",
     "Moisture (per-device latest):",
+    "  lacamia1b   0.218  ts=2026-05-24T08:00:00Z  (23 uplinks)",
     "  lacima1c    0.305  ts=2026-05-24T08:00:00Z  (24 uplinks)",
     "  lacima1d    0.142  ts=2026-05-24T08:00:00Z  (24 uplinks)",
     "",

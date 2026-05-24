@@ -46,29 +46,34 @@ local function rfc3339_to_epoch(ts)
 end
 
 -- Turn the in-memory moisture slots into the rows format_table expects.
--- One row per sensing point; newest ring entry supplies the latest value.
--- uplinks_in_window counts entries with received_at within WINDOW_S of now.
-local function moisture_rows_from_slots(slots, now_epoch)
+-- Enumerated from class_spec.device_locations (the canonical sensor roster)
+-- so a sensor that has stopped reporting — or that has never reported yet —
+-- surfaces in the digest as "no data" rather than silently vanishing. For
+-- an operator-facing report a missing sensor matters more than a present one.
+-- uplinks_in_window counts ring entries with received_at within WINDOW_S of now.
+local function moisture_rows_from_slots(device_locations, slots, now_epoch)
     local rows = {}
-    if not slots then return rows end
-    for _key, slot in pairs(slots) do
-        local ring = slot.ring or {}
-        local newest = ring[#ring]
-        if newest then
-            local count = 0
+    if not device_locations then return rows end
+    slots = slots or {}
+    for device, location in pairs(device_locations) do
+        local slot = slots[device .. "/" .. location]
+        local ring = slot and slot.ring or nil
+        local newest = ring and ring[#ring] or nil
+        local count = 0
+        if ring then
             for _, r in ipairs(ring) do
                 local e = rfc3339_to_epoch(r.received_at)
                 if e and (now_epoch - e) <= WINDOW_S then
                     count = count + 1
                 end
             end
-            rows[#rows + 1] = {
-                device_id         = slot.device,
-                latest_value      = (newest.measurements or {}).moisture,
-                latest_ts         = newest.received_at,
-                uplinks_in_window = count,
-            }
         end
+        rows[#rows + 1] = {
+            device_id         = device,
+            latest_value      = newest and (newest.measurements or {}).moisture or nil,
+            latest_ts         = newest and newest.received_at or nil,
+            uplinks_in_window = count,
+        }
     end
     table.sort(rows, function(a, b)
         return tostring(a.device_id) < tostring(b.device_id)
@@ -97,10 +102,12 @@ end
 M.one_shot.DAILY_DIGEST = function(handle, _node)
     local bb     = handle.blackboard
     local id, ps = bb._identity, bb._pubsub
+    local cs     = bb._class_spec
     local now    = os.time()
     local today  = os.date("!%Y-%m-%d", now)
 
-    local moisture_rows = moisture_rows_from_slots(bb._moisture_slots, now)
+    local moisture_rows = moisture_rows_from_slots(
+        cs and cs.device_locations or nil, bb._moisture_slots, now)
     local eto_rows      = eto_rows_from_cimis(bb._cimis)
     local body          = format_table.format_daily_report(
         moisture_rows, eto_rows, { report_date = today })
