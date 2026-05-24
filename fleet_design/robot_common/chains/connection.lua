@@ -67,6 +67,16 @@ local function build_kb0(ct, kb_name)
                 ct:asm_log_message("protocol: ack received — running bringup sequence")
                 ct:asm_one_shot_handler("PUBLISH_NAMESPACE", {})
                 ct:asm_one_shot_handler("NAMESPACE_UP_HOOK", {})
+                -- Settle for the persistence layer's sub-declarations to
+                -- propagate back across the zenoh fabric before our app KBs
+                -- fire their first one_shot publishes. Without this, fresh-DB
+                -- boots silently drop the initial leaf round. 15 s is sized
+                -- for persistence's worst-case startup path: open SQLite +
+                -- pump cadence + receive topology + two-phase open_subs +
+                -- schema reconcile. (5 s was empirically not enough on a
+                -- fresh DB — moisture's 68-uplink backfill and cimis's
+                -- 7-day historical seed both fired before subs were open.)
+                ct:asm_wait_time(15)
                 ct:asm_one_shot_handler("SPAWN_APP_KBS", {})
                 ct:change_state(protocol_sm, "verify_controller_heartbeat")
                 ct:asm_halt()

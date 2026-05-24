@@ -137,6 +137,27 @@ M.one_shot.DAILY_DIGEST = function(handle, _node)
         return
     end
 
+    -- Gate 2.5: in-window but no moisture data has loaded yet — cold-boot
+    -- race with the moisture KB's first TTN fetch. A digest of all "?"
+    -- rows isn't useful; defer to the next retry (~15 min later) by which
+    -- time the moisture fetch will have populated bb._moisture_slots.
+    -- Once any single device has data we proceed, so partial digests
+    -- (some sensors offline long-term) still publish.
+    local slots_have_data = false
+    if bb._moisture_slots then
+        for _, slot in pairs(bb._moisture_slots) do
+            if slot.ring and #slot.ring > 0 then
+                slots_have_data = true
+                break
+            end
+        end
+    end
+    if not slots_have_data then
+        app_heartbeat.stamp(handle, "digest", "ok",
+            "in-window but no moisture data yet — deferring", retry_s)
+        return
+    end
+
     -- Gate 3: in-window, today not yet published -> publish.
     local now           = os.time()
     local moisture_rows = moisture_rows_from_slots(
