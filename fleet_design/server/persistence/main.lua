@@ -165,8 +165,14 @@ local function handle_topology(payload)
         return
     end
     local was_new = p.instances[obj.class .. "/" .. obj.instance] == nil
-    local state, added, removed = p:apply_topology(obj.class, obj.instance, obj.entries)
+    -- Two-phase: open subs BEFORE the slow schema reconcile so messages
+    -- arriving during reconcile (~3-5s on a fresh DB) buffer in the sub
+    -- queue (depth 64) instead of being lost. The pump's next iteration
+    -- drains the buffered queue after reconcile_schema returns, by which
+    -- time push_stream_data / set_status_data have valid tables to write.
+    local state, added, removed = p:diff_topology(obj.class, obj.instance, obj.entries)
     if added  and next(added)   then open_added_subs(state, added)    end
+    p:reconcile_schema(state)
     if removed and next(removed) then close_removed_subs(state, removed) end
     if was_new then
         -- Fresh kb arrived — refresh the service announce so consumers see
