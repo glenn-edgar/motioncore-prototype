@@ -29,6 +29,7 @@
 #include "spectral.h"                 // mode 2: averaged power spectrum
 #include "goertzel.h"                 // mode 4: order-tracked Goertzel bank
 #include "bsp/board_api.h"            // board_millis()
+#include "bsp_api.h"                  // CMSIS intrinsics (__disable_irq, __NOP)
 
 // ---- RA4M1-specific command IDs (0x0110+: multi-mode control) --------------
 // 0x0100..0x010E are the shared chip commands defined in shell_commands.h.
@@ -53,6 +54,11 @@
 #define CMD_GOERTZEL_READ        ((uint16_t)0x011D)
 #define CMD_GOERTZEL_STOP        ((uint16_t)0x011E)
 #define CMD_GOERTZEL_INJECT_RPM  ((uint16_t)0x011F)
+
+// 0x0120: WDT bite-path empirical verification (diagnostic, intended for
+// removal once we observe a natural rstsr=IWDTRF on the bench). Disables
+// IRQs and spins; chain pump stops petting; IWDT bites at ~1.09 s.
+#define CMD_TEST_HANG            ((uint16_t)0x0120)
 
 // ---- DAC waveform-generator state ------------------------------------------
 // Lives in the shared mode arena — only the workbench mode owns it. Written by
@@ -875,6 +881,27 @@ static uint8_t cmd_goertzel_inject_rpm(shell_reader_t* args, shell_writer_t* res
 }
 
 // ============================================================================
+// WDT bite-path empirical verification (diagnostic — remove after first
+// observed natural rstsr=0x0100 / IWDTRF on the bench).
+// ============================================================================
+
+// CMD_TEST_HANG — args: empty ; result: never sent.
+// Blocks the chain pump until the IWDT bites (~1.09 s). The reply frame is
+// never emitted — host observes USB disconnect + re-enumeration, then sees
+// `[BOOT] rstsr=0x0100` on the next OP_DBG_LOG, confirming the bite path.
+// IRQs are masked so SysTick + USB ISRs stop too; IWDT is unaffected because
+// IWDTLOCO is an independent oscillator outside the NVIC mask.
+static uint8_t cmd_test_hang(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+
+    __disable_irq();
+    for (;;) { __NOP(); }
+    // not reached — WDT resets the chip
+}
+
+// ============================================================================
 // Mode control — the multi-mode foundation (see mode.h).
 // ============================================================================
 
@@ -933,6 +960,7 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_GOERTZEL_READ,       "goertzel_read",       cmd_goertzel_read       },
     { CMD_GOERTZEL_STOP,       "goertzel_stop",       cmd_goertzel_stop       },
     { CMD_GOERTZEL_INJECT_RPM, "goertzel_inject_rpm", cmd_goertzel_inject_rpm },
+    { CMD_TEST_HANG,           "test_hang",           cmd_test_hang           },
 };
 
 const shell_cmd_entry_t* chip_commands_table(void)

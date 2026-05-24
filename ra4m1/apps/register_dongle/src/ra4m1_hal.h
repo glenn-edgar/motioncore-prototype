@@ -88,6 +88,21 @@ bool     hal_counter_active(void);
 void hal_wdt_init(void);   // arm + first refresh; safe to call exactly once
 void hal_wdt_pet(void);    // refresh: write 0x00 then 0xFF to IWDTRR
 
+// ---- Force-clean peripheral state (post-WDT-bite recovery) ----------------
+// CORE RA4M1 PATTERN: a watchdog reset only resets the CPU core. Peripheral
+// registers (R_GPT*, R_ADC, R_DAC, R_ICU IELSR, R_MSTP module-stop bits, USB
+// peripheral) retain their pre-reset state. tusb_init / mode_init / etc.
+// assume cold-boot reset values and don't recover from arbitrary live state,
+// so post-WDT-bite the chip enumerates as USB but CDC TX is dead, GPT IRQs
+// may fire from stale config, etc.
+//
+// hal_force_clean_state explicitly tears down every peripheral we touch back
+// to reset values BEFORE any board_init / tusb_init / mode_init call. Must
+// be the FIRST thing in main(). Safe to call on cold boot too (idempotent —
+// just clears already-clear registers).
+
+void hal_force_clean_state(void);
+
 // ---- Reset-cause capture ---------------------------------------------------
 // Snapshot of (RSTSR0 in low byte) | (RSTSR1[7:0] in high byte), latched at
 // boot before the flags are cleared. Upper RSTSR1 bits (8..15) are

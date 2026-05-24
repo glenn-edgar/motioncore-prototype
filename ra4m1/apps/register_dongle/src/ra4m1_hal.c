@@ -516,3 +516,81 @@ uint16_t hal_get_reset_cause(void)
 {
     return g_reset_cause_snapshot;
 }
+
+// ============================================================================
+// Force-clean peripheral state — post-WDT-bite recovery.
+//
+// CORE RA4M1 PATTERN: a watchdog (or other warm) reset only resets the CPU
+// core. Peripheral register blocks (R_GPT*, R_ADC, R_DAC, R_ICU IELSR slots,
+// R_MSTP module-stop bits, USB FS peripheral) **retain their pre-reset
+// state**. board_init/tusb_init/mode_init all assume reset-default values
+// and skip work if registers look "already configured" — leaving the chip
+// running with stale ISR enables, mid-conversion ADCs, queued IRQs, and a
+// CDC TX FIFO whose head/tail point into garbage. The chip enumerates as
+// USB but CDC TX is dead until a power cycle.
+//
+// hal_force_clean_state explicitly tears down everything we touch back to
+// reset values, BEFORE any other init runs. The only registers it touches
+// are ones the app itself configures elsewhere — FSP/CMSIS internal state
+// is left alone so we don't fight the startup code.
+//
+// Module-stop bits: bsp/bsp_api.h R_MSTP layout (MSTPCRB[11]=USBFS,
+// MSTPCRC[31]=ICU, MSTPCRD[5]=GPT01, [6]=GPT27, [16]=ADC140, [20]=DAC12).
+// Cycling MSTPB11 forces the USB peripheral back to its reset state — this
+// is the load-bearing piece for getting CDC working again after a bite.
+// ============================================================================
+
+#define MSTPB_USBFS    (1u << 11)   // MSTPCRB bit 11
+
+void hal_force_clean_state(void)
+{
+    __disable_irq();
+
+    // 1. Stop every NVIC IRQ slot we configure + clear pending.
+    //    The mode periodic IRQ is the riskiest — if it stays enabled and
+    //    pending, the ISR fires the moment we __enable_irq() with stale
+    //    g_modes[].on_periodic pointer (RAM-relocated VTOR may still point
+    //    at the prior handler).
+    for (uint32_t i = 0; i < 32; i++) {
+        NVIC_DisableIRQ((IRQn_Type)i);
+        NVIC_ClearPendingIRQ((IRQn_Type)i);
+    }
+
+    // 2. Clear all ICU event-source routing slots. The ICU maps peripheral
+    //    events onto NVIC slot numbers; stale routing makes a fresh
+    //    NVIC_SetPriority touch the wrong source.
+    for (uint32_t i = 0; i < 32; i++) {
+        R_ICU->IELSR[i] = 0;
+    }
+
+    // 3. Stop the GPTs we use (0, 1, 3, 4). Each: unlock GTWP, stop counter,
+    //    clear interrupt enable, clear status flags, relock.
+    R_GPT0->GTWP = GPT_WP_UNLOCK;
+    R_GPT0->GTCR = 0; R_GPT0->GTINTAD = 0; R_GPT0->GTST = 0;
+    R_GPT0->GTWP = GPT_WP_LOCK;
+
+    R_GPT1->GTWP = GPT_WP_UNLOCK;
+    R_GPT1->GTCR = 0; R_GPT1->GTINTAD = 0; R_GPT1->GTST = 0;
+    R_GPT1->GTWP = GPT_WP_LOCK;
+
+    R_GPT3->GTWP = GPT_WP_UNLOCK;
+    R_GPT3->GTCR = 0; R_GPT3->GTINTAD = 0; R_GPT3->GTST = 0;
+    R_GPT3->GTWP = GPT_WP_LOCK;
+
+    R_GPT4->GTWP = GPT_WP_UNLOCK;
+    R_GPT4->GTCR = 0; R_GPT4->GTINTAD = 0; R_GPT4->GTST = 0;
+    R_GPT4->GTWP = GPT_WP_LOCK;
+
+    // 4. Stop the ADC mid-conversion. ADCSR.ADST cleared, channel selects
+    //    cleared. Any pending conversion result is discarded.
+    R_ADC0->ADCSR = 0;
+    R_ADC0->ADANSA[0] = 0;
+    R_ADC0->ADANSA[1] = 0;
+
+    // (USB MSTP cycle removed — empirically broke cold-boot USB enumeration.
+    // MSTP toggling alone doesn't fully reset the USB FS peripheral; FSP's
+    // r_usb_basic driver does additional USB-specific reset steps. Revisit
+    // separately if CDC TX still dies post-WDT-bite without the MSTP cycle.)
+
+    __enable_irq();
+}

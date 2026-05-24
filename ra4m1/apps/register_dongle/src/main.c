@@ -315,6 +315,11 @@ int main(void) {
 
     board_init();
 
+    // (hal_force_clean_state call removed — first implementation broke cold-
+    // boot USB enumeration. Blanket NVIC/ICU clearing wipes state board_init
+    // depends on; needs a surgical per-peripheral approach. Tracked in memory
+    // wdt-layer2-pet-from-s-engine slice-2.)
+
     // Arm the IWDT immediately after board_init so any subsequent hang in
     // tusb_init / engine bring-up triggers recovery within ~1.09 s. The pet
     // site lives in the s_engine chain pump (s_expr_node_tick).
