@@ -26,8 +26,8 @@ local M = { main = {}, one_shot = {}, boolean = {} }
 
 local DIGEST_TOPIC   = "fleet/notify/digest/daily"
 local SCHEMA_DIGEST  = "fleet.notify.digest/1"
-local PERIOD_S       = 86400        -- mirrors digest.lua DIGEST_PERIOD_S
 local WINDOW_S       = 86400        -- "uplinks in last 24h"
+local DEFAULT_RETRY_S = 900         -- matches digest.lua DEFAULT_RETRY_S
 
 local function log(id, fmt, ...)
     io.stderr:write(string.format(
@@ -99,18 +99,51 @@ local function eto_rows_from_cimis(cimis_state)
     return rows
 end
 
+-- Daily-gate state machine, same shape as CIMIS:
+--   * already-published today      -> idle, ok
+--   * pre-window (hour < hour_pacific) -> idle, ok
+--   * in-window, gap pending       -> format and publish, stamp date
+--
+-- bb._digest_state.last_published_date is in-memory only; a reboot after
+-- today's digest already went out will re-publish today on the first
+-- in-window tick. Documented in class_spec.M.digest.
 M.one_shot.DAILY_DIGEST = function(handle, _node)
     local bb     = handle.blackboard
     local id, ps = bb._identity, bb._pubsub
     local cs     = bb._class_spec
-    local now    = os.time()
-    local today  = os.date("!%Y-%m-%d", now)
+    local cfg    = (cs and cs.digest) or {}
+    local hour_p = cfg.hour_pacific or 9
+    local retry_s = cfg.retry_s or DEFAULT_RETRY_S
 
+    bb._digest_state = bb._digest_state or { last_published_date = nil }
+    local state = bb._digest_state
+
+    local p           = clock.pacific_now()
+    local pacific_today = clock.california_today()
+    local tz          = p.is_dst and "PDT" or "PST"
+
+    -- Gate 1: already published today -> idle.
+    if state.last_published_date == pacific_today then
+        app_heartbeat.stamp(handle, "digest", "ok",
+            "already published " .. pacific_today, retry_s)
+        return
+    end
+
+    -- Gate 2: pre-window (Pacific hour < hour_pacific) -> idle.
+    if p.hour < hour_p then
+        app_heartbeat.stamp(handle, "digest", "ok",
+            string.format("pre-window (now %02d:%02d %s, opens %02d:00)",
+                p.hour, p.minute, tz, hour_p), retry_s)
+        return
+    end
+
+    -- Gate 3: in-window, today not yet published -> publish.
+    local now           = os.time()
     local moisture_rows = moisture_rows_from_slots(
         cs and cs.device_locations or nil, bb._moisture_slots, now)
     local eto_rows      = eto_rows_from_cimis(bb._cimis)
     local body          = format_table.format_daily_report(
-        moisture_rows, eto_rows, { report_date = today })
+        moisture_rows, eto_rows, { report_date = pacific_today })
 
     local payload = cjson.encode({
         schema   = SCHEMA_DIGEST,
@@ -121,15 +154,17 @@ M.one_shot.DAILY_DIGEST = function(handle, _node)
 
     local ok, err = pcall(function() ps:publish(DIGEST_TOPIC, payload) end)
     if ok then
-        log(id, "published digest (%d moisture rows, %d eto rows, %d body chars)",
-            #moisture_rows, #eto_rows, #body)
+        state.last_published_date = pacific_today
+        log(id, "published digest for %s (%d moisture rows, %d eto rows, %d body chars)",
+            pacific_today, #moisture_rows, #eto_rows, #body)
         app_heartbeat.stamp(handle, "digest", "ok",
-            string.format("%d moisture, %d eto", #moisture_rows, #eto_rows),
-            PERIOD_S)
+            string.format("published %s — %d moisture, %d eto",
+                pacific_today, #moisture_rows, #eto_rows),
+            retry_s)
     else
         log(id, "digest publish FAILED: %s", tostring(err))
         app_heartbeat.stamp(handle, "digest", "degraded",
-            "digest publish failed", PERIOD_S)
+            "digest publish failed", retry_s)
     end
 end
 

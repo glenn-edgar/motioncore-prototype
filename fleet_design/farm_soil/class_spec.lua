@@ -65,6 +65,23 @@ M.cimis = {
     },
 }
 
+-- Daily-digest config — read by chains/digest_user_functions.lua.
+-- The digest is a calendar-anchored daily-gate state machine (same pattern
+-- as the CIMIS KBs): the column ticks every retry_s, but DAILY_DIGEST
+-- actually publishes at most once per Pacific civil day, on the first tick
+-- at-or-after hour_pacific. Default hour 9 chosen so CIMIS's morning fetch
+-- (window opens at 09:00 Pacific too) has a chance to publish today's ETo
+-- before the digest snapshots blackboard state.
+--
+-- Last-published date is in-memory only (bb._digest_state.last_published_date).
+-- A robot reboot AFTER today's digest already went out will re-publish today
+-- when the retry cycle next opens the gate. Acceptable for v1; if dedup
+-- matters later, persist to identity-dir state.
+M.digest = {
+    hour_pacific = 9,           -- inclusive (Pacific civil hour)
+    retry_s      = 900,         -- 15 min retry cadence (matches CIMIS)
+}
+
 -- device_id -> location (the sensing-point sub-namespace). Adding a sensor is
 -- one line here. The locations below are placeholders — set the real
 -- plot/zone names per deployment. An unmapped device publishes under
