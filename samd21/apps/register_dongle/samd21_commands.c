@@ -437,10 +437,14 @@ static void adc_init(void) {
 
     // 6. Sample rate / averaging — default single sample.
     ADC->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_1 | ADC_AVGCTRL_ADJRES(0);
-    ADC->SAMPCTRL.reg = 0x05;   // 5 ADC clock cycles sample time
+    ADC->SAMPCTRL.reg = 0x05;   // default 5 ADC clock cycles sample time
+                                // (overridden per-call by adc_apply_avg_hold)
 
-    // 7. CTRLB: prescaler /512 → 48 MHz / 512 ≈ 94 kHz ADC clock, 12-bit, single-conversion.
-    ADC->CTRLB.reg = ADC_CTRLB_PRESCALER_DIV512 | ADC_CTRLB_RESSEL_12BIT;
+    // 7. CTRLB: prescaler /256 → 48 MHz / 256 ≈ 187.5 kHz ADC clock, 12-bit
+    //    single-conversion. /256 doubles per-sample throughput vs the historical
+    //    /512 default while staying well below the 2.1 MHz max ADC clock.
+    //    RESSEL toggled to 16BIT per-call when oversample > 0.
+    ADC->CTRLB.reg = ADC_CTRLB_PRESCALER_DIV256 | ADC_CTRLB_RESSEL_12BIT;
     while (ADC->STATUS.bit.SYNCBUSY) { /* spin */ }
 
     // 8. INPUTCTRL: GAIN=DIV2, MUXNEG=GND (single-ended), MUXPOS set per-read.
@@ -484,18 +488,64 @@ static const ain_to_pad_t g_ain_to_pad[20] = {
     [16] = {0,  8}, [17] = {0,  9}, [18] = {0, 10}, [19] = {0, 11},
 };
 
+// ---- per-call ADC configuration (oversample + sample-hold) ---------------
+// oversample_exp:   0..7 → SAMPLENUM = 2^N samples averaged (1, 2, 4, 8, 16, 32, 64, 128)
+//                   Result is hardware-averaged to 12-bit equivalent (ADJRES tracks
+//                   SAMPLENUM so wire value is always 0..4095). Cap at 7 chosen so
+//                   the 16-bit RESULT register holds the full sum without truncation
+//                   even at SAMPLENUM=128.
+// sample_hold_cyc:  0..63 → SAMPCTRL.SAMPLEN. Time = (cyc + 1) ADC clocks.
+//                   At /256 prescaler (5.33 µs/cycle): 5 µs..341 µs hold time.
+//                   Pick 5..10 for low-impedance sources, 20+ for high-Z sensors
+//                   (≥ 100 kΩ thermistors / photoresistors).
+#define ADC_OVERSAMPLE_MAX  7u
+#define ADC_SAMPLE_HOLD_MAX 63u
+
+static uint8_t adc_apply_avg_hold(uint8_t oversample_exp, uint8_t sample_hold_cyc) {
+    if (oversample_exp > ADC_OVERSAMPLE_MAX) return SHELL_STATUS_BAD_ARGS;
+    if (sample_hold_cyc > ADC_SAMPLE_HOLD_MAX) return SHELL_STATUS_BAD_ARGS;
+
+    ADC->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM(oversample_exp)
+                     | ADC_AVGCTRL_ADJRES(oversample_exp);
+    ADC->SAMPCTRL.reg = sample_hold_cyc;
+
+    // RESSEL: 12-bit single sample vs 16-bit averaging mode.
+    uint32_t ctrlb = ADC->CTRLB.reg & ~ADC_CTRLB_RESSEL_Msk;
+    ctrlb |= (oversample_exp == 0u) ? ADC_CTRLB_RESSEL_12BIT
+                                    : ADC_CTRLB_RESSEL_16BIT;
+    ADC->CTRLB.reg = (uint16_t)ctrlb;
+    while (ADC->STATUS.bit.SYNCBUSY) { /* spin */ }
+    return SHELL_STATUS_OK;
+}
+
+// Minimum per-sample wall-clock at /256 prescaler. One conversion takes
+// (sample_hold_cyc + 7) ADC clocks (6 for 12-bit conv + 1 propagation +
+// sample-hold). Multiplied by oversample count for averaging. 5333 ns/cycle
+// (= 1e9 / 187500). Returns µs, rounded up.
+static uint32_t adc_min_sample_period_us(uint8_t oversample_exp, uint8_t sample_hold_cyc) {
+    uint32_t samples = 1u << oversample_exp;
+    uint32_t cyc     = (uint32_t)sample_hold_cyc + 7u;
+    uint32_t ns      = samples * cyc * 5333u;
+    return (ns + 999u) / 1000u;
+}
+
 // ---------- CMD_ADC_READ -------------------------------------------------
 // args:   channel:u8 (AIN index, 0..19)
-// result: value:u16 (12-bit, 0..4095; 4095 ≈ VDDANA ≈ 3.3 V)
-// status: OK / BAD_ARGS (channel > 19)
+//         oversample_exp:u8  (0..7 → 1..128 samples averaged)
+//         sample_hold_cyc:u8 (0..63 ADC clock cycles)
+// result: value:u16 (12-bit equivalent, 0..4095; 4095 ≈ VDDANA ≈ 3.3 V)
+// status: OK / BAD_ARGS
 
 static uint8_t cmd_adc_read(shell_reader_t* args, shell_writer_t* result) {
-    uint8_t channel = sr_u8(args);
+    uint8_t channel         = sr_u8(args);
+    uint8_t oversample_exp  = sr_u8(args);
+    uint8_t sample_hold_cyc = sr_u8(args);
     if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
     if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
     if (channel > 19u)           return SHELL_STATUS_BAD_ARGS;
 
-    adc_init();
+    uint8_t st = adc_apply_avg_hold(oversample_exp, sample_hold_cyc);
+    if (st != SHELL_STATUS_OK) return st;
 
     // Configure the pad for analog input. (Idempotent — safe to call repeatedly.)
     ain_to_pad_t pad = g_ain_to_pad[channel];
@@ -522,12 +572,18 @@ static uint8_t cmd_adc_read(shell_reader_t* args, shell_writer_t* result) {
 // args:   num_channels:u8 (1..8)
 //         channels:u8[num_channels] (each 0..19)
 //         num_samples:u16 (per channel)
-//         delta_time_us:u32 (≥ 1000; v1 uses board_millis() timing, ms granularity)
+//         delta_time_us:u32 (≥ 1000; board_millis() timing, ms granularity)
+//         oversample_exp:u8  (0..7 → 1..128 samples averaged per result)
+//         sample_hold_cyc:u8 (0..63 ADC clock cycles)
 // result: num_channels:u8 (echo)
 //         num_samples:u16 (echo)
 //         samples:u16[num_channels * num_samples]  (interleaved: sample0_ch0,
 //                                                   sample0_ch1, ..., sample1_ch0, ...)
 // status: OK / BAD_ARGS / RESULT_TOO_BIG
+//
+// delta_time_us must be ≥ adc_min_sample_period_us(oversample_exp, sample_hold_cyc)
+// times num_channels — refused with BAD_ARGS otherwise so the captured samples
+// don't silently smear.
 //
 // v1 cap: total samples (num_channels × num_samples) ≤ 60 to fit one OP_SHELL_REPLY
 // frame (≤ 125 B result_message after the 3-byte shell wrapper). Larger captures
@@ -549,8 +605,10 @@ static uint8_t cmd_adc_capture(shell_reader_t* args, shell_writer_t* result) {
         if (channels[i] > 19u)     return SHELL_STATUS_BAD_ARGS;
     }
 
-    uint16_t num_samples   = sr_u16(args);
-    uint32_t delta_time_us = sr_u32(args);
+    uint16_t num_samples    = sr_u16(args);
+    uint32_t delta_time_us  = sr_u32(args);
+    uint8_t  oversample_exp = sr_u8 (args);
+    uint8_t  sample_hold    = sr_u8 (args);
     if (args->overflow)            return SHELL_STATUS_BAD_ARGS;
     if (sr_remaining(args) != 0)   return SHELL_STATUS_BAD_ARGS;
     if (num_samples == 0u)         return SHELL_STATUS_BAD_ARGS;
@@ -559,7 +617,14 @@ static uint8_t cmd_adc_capture(shell_reader_t* args, shell_writer_t* result) {
     uint32_t total = (uint32_t)num_channels * (uint32_t)num_samples;
     if (total > ADC_CAPTURE_MAX_SAMPLES) return SHELL_STATUS_BAD_ARGS;
 
-    adc_init();
+    // Refuse delta_time_us that won't fit one full per-channel scan with the
+    // requested oversample/sample-hold — prevents silently-smeared samples.
+    uint32_t min_per_sample_us = adc_min_sample_period_us(oversample_exp, sample_hold);
+    uint32_t min_slot_us       = min_per_sample_us * (uint32_t)num_channels;
+    if (delta_time_us < min_slot_us) return SHELL_STATUS_BAD_ARGS;
+
+    uint8_t st = adc_apply_avg_hold(oversample_exp, sample_hold);
+    if (st != SHELL_STATUS_OK) return st;
 
     // Pre-configure each channel's pad for analog mux.
     for (uint8_t i = 0; i < num_channels; i++) {

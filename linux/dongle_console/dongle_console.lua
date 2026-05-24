@@ -772,18 +772,34 @@ local function parse_args(argv)
                 shell_req = req_id, shell_cmd = cmd_id,
             })
         elseif a == "--send-shell-adc-read" then
+            -- Args: CHANNEL  [OVERSAMPLE_EXP]  [SAMPLE_HOLD_CYC]
+            -- OVERSAMPLE_EXP 0..7 (1..128 samples averaged); default 0 (single sample).
+            -- SAMPLE_HOLD_CYC 0..63 ADC clock cycles; default 5 (~32 µs @ /256 prescaler).
             i = i + 1
-            local channel = resolve_ain(argv[i])
+            local channel_label = argv[i]
+            local channel = resolve_ain(channel_label)
+            local oversample_exp = 0
+            local sample_hold    = 5
+            if i + 1 <= #argv and argv[i+1]:match("^%d+$") then
+                i = i + 1; oversample_exp = tonumber(argv[i])
+                if oversample_exp < 0 or oversample_exp > 7 then die("adc-read OVERSAMPLE_EXP 0..7") end
+            end
+            if i + 1 <= #argv and argv[i+1]:match("^%d+$") then
+                i = i + 1; sample_hold = tonumber(argv[i])
+                if sample_hold < 0 or sample_hold > 63 then die("adc-read SAMPLE_HOLD_CYC 0..63") end
+            end
             local req_id = alloc_shell_req()
             local cmd_id = CMD_ADC_READ
             local payload = {
                 bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
                 bit.band(cmd_id, 0xFF), bit.band(bit.rshift(cmd_id, 8), 0xFF),
-                channel,
+                channel, oversample_exp, sample_hold,
             }
             table.insert(opts.send_seq, {
                 cmd        = 0x0109,
-                label      = string.format("OP_SHELL_EXEC(adc_read %s -> AIN[%d])", argv[i], channel),
+                label      = string.format("OP_SHELL_EXEC(adc_read %s/AIN[%d] avg=%d hold=%d)",
+                                            channel_label, channel,
+                                            bit.lshift(1, oversample_exp), sample_hold),
                 payload    = payload,
                 shell_req  = req_id, shell_cmd = cmd_id,
             })
@@ -807,12 +823,20 @@ local function parse_args(argv)
                 shell_req  = req_id, shell_cmd = cmd_id,
             })
         elseif a == "--send-shell-adc-capture" then
-            -- Args: NUM_SAMPLES DELTA_TIME_US CH [CH ...]
+            -- Args: NUM_SAMPLES DELTA_TIME_US OVERSAMPLE_EXP SAMPLE_HOLD_CYC CH [CH ...]
             -- CH is a pin label resolved via resolve_ain (D-label, AINN, or integer).
-            i = i + 1; local num_samples = tonumber(argv[i])
-            i = i + 1; local delta_us    = tonumber(argv[i])
+            -- DELTA_TIME_US must accommodate num_channels × (sample_hold+7) × 5.333µs
+            -- × 2^OVERSAMPLE_EXP — firmware refuses with BAD_ARGS otherwise.
+            i = i + 1; local num_samples    = tonumber(argv[i])
+            i = i + 1; local delta_us       = tonumber(argv[i])
+            i = i + 1; local oversample_exp = tonumber(argv[i])
+            i = i + 1; local sample_hold    = tonumber(argv[i])
             if not num_samples or num_samples < 1 then die("adc-capture NUM_SAMPLES >= 1") end
             if not delta_us or delta_us < 1000 then die("adc-capture DELTA_TIME_US >= 1000") end
+            if not oversample_exp or oversample_exp < 0 or oversample_exp > 7 then
+                die("adc-capture OVERSAMPLE_EXP 0..7 (samples = 2^N)") end
+            if not sample_hold or sample_hold < 0 or sample_hold > 63 then
+                die("adc-capture SAMPLE_HOLD_CYC 0..63") end
             local channels = {}
             -- Consume all remaining argv tokens that look like channels until we hit a -- flag.
             while i + 1 <= #argv and not argv[i+1]:match("^%-%-") do
@@ -838,10 +862,13 @@ local function parse_args(argv)
             table.insert(payload, bit.band(bit.rshift(delta_us,  8), 0xFF))
             table.insert(payload, bit.band(bit.rshift(delta_us, 16), 0xFF))
             table.insert(payload, bit.band(bit.rshift(delta_us, 24), 0xFF))
+            table.insert(payload, oversample_exp)
+            table.insert(payload, sample_hold)
             table.insert(opts.send_seq, {
                 cmd        = 0x0109,
-                label      = string.format("OP_SHELL_EXEC(adc_capture %d×%dch @%dus)",
-                                            num_samples, #channels, delta_us),
+                label      = string.format("OP_SHELL_EXEC(adc_capture %d×%dch @%dus avg=%d hold=%d)",
+                                            num_samples, #channels, delta_us,
+                                            bit.lshift(1, oversample_exp), sample_hold),
                 payload    = payload,
                 shell_req  = req_id, shell_cmd = cmd_id,
             })
@@ -1051,10 +1078,14 @@ Options:
   --send-shell-dac-write VALUE
                       Drive D0 (PA02) DAC to VALUE (0..1023 = 0V..3.3V).
                       First call lazily initialises the DAC.
-  --send-shell-adc-read CHANNEL
+  --send-shell-adc-read CHANNEL [OVERSAMPLE_EXP] [SAMPLE_HOLD_CYC]
                       Read one 12-bit sample. CHANNEL is 'D0'..'D10',
                       'AIN0'..'AIN19', or an integer 0..19. Result printed
                       with voltage estimate at full-scale 3.3V.
+                      OVERSAMPLE_EXP 0..7 → 2^N hardware-averaged samples
+                      (default 0). SAMPLE_HOLD_CYC 0..63 ADC clocks at
+                      /256 prescaler (5.33 µs/cyc), default 5 (~32 µs).
+                      Use higher SAMPLE_HOLD for high-impedance sensors.
   --send-shell-dac-waveform TYPE AMP OFFSET FREQ_HZ DURATION_MS
                       Start a waveform on D0. TYPE = sine|ramp_up|ramp_down|
                       square. AMP/OFFSET in DAC counts (0..1023). FREQ_HZ
@@ -1064,12 +1095,14 @@ Options:
   --send-shell-dac-stop
                       Halt the DAC waveform generator. DAC parks at the
                       last sample written by the ISR.
-  --send-shell-adc-capture NUM_SAMPLES DELTA_US CH [CH ...]
+  --send-shell-adc-capture NUM_SAMPLES DELTA_US OVERSAMPLE_EXP SAMPLE_HOLD_CYC CH [CH ...]
                       Buffered ADC capture. NUM_SAMPLES per channel. DELTA_US
-                      ≥ 1000 (1ms timing). Channels are D-labels or AIN0..19
-                      or 0..19. Total samples (channels × NUM_SAMPLES) capped
-                      at 60 in v1.  Example:
-                        --send-shell-adc-capture 10 5000 D1 D2 D3
+                      ≥ 1000 AND ≥ num_channels × (sample_hold+7) × 5.333µs
+                      × 2^OVERSAMPLE_EXP (firmware refuses with BAD_ARGS
+                      otherwise so samples don't smear). Channels are
+                      D-labels or AIN0..19. Total samples capped at 60.
+                      Example:  --send-shell-adc-capture 10 5000 0 5 D1 D2 D3
+                      Example:  --send-shell-adc-capture 10 5000 4 20 D1 D2  (16-sample avg, 20-cyc hold)
   --delay-ms N        Insert a sleep between queued frames. Pairs with the
                       shell commands to do "set X, wait, read Y" sequences.
   --sync              Walk the four-layer-sync ladder: REGISTER_ACK ->
