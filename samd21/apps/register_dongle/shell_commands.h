@@ -98,14 +98,12 @@ const shell_cmd_entry_t* shell_find_cmd(uint16_t command_id);
 #define CMD_DAC_STOP          ((uint16_t)0x0106)
 #define CMD_ADC_CAPTURE       ((uint16_t)0x0107)
 
-// 0x0108..0x010E: PWM (TCC0/WO0) + counter (EIC→EVSYS→TC4 COUNT32).
-#define CMD_PWM_CONFIG        ((uint16_t)0x0108)
-#define CMD_PWM_SET           ((uint16_t)0x0109)
-#define CMD_PWM_TEARDOWN      ((uint16_t)0x010A)
-#define CMD_COUNTER_SETUP     ((uint16_t)0x010B)
-#define CMD_COUNTER_RESET     ((uint16_t)0x010C)
-#define CMD_COUNTER_READ      ((uint16_t)0x010D)
-#define CMD_COUNTER_STOP      ((uint16_t)0x010E)
+// 0x0108..0x010E: VACATED. Previously PWM (TCC0/WO0) and pulse counter
+// (EIC→EVSYS→TC4 COUNT32). Removed when SAMD21 narrowed to safety/IO supervisor
+// role — motor PWM is RA4M1 territory; pulse counting not part of the SAMD21
+// supervisory contract. Opcode range left RESERVED-DO-NOT-REUSE so older
+// dongle_console.lua copies will get SHELL_STATUS_UNKNOWN_CMD rather than
+// silently re-dispatched to a different handler.
 
 // 0x0120 — deliberate hang to verify layer-2 WDT recovery. Disables IRQs
 // and spins forever. The WDT bites (~4 s) and the chip resets. Bench tool
