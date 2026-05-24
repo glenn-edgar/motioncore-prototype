@@ -107,6 +107,11 @@ const shell_cmd_entry_t* shell_find_cmd(uint16_t command_id);
 #define CMD_COUNTER_READ      ((uint16_t)0x010D)
 #define CMD_COUNTER_STOP      ((uint16_t)0x010E)
 
+// 0x0120 — deliberate hang to verify layer-2 WDT recovery. Disables IRQs
+// and spins forever. The WDT bites (~4 s) and the chip resets. Bench tool
+// only; no reply frame is ever produced (the command never returns).
+#define CMD_TEST_HANG         ((uint16_t)0x0120)
+
 // GPIO mode codes for CMD_GPIO_CONFIG.
 #define GPIO_MODE_INPUT          0u
 #define GPIO_MODE_OUTPUT         1u

@@ -45,6 +45,7 @@
 #include "opcodes.h"
 #include "flash_storage.h"
 #include "shell_commands.h"  // firmware_sysinfo_t
+#include "samd21_hal.h"      // hal_wdt_init/pet, hal_capture_reset_cause
 
 // Implemented in user_functions.c.
 extern void     register_dongle_load_commissioning(void);
@@ -63,6 +64,11 @@ void firmware_request_reboot(uint32_t delay_ms) {
 }
 
 extern const s_engine_rom_t register_dongle_v2_module_rom;
+
+// Layer-2 WDT pet — strong override of the weak no-op in s_engine_node.c.
+// Called from s_expr_node_tick once per chain pump cycle (every 250 ms in
+// this build). See wdt-layer2-pet-from-s-engine memory.
+void s_engine_chip_wdt_pet(void) { hal_wdt_pet(); }
 
 // ----------------------------------------------------------------------------
 // Bump allocator.
@@ -252,7 +258,17 @@ static void rx_drain_to_event_queue(s_expr_tree_instance_t* tree) {
 // ----------------------------------------------------------------------------
 
 int main(void) {
+    // Snapshot PM->RCAUSE BEFORE anything else can clobber it. Distinguishes
+    // WDT bite (the layer-2 chain-stuck signal) from power-on / external
+    // reset / NVIC_SystemReset.
+    hal_capture_reset_cause();
+
     board_init();
+
+    // Arm the WDT immediately after board_init so any subsequent hang in
+    // tusb_init / engine bring-up triggers recovery within ~4 s. The pet
+    // site lives in the s_engine chain pump (s_expr_node_tick).
+    hal_wdt_init();
 
     tusb_rhport_init_t const rhport_init = {
         .role  = TUSB_ROLE_DEVICE,
@@ -282,6 +298,20 @@ int main(void) {
     if (init_err == S_EXPR_ERR_OK) {
         s_expr_module_set_debug(&module, debug_packet_fn);
         tree = s_expr_tree_create_by_hash(&module, REGISTER_DONGLE_V2_HASH, 0);
+
+        // Emit captured reset cause as first dbg_log frame. Sits in TX ring
+        // until USB CDC enumerates; host sees on first attach. Grep-able
+        // literal "[BOOT] rstsr=0xNN" — only RCAUSE low byte is meaningful.
+        char buf[24];
+        uint8_t rc = hal_get_reset_cause();
+        static const char hex[] = "0123456789abcdef";
+        buf[0]='['; buf[1]='B'; buf[2]='O'; buf[3]='O'; buf[4]='T'; buf[5]=']';
+        buf[6]=' '; buf[7]='r'; buf[8]='s'; buf[9]='t'; buf[10]='s'; buf[11]='r';
+        buf[12]='='; buf[13]='0'; buf[14]='x';
+        buf[15] = hex[(rc >> 4) & 0xF];
+        buf[16] = hex[(rc >> 0) & 0xF];
+        buf[17] = '\0';
+        debug_packet_fn(NULL, buf);
     }
 
     // Engine tick cadence: 250 ms (chain expects 4 ticks/sec).

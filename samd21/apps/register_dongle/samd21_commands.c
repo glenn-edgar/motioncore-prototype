@@ -814,6 +814,16 @@ static uint8_t cmd_counter_stop(shell_reader_t* args, shell_writer_t* result) {
     return SHELL_STATUS_OK;
 }
 
+// ---------- CMD_TEST_HANG -------------------------------------------------
+// Layer-2 WDT bench probe. Disables IRQs and spins; the layer-2 WDT bites
+// after ~4 s and the chip resets. Never returns a reply frame.
+static uint8_t cmd_test_hang(shell_reader_t* args, shell_writer_t* result) {
+    (void)args; (void)result;
+    __disable_irq();
+    for (;;) { __NOP(); }
+    return SHELL_STATUS_OK;  // unreachable
+}
+
 // ---------- chip-specific dispatch table ---------------------------------
 
 static const shell_cmd_entry_t g_chip_commands[] = {
@@ -832,6 +842,7 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_COUNTER_RESET,       "counter_reset",      cmd_counter_reset      },
     { CMD_COUNTER_READ,        "counter_read",       cmd_counter_read       },
     { CMD_COUNTER_STOP,        "counter_stop",       cmd_counter_stop       },
+    { CMD_TEST_HANG,           "test_hang",          cmd_test_hang          },
 };
 
 const shell_cmd_entry_t* chip_commands_table(void) {

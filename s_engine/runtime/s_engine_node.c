@@ -9,6 +9,13 @@
 #include "s_engine_stack.h"
 #include "s_engine_exception.h"
 
+// Layer-2 hardware-watchdog hook (per wdt-layer2-pet-from-s-engine memory).
+// Chip ports provide a strong override of s_engine_chip_wdt_pet() that calls
+// their HAL pet. Linux and any chip port that hasn't added WDT yet inherits
+// this weak no-op. Pet site is the top of s_expr_node_tick — "if chains
+// stop progressing, the dongle is functionally dead, so the WDT bites."
+__attribute__((weak)) void s_engine_chip_wdt_pet(void) { }
+
 // ============================================================================
 // INTERNAL: Skip one logical parameter
 // ============================================================================
@@ -114,6 +121,10 @@ s_expr_result_t s_expr_node_tick(
     uint16_t event_id,
     void* event_data
 ) {
+    // Layer-2 WDT pet — runs once per chain pump cycle. Weak no-op when no
+    // chip has overridden it (Linux, unported chips).
+    s_engine_chip_wdt_pet();
+
     if (!inst) {
         EXCEPTION("s_expr_node_tick: NULL instance");
         return SE_FUNCTION_TERMINATE;
@@ -122,7 +133,7 @@ s_expr_result_t s_expr_node_tick(
         EXCEPTION("s_expr_node_tick: NULL tree");
         return SE_FUNCTION_TERMINATE;
     }
-    
+
     // Reset stack at start of each tick
     if (inst->stack) {
         s_expr_tree_reset_stack(inst);

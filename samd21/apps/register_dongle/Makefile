@@ -94,6 +94,7 @@ APP_SRCS := \
   $(HERE)/flash_storage.c \
   $(HERE)/shell_commands.c \
   $(HERE)/samd21_commands.c \
+  $(HERE)/samd21_hal.c \
   $(HERE)/register_dongle_v2_module_rom.c
 
 LIBCOMM_SRCS := \

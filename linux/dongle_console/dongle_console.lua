@@ -130,6 +130,9 @@ local CMD_COUNTER_SETUP      = 0x010B
 local CMD_COUNTER_RESET      = 0x010C
 local CMD_COUNTER_READ       = 0x010D
 local CMD_COUNTER_STOP       = 0x010E
+-- Layer-2 WDT bench probe — disables IRQs and spins; chip resets ~4 s
+-- later. No reply frame; absence is the success signal. (SAMD21 build.)
+local CMD_TEST_HANG          = 0x0120
 -- RA4M1-specific (multi-mode control); see ra4m1/apps/register_dongle/ra4m1_commands.c.
 local CMD_SET_MODE           = 0x0110
 local CMD_GET_MODE           = 0x0111
@@ -434,6 +437,25 @@ local function parse_args(argv)
             table.insert(opts.send_seq, {
                 cmd        = 0x0109,
                 label      = "OP_SHELL_EXEC(sysinfo)",
+                payload    = payload,
+                shell_req  = req_id,
+                shell_cmd  = cmd_id,
+            })
+        elseif a == "--send-shell-test-hang" then
+            -- CMD_TEST_HANG — deliberate hang to verify layer-2 WDT recovery.
+            -- Empty args. No reply will arrive; success = chip re-enumerates
+            -- within ~5 s and the next sync ladder works. Pair with --listen
+            -- and watch for the [BOOT] rstsr=0xNN line on the next attach
+            -- (RCAUSE bit 5 = WDT bite).
+            local req_id = alloc_shell_req()
+            local cmd_id = CMD_TEST_HANG
+            local payload = {
+                bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                bit.band(cmd_id, 0xFF), bit.band(bit.rshift(cmd_id, 8), 0xFF),
+            }
+            table.insert(opts.send_seq, {
+                cmd        = 0x0109,
+                label      = "OP_SHELL_EXEC(test_hang)",
                 payload    = payload,
                 shell_req  = req_id,
                 shell_cmd  = cmd_id,
@@ -1106,6 +1128,10 @@ Options:
                       string S as args. Expect OP_SHELL_REPLY echoing it back.
   --send-shell-sysinfo Send one m2s OP_SHELL_EXEC frame invoking CMD_SYSINFO.
                       Expect OP_SHELL_REPLY with chip memory + uptime + clock.
+  --send-shell-test-hang  Deliberate hang to verify layer-2 WDT recovery
+                      (SAMD21). Disables IRQs and spins; chip resets in ~4 s.
+                      Success = chip re-enumerates and the next sync ladder
+                      sees [BOOT] rstsr=0x20 (RCAUSE bit 5 = WDT).
   --send-shell-get-mode    Query the device operating mode (RA4M1; 0=workbench).
   --send-shell-set-mode N  Set the device operating mode (RA4M1).
   --send-shell-analog-start   Begin background analog collection (RA4M1) — a
