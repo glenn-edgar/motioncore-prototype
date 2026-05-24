@@ -252,13 +252,58 @@ function svgChart(points, label) {
         ${axY}<path class="line" d="${path}"/>${dots}${axX}</svg>`;
 }
 
+// Hide radio/link metadata + counters from the metric switcher — they're
+// numeric but operationally noise. A path is hidden if any segment matches
+// the noise list. Easy to extend per new schema.
+const METRIC_NOISE_SEGMENTS = new Set([
+    "link", "f_cnt",
+    "rssi", "channel_rssi", "snr",
+    "bandwidth", "spreading_factor", "coding_rate",
+    "airtime_s", "gateway_count", "frequency", "battery",
+]);
+function isUsefulMetric(path) {
+    for (const seg of path.split(".")) {
+        if (METRIC_NOISE_SEGMENTS.has(seg)) return false;
+    }
+    return true;
+}
+
 // Pick the default metric to chart from a set of metric paths.
 function pickDefaultMetric(metricPaths) {
     const priority = ["value", "entry.measurements.moisture",
                       "entry.measurements.soil_temp",
-                      "entry.measurements.ec"];
+                      "entry.measurements.ec",
+                      "total_gallons", "total_hcf"];
     for (const p of priority) if (metricPaths.includes(p)) return p;
     return metricPaths[0];
+}
+
+// Render charts for an `hourly` array embedded in a status value. Generic:
+// any value with an array of objects under `hourly` whose entries have an
+// hour-like key (h/hour/t/time) and one-or-more numeric fields gets one
+// SVG line chart per numeric field. Currently used by rancho_water's
+// usage/latest; any future robot publishing per-hour data benefits for free.
+function hourlyCharts(value) {
+    const hourly = value && value.hourly;
+    if (!Array.isArray(hourly) || hourly.length < 2) return "";
+    const sample = hourly[0];
+    if (typeof sample !== "object" || sample === null) return "";
+    const hourKey = ["h", "hour", "t", "time"].find(k => k in sample);
+    if (!hourKey) return "";
+    const metrics = Object.keys(sample).filter(k =>
+        k !== hourKey && typeof sample[k] === "number"
+        && Number.isFinite(sample[k]));
+    if (metrics.length === 0) return "";
+    return metrics.map(m => {
+        const points = hourly.map(row => ({
+            ts: String(row[hourKey]),
+            v: row[m],
+        }));
+        return `<div class="chart">
+            <div class="chart-controls"><span class="label">${escapeHtml(m)} per hour</span></div>
+            ${svgChart(points, m)}
+        </div>`;
+    }).join("");
 }
 
 async function loadRobots() {
@@ -266,11 +311,13 @@ async function loadRobots() {
     try {
         const j = await api("/api/robots");
         state.robots = j.data;
+        // Always re-fetch leaves — the topology can change as persistence
+        // catches up (initial bootstrap is racy), and we don't want stale
+        // partial data to lock in. Cost: one /leaves RPC per robot per
+        // refresh (~10s cadence) — cheap compared to /latest + /stream.
         for (const kb of state.robots) {
-            if (!state.leavesByKb[kb.kb_name]) {
-                const lj = await api(`/api/robots/${kb.class}/${kb.instance}/leaves`);
-                state.leavesByKb[kb.kb_name] = lj.data;
-            }
+            const lj = await api(`/api/robots/${kb.class}/${kb.instance}/leaves`);
+            state.leavesByKb[kb.kb_name] = lj.data;
         }
         status.textContent = `refreshed ${new Date().toLocaleTimeString()}`;
         render();
@@ -294,6 +341,7 @@ async function loadDetail(kb, leaf) {
         if (leaf.kind === "status") {
             const j = await api(`/api/robots/${kb.class}/${kb.instance}/latest?${params}`);
             html = `<h4>${escapeHtml(leaf.path)} (status)</h4>` +
+                   hourlyCharts(j.data) +
                    `<div class="value-block">${escapeHtml(JSON.stringify(j.data, null, 2))}</div>`;
         } else {
             params.set("limit", "30");
@@ -301,10 +349,13 @@ async function loadDetail(kb, leaf) {
             const j = await api(`/api/robots/${kb.class}/${kb.instance}/stream?${params}`);
             const rows = j.data || [];
 
-            // Chart: extract every numeric leaf path across rows, render the
-            // first one as a line chart with buttons to switch metric.
+            // Chart: extract every numeric leaf path across rows, hide
+            // radio/counter noise, render the first useful one as a line
+            // chart with buttons to switch metric.
             const series = metricsFromRows(rows);
-            const metricPaths = Object.keys(series).sort();
+            const metricPaths = Object.keys(series)
+                .filter(isUsefulMetric)
+                .sort();
             const prevPick = state.chartMetric && state.chartMetric[kb.kb_name + "|" + leaf.path];
             const pick = (prevPick && metricPaths.includes(prevPick))
                        ? prevPick : pickDefaultMetric(metricPaths);
@@ -318,27 +369,37 @@ async function loadDetail(kb, leaf) {
                     ${svgChart(series[pick] || [], pick)}
                    </div>`;
 
-            // Table: one received_at column (payload's natural ts when
-            // present, DB ingest time as muted fallback) + value first-level
-            // keys pivoted as columns. Sort newest-first by natural-ts when
-            // available, else by id desc.
+            // Table: one received_at column + the useful numeric columns
+            // (entry.measurements.*, top-level numerics from the chart's
+            // metric list).  Sort newest-first by natural-ts when available.
             const tableRows = [...rows].map(r => ({
                 ...r,
                 received_at: naturalTs(r.value),
                 natural:     naturalTs(r.value) != null,
+                flat:        flattenNumerics(r.value, ""),
             })).sort((a, b) => {
                 if (a.natural && b.natural)
                     return a.received_at < b.received_at ? 1 : a.received_at > b.received_at ? -1 : 0;
                 return b.id - a.id;
             });
-            const headers = tableRows[0] ? Object.keys(tableRows[0].value || {}) : [];
+            // Columns = the union of useful flat paths across rows, so a
+            // row missing a metric still renders an empty cell. Header
+            // labels strip the common `entry.measurements.` prefix so the
+            // moisture/soil_temp/ec columns aren't 25 chars wide each.
+            const colSet = new Set();
+            for (const r of tableRows) {
+                for (const k of Object.keys(r.flat)) {
+                    if (isUsefulMetric(k)) colSet.add(k);
+                }
+            }
+            const cols = [...colSet].sort();
+            const shortHeader = p => p.replace(/^entry\.measurements\./, "");
             const head = `<tr><th>id</th><th>received_at</th>` +
-                headers.map(h => `<th>${escapeHtml(h)}</th>`).join("") + `</tr>`;
+                cols.map(c => `<th>${escapeHtml(shortHeader(c))}</th>`).join("") + `</tr>`;
             const body = tableRows.map(r => {
-                const cells = headers.map(h => {
-                    let v = r.value && r.value[h];
-                    if (typeof v === "object") v = JSON.stringify(v);
-                    return `<td>${escapeHtml(v == null ? "" : v)}</td>`;
+                const cells = cols.map(c => {
+                    const v = r.flat[c];
+                    return `<td class="num">${v == null ? "" : escapeHtml(String(v))}</td>`;
                 }).join("");
                 const tsCell = r.natural
                     ? escapeHtml(r.received_at)
