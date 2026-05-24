@@ -123,12 +123,15 @@ local clock       = require("clock")
 local ir_path = script_dir .. "chains/connection.json"
 local ir = ct_loader.load(ir_path)
 
--- KB0's user fns + the moisture skill-KB's user fns + both CIMIS KBs' fns.
+-- KB0's user fns + the moisture skill-KB's user fns + both CIMIS KBs' fns
+-- + the daily-digest KB's user fns.
 local conn_fns     = require("connection_user_functions")
 local moisture_fns = require("moisture_user_functions")
 local cimis_fns    = require("cimis_user_functions")
+local digest_fns   = require("digest_user_functions")
 fn_registry.register_functions(ir, builtins,
-    conn_fns.registry, moisture_fns.registry, cimis_fns.registry)
+    conn_fns.registry, moisture_fns.registry,
+    cimis_fns.registry, digest_fns.registry)
 
 local ok, missing = fn_registry.validate(ir)
 if not ok then

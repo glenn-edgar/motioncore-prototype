@@ -16,7 +16,9 @@ M.capabilities = {
 -- Application KBs spawned after the robot reaches operating.
 -- cimis_station/cimis_spatial are two instances of the same skill module
 -- (chains/cimis.lua) — one per CIMIS provider, each with its own retry loop.
-M.app_kbs = { "moisture", "cimis_station", "cimis_spatial" }
+-- digest publishes a 24h push-notification body on fleet/notify/digest/daily
+-- (notification_service POSTs to Discord).
+M.app_kbs = { "moisture", "cimis_station", "cimis_spatial", "digest" }
 
 -- TTN v3 storage API config for the moisture skill. The bearer token is NOT
 -- here — it is a secret, read from the TTN_BEARER_TOKEN env var (run.sh
