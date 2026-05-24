@@ -228,6 +228,41 @@ for the four zenoh `.so` files (libzenoh_pubsub / _rpc / _token + libzenohpico).
 These will be replaced by `vendor/lib-aarch64/` once we cross-compile for Pi.
 Override `LD_LIBRARY_PATH` in the caller env to bypass the bench default.
 
+## Resume here (2026-05-24 — Rancho water robot landed)
+
+**Track-2 of the three-track plan landed same day as Track-1.** New
+robot `rancho_water/` runs in parallel to `farm_soil`, scrapes Glenn's
+customer portal once per Pacific civil day at-or-after 09:00, formats
+yesterday's hourly usage + total, and pushes via the existing
+`notification_service` digest channel. End-to-end bench-verified —
+`2026-05-23` real data: 25 hourly rows, 678 gallons total, delivered
+to Discord. See `rancho-water-robot-2026-05-24` memory for the build
+and `discord-push-done-2026-05-24` for the underlying push framework.
+
+The big realization that simplified the design: **the Rancho portal is
+JSON REST under a thin ASP.NET shell**, not HTML to scrape. The
+`/api/usage/get/` endpoint returns the full day envelope including
+`LeakDetected` / `ExceededFlowThreshold` / `ExceededRuntimeThreshold`
+flags. Per user direction we **dropped the anomaly-rule design** —
+v1 just feeds the data; v2 can watch the flags as an in-process listener.
+
+The framework's first **second robot** — validates the "framework for
+all robot controllers, not just farm_soil" claim. The shared KB0
+(`robot_common/chains/connection.lua`) carried over zero-change; only
+the app-KB layer changed.
+
+One curl pitfall worth carrying forward: **never `request = "POST"`
+alongside `data-urlencode` in a curl -K config**. The explicit method
+forces POST on the 302 follow, but curl doesn't auto-resend the body
+→ `HTTP 411 Length Required`. The `data-urlencode` lines alone make
+the first request POST and let curl downgrade the redirect to GET,
+which is what you want. Caught + commented in `rancho_water/lib/rancho_portal.lua`.
+
+Next is Track-3 (HTTP / dashboard beef-up) per the original plan
+(`next-tracks-2026-05-24`), or a v2 of either Track-1 / Track-2 if
+real-use surfaces something. The framework now ships pushes from
+two unrelated data sources to the same Discord channel.
+
 ## Resume here (2026-05-24 — Discord push framework)
 
 **Track-1 of the three-track plan landed.** Layer-60 `notification_service`
@@ -503,6 +538,13 @@ unset LUA_CPATH LUA_PATH
 server/notification_service/run.sh &
 # wire smoke (publishes one synthetic digest → real Discord POST):
 server/notification_service/tests/post_test_digest.sh
+# rancho_water robot (needs RANCHO_WATER_ACCOUNT + _PASSWORD; falls back
+# to farm_soil/secrets/ttn.env). Daily-gate fires at 09:00 Pacific.
+unset LUA_CPATH LUA_PATH
+(cd rancho_water && ROBOT_CLASS=rancho_water ROBOT_INSTANCE=main \
+   IDENTITY_DIR=$PWD/identity ./run.sh) &
+# rebuild rancho IR after a chains/ edit:
+luajit rancho_water/chains/build.lua rancho_water/chains/connection.json
 # inspect what persistence is storing (direct SQLite, read-only):
 sqlite3 var/persistence.db "SELECT path, label FROM knowledge_base"
 sqlite3 var/persistence.db \
@@ -520,7 +562,35 @@ The vendored bindings are still **client-mode + zenohd-router only** — bench
 and container tests need the `zenohd` router above. Pi Zero 2 deploy (no
 containers) remains a separate, unsolved problem.
 
-## Plan for next session (2026-05-25 — Track 2: Rancho water)
+## Plan for next session (2026-05-25 — Track 3, or first real-use feedback)
+
+Tracks 1 and 2 both landed 2026-05-24. The natural next thing is
+**Track-3 (HTTP / dashboard beef-up)**, but it should be pre-empted by
+either of these if they surface:
+
+1. **First real-use feedback from the Discord pushes.** Two messages
+   land in Glenn's Discord daily (farm_soil digest + rancho_water
+   report). After 24–48 h of real use, expect operator feedback on
+   format / signal-to-noise / what's missing. That feedback drives
+   higher-priority work than Track-3 polish.
+
+2. **v2 of Track-1 or Track-2** if real-use indicates need:
+   - Track-1 v2 candidates: severity routing (multi-channel),
+     fingerprint dedup, retry-on-429, persist `last_published_date`
+     across reboots.
+   - Track-2 v2 candidates: alert when `LeakDetected` /
+     `ExceededFlowThreshold` is true (in-process listener that
+     publishes to a CRITICAL channel — needs Track-1 v2 severity
+     routing first), historical chart on the dashboard fed by the
+     persistence `usage/sample` stream.
+
+If Track-3 wins, the inventory from
+`application-gateway-dashboard-2026-05-23` and
+`next-tracks-2026-05-24` stand: time-proportional X-axis, "show more"
+pagination, 0.0.0.0 bind, curated default columns, optional
+live-update SSE channel.
+
+## Plan archive (2026-05-25 — Track 2: Rancho water — DONE 2026-05-24)
 
 Track-1 (Discord push) is done — see Resume here (2026-05-24). The
 next session opens Track-2: the **Rancho water daily-usage skill**.
