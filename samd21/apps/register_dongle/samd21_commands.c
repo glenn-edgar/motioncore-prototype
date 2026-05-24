@@ -490,10 +490,20 @@ static const ain_to_pad_t g_ain_to_pad[20] = {
 
 // ---- per-call ADC configuration (oversample + sample-hold) ---------------
 // oversample_exp:   0..7 → SAMPLENUM = 2^N samples averaged (1, 2, 4, 8, 16, 32, 64, 128)
-//                   Result is hardware-averaged to 12-bit equivalent (ADJRES tracks
-//                   SAMPLENUM so wire value is always 0..4095). Cap at 7 chosen so
-//                   the 16-bit RESULT register holds the full sum without truncation
-//                   even at SAMPLENUM=128.
+//                   Result is hardware-averaged to 12-bit equivalent (0..4095).
+//
+//                   ADJRES is set to min(oversample_exp, 4), NOT to oversample_exp
+//                   directly. Empirical SAMD21 behaviour (bench-verified 2026-05-24):
+//                   for SAMPLENUM > 4, the hardware pre-right-shifts each sample by
+//                   (SAMPLENUM-4) bits to keep the accumulator in its fixed width,
+//                   THEN applies ADJRES. So writing ADJRES=SAMPLENUM gives a result
+//                   already further shifted by (SAMPLENUM-4), under-reporting the
+//                   average by 2^(SAMPLENUM-4). Capping ADJRES at 4 unwinds that.
+//                   Trade-off: SAMPLENUM > 4 loses (SAMPLENUM-4) low bits of each
+//                   raw sample to the pre-shift — noise-reduction benefit caps at
+//                   ~SAMPLENUM=16 in practice. Going to 32/64/128 still works but
+//                   the marginal stddev improvement is small.
+//
 // sample_hold_cyc:  0..63 → SAMPCTRL.SAMPLEN. Time = (cyc + 1) ADC clocks.
 //                   At /256 prescaler (5.33 µs/cycle): 5 µs..341 µs hold time.
 //                   Pick 5..10 for low-impedance sources, 20+ for high-Z sensors
@@ -505,8 +515,9 @@ static uint8_t adc_apply_avg_hold(uint8_t oversample_exp, uint8_t sample_hold_cy
     if (oversample_exp > ADC_OVERSAMPLE_MAX) return SHELL_STATUS_BAD_ARGS;
     if (sample_hold_cyc > ADC_SAMPLE_HOLD_MAX) return SHELL_STATUS_BAD_ARGS;
 
+    uint8_t adjres = (oversample_exp <= 4u) ? oversample_exp : 4u;
     ADC->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM(oversample_exp)
-                     | ADC_AVGCTRL_ADJRES(oversample_exp);
+                     | ADC_AVGCTRL_ADJRES(adjres);
     ADC->SAMPCTRL.reg = sample_hold_cyc;
 
     // RESSEL: 12-bit single sample vs 16-bit averaging mode.
