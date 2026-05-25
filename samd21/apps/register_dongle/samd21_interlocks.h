@@ -35,7 +35,101 @@
 
 // Version field in interlock_persist_t — bump when struct layout changes so
 // future-firmware boots detect old-firmware noinit data and re-initialise.
-#define INTERLOCK_PERSIST_VERSION    1u
+// v1 (slice 1): magic + per-slot state/id/boot_counter + crash record only.
+// v2 (slice 2): adds il_inst_t + dsl_text per slot.
+#define INTERLOCK_PERSIST_VERSION    2u
+
+// ---- Slice 2: DSL-driven interlock instance ------------------------------
+
+#define IL_NAME_MAX        16u
+#define IL_DSL_MAX        128u
+#define IL_MAX_INPUTS       4u
+#define IL_MAX_WATCHES      4u
+#define IL_MAX_OUTPUTS      2u
+
+// id=2 means "this slot's behaviour is described by il_inst_t / dsl_text"
+// (as opposed to id=1 = hardcoded noop). Wire-format compatibility with v1.
+#define INTERLOCK_ID_DSL    2u
+
+typedef enum {
+    IL_PIN_MODE_IN     = 0,
+    IL_PIN_MODE_IN_PU  = 1,
+    IL_PIN_MODE_IN_PD  = 2,
+    IL_PIN_MODE_OUT    = 3,
+} il_pin_mode_t;
+
+typedef enum {
+    IL_OP_EQ = 0,
+    IL_OP_NE = 1,
+    IL_OP_LT = 2,
+    IL_OP_GT = 3,
+    IL_OP_LE = 4,
+    IL_OP_GE = 5,
+} il_compare_op_t;
+
+typedef enum {
+    IL_TF_UNEVALUATED = 0,
+    IL_TF_TRUE        = 1,   // all watch clauses satisfied → vote OK
+    IL_TF_FALSE       = 2,   // any clause failed → vote ERR
+} il_tf_state_t;
+
+typedef struct {
+    uint8_t  phys_id;             // resolved board_pin_phys_id()
+    uint8_t  mode;                // il_pin_mode_t
+} il_input_t;
+
+typedef struct {
+    uint8_t  input_idx;           // index into il_inst_t.inputs[]
+    uint8_t  op;                  // il_compare_op_t
+    uint16_t threshold;           // raw value (0/1 for GPIO; 0..4095 for ADC)
+} il_watch_t;
+
+typedef struct {
+    uint8_t  phys_id;
+    uint8_t  ok_value;            // 0 or 1
+    uint8_t  err_value;           // 0 or 1
+} il_output_t;
+
+typedef struct {
+    char        name[IL_NAME_MAX];
+    uint8_t     input_count;
+    uint8_t     watch_count;
+    uint8_t     output_count;
+    uint8_t     tf_state;         // il_tf_state_t — current evaluation result
+    il_input_t  inputs[IL_MAX_INPUTS];
+    il_watch_t  watches[IL_MAX_WATCHES];
+    il_output_t outputs[IL_MAX_OUTPUTS];
+} il_inst_t;
+
+// ---- Parser status codes -------------------------------------------------
+
+typedef enum {
+    IL_PARSE_OK                    = 0,
+    IL_PARSE_UNEXPECTED_CHAR       = 1,
+    IL_PARSE_UNEXPECTED_END        = 2,
+    IL_PARSE_BAD_NUMBER            = 3,
+    IL_PARSE_UNKNOWN_KEYWORD       = 4,
+    IL_PARSE_UNKNOWN_PIN           = 5,
+    IL_PARSE_UNKNOWN_MODE          = 6,
+    IL_PARSE_TOO_MANY_INPUTS       = 7,
+    IL_PARSE_TOO_MANY_WATCHES      = 8,
+    IL_PARSE_TOO_MANY_OUTPUTS      = 9,
+    IL_PARSE_NAME_TOO_LONG         = 10,
+    IL_PARSE_DUPLICATE_PIN         = 11,
+    IL_PARSE_WATCH_INPUT_UNDECL    = 12,  // watch references a pin not in cfg
+    IL_PARSE_OUTPUT_UNDECL         = 13,  // out_ok/err references undeclared pin
+    IL_PARSE_OUTPUT_VALUE_MISMATCH = 14,  // out_ok and out_err disagree on pin set
+    IL_PARSE_MISSING_OUT_OK        = 15,
+    IL_PARSE_MISSING_OUT_ERR       = 16,
+    IL_PARSE_EMPTY                 = 17,
+} il_parse_status_t;
+
+// Parse DSL text into out. text is not required to be NUL-terminated.
+// On success returns IL_PARSE_OK and populates *out. On failure, returns
+// the error category and (if err_offset non-NULL) the byte offset within
+// text where the error was detected. *out is left in undefined state.
+il_parse_status_t il_parse(const char* text, uint16_t text_len,
+                           il_inst_t* out, uint16_t* err_offset);
 
 // ---- Types ---------------------------------------------------------------
 
@@ -66,6 +160,10 @@ typedef struct {
     uint8_t                  reserved[3];
     interlock_slot_persist_t slots[INTERLOCK_MAX_SLOTS];
     interlock_crash_record_t crash;
+    // Slice 2 additions — present only when version >= 2.
+    il_inst_t                inst[INTERLOCK_MAX_SLOTS];
+    uint16_t                 dsl_len[INTERLOCK_MAX_SLOTS];
+    char                     dsl_text[INTERLOCK_MAX_SLOTS][IL_DSL_MAX];
 } interlock_persist_t;
 
 // Compile-time registry entry. Slice 1 only uses .name; tick / init /
@@ -113,8 +211,35 @@ uint8_t  interlock_armed_count(void);
 // INTERLOCK_ID_NOOP; later slices accept DSL configurations.
 uint8_t  interlock_arm_slot_noop(uint8_t slot);
 
-// Mark slot EMPTY. No-op if already EMPTY.
+// Mark slot EMPTY. No-op if already EMPTY. Releases all HAL pin claims
+// belonging to this slot.
 uint8_t  interlock_disarm_slot(uint8_t slot);
+
+// Set a DSL-defined interlock into a slot. Steps performed atomically:
+//   1. Parse text → temp il_inst_t
+//   2. Claim every declared pin via the HAL pin API (rolls back on any failure)
+//   3. Copy temp il_inst_t + text into the .noinit slot, mark ARMED (id=DSL)
+// Returns SHELL_STATUS_* with detailed error categories on failure.
+// `text` is the raw DSL bytes; not required to be NUL-terminated.
+// `err_payload` (out, optional) gets a 3-byte error payload {category:u8,
+// offset_lo:u8, offset_hi:u8} on parse failure; pass NULL to ignore.
+uint8_t  interlock_set_slot_dsl(uint8_t slot,
+                                const char* text, uint16_t text_len,
+                                uint8_t err_payload[3]);
+
+// Run AFTER samd21_peripherals_init() but before the first interlock_tick_all().
+// Walks ARMED DSL slots, re-parses their persisted DSL text, re-claims pins
+// via the HAL. Slots that fail re-parse / re-claim are marked POISONED.
+// Idempotent for cold boots (no ARMED slots → nothing to do).
+void     interlock_warm_restore(void);
+
+// ---- Tick loop -----------------------------------------------------------
+
+// Called once per chain pump (~250 ms) from main.c. Walks each ARMED slot,
+// reads inputs, evaluates watches, drives outputs based on T/F result.
+// Updates g_active_interlock_slot around each slot's tick so HardFault
+// attribution is accurate.
+void     interlock_tick_all(void);
 
 // ---- Status access -------------------------------------------------------
 

@@ -121,6 +121,11 @@ const shell_cmd_entry_t* shell_find_cmd(uint16_t command_id);
 #define CMD_INTERLOCK_STATUS  ((uint16_t)0x0140)
 #define CMD_INTERLOCK_ARM_NOOP ((uint16_t)0x0141)
 #define CMD_INTERLOCK_DISARM  ((uint16_t)0x0142)
+// Slice 2: CMD_INTERLOCK_SET takes [slot:u8 | dsl_text bytes]. Replies:
+//   SHELL_STATUS_OK         → empty result
+//   SHELL_STATUS_BAD_ARGS   → {parse_err:u8, offset_lo:u8, offset_hi:u8}
+//   SHELL_STATUS_BUSY       → {0xFF marker} (slot armed or pin-claim conflict)
+#define CMD_INTERLOCK_SET     ((uint16_t)0x0143)
 
 // 0x0130..0x0133: I2C master (SERCOM2 on D4=SDA / D5=SCL, 100 kHz).
 // Statically initialised at boot via samd21_peripherals_init(); D4/D5 are

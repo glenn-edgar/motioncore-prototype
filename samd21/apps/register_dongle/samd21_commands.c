@@ -900,12 +900,37 @@ static uint8_t cmd_test_hang(shell_reader_t* args, shell_writer_t* result) {
 
 static uint8_t cmd_interlock_status(shell_reader_t* args, shell_writer_t* result) {
     if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    // v2 reply: version byte then per-slot {state, id, bc, tf_state, name[16]}
+    // then crash {pc, lr, rstsr, slot}. Total = 2 + 2*20 + 13 = 55 bytes.
+    sw_u8(result, 2);                                  // reply version
     sw_u8(result, INTERLOCK_MAX_SLOTS);
     for (uint8_t i = 0; i < INTERLOCK_MAX_SLOTS; i++) {
         const interlock_slot_persist_t* s = interlock_get_slot(i);
         sw_u8(result, s->state);
         sw_u8(result, s->id);
         sw_u8(result, s->boot_counter);
+        // tf_state comes from the parsed il_inst_t when slot is DSL-defined.
+        uint8_t tf = 0;
+        const char* name = "";
+        extern interlock_persist_t g_interlock_persist;
+        if (s->id == INTERLOCK_ID_DSL) {
+            tf   = g_interlock_persist.inst[i].tf_state;
+            name = g_interlock_persist.inst[i].name;
+        } else if (s->id == INTERLOCK_ID_NOOP) {
+            name = "noop";
+        }
+        sw_u8(result, tf);
+        // Fixed 16-byte name field, NUL-padded.
+        uint8_t name_buf[IL_NAME_MAX];
+        for (uint8_t k = 0; k < IL_NAME_MAX; k++) {
+            name_buf[k] = (name[k] != '\0') ? (uint8_t)name[k] : 0;
+            if (name[k] == '\0') {
+                // pad remainder
+                for (uint8_t j = k + 1; j < IL_NAME_MAX; j++) name_buf[j] = 0;
+                break;
+            }
+        }
+        sw_bytes(result, name_buf, IL_NAME_MAX);
     }
     const interlock_crash_record_t* c = interlock_get_crash();
     sw_u32(result, c->last_pc);
@@ -914,6 +939,26 @@ static uint8_t cmd_interlock_status(shell_reader_t* args, shell_writer_t* result
     sw_u8(result, c->last_crashed_slot);
     if (result->overflow) return SHELL_STATUS_RESULT_TOO_BIG;
     return SHELL_STATUS_OK;
+}
+
+static uint8_t cmd_interlock_set(shell_reader_t* args, shell_writer_t* result) {
+    uint8_t slot = sr_u8(args);
+    if (args->overflow) return SHELL_STATUS_BAD_ARGS;
+    uint16_t text_len = sr_remaining(args);
+    if (text_len == 0) return SHELL_STATUS_BAD_ARGS;
+    const char* text = (const char*)args->p;
+    uint8_t err_payload[3] = {0, 0, 0};
+    uint8_t st = interlock_set_slot_dsl(slot, text, text_len, err_payload);
+    if (st == SHELL_STATUS_BAD_ARGS) {
+        sw_u8(result, err_payload[0]);
+        sw_u8(result, err_payload[1]);
+        sw_u8(result, err_payload[2]);
+        if (result->overflow) return SHELL_STATUS_RESULT_TOO_BIG;
+    } else if (st == SHELL_STATUS_BUSY) {
+        sw_u8(result, err_payload[0]);  // 0xFF for claim-conflict, 0 for slot-already-armed
+        if (result->overflow) return SHELL_STATUS_RESULT_TOO_BIG;
+    }
+    return st;
 }
 
 static uint8_t cmd_interlock_arm_noop(shell_reader_t* args, shell_writer_t* result) {
@@ -949,6 +994,7 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_INTERLOCK_STATUS,    "interlock_status",   cmd_interlock_status   },
     { CMD_INTERLOCK_ARM_NOOP,  "interlock_arm_noop", cmd_interlock_arm_noop },
     { CMD_INTERLOCK_DISARM,    "interlock_disarm",   cmd_interlock_disarm   },
+    { CMD_INTERLOCK_SET,       "interlock_set",      cmd_interlock_set      },
 };
 
 const shell_cmd_entry_t* chip_commands_table(void) {

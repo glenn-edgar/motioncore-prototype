@@ -136,6 +136,7 @@ local CMD_TEST_HANG          = 0x0120
 local CMD_INTERLOCK_STATUS   = 0x0140
 local CMD_INTERLOCK_ARM_NOOP = 0x0141
 local CMD_INTERLOCK_DISARM   = 0x0142
+local CMD_INTERLOCK_SET      = 0x0143
 -- RA4M1-specific (multi-mode control); see ra4m1/apps/register_dongle/ra4m1_commands.c.
 local CMD_SET_MODE           = 0x0110
 local CMD_GET_MODE           = 0x0111
@@ -516,6 +517,35 @@ local function parse_args(argv)
             table.insert(opts.send_seq, {
                 cmd        = 0x0109,
                 label      = string.format("OP_SHELL_EXEC(interlock_disarm sl=%d)", slot),
+                payload    = payload,
+                shell_req  = req_id,
+                shell_cmd  = cmd_id,
+            })
+        elseif a == "--send-shell-interlock-set" then
+            -- Args: SLOT  DSL_STRING
+            -- Configures slot N with a text-DSL interlock definition. See
+            -- docs/interlock-framework-prior-art.md and the slice-2 memory
+            -- entry for grammar. Reply: empty on OK; on parse error returns
+            -- 3-byte {parse_err, offset_lo, offset_hi}; on claim conflict
+            -- returns {0xFF}.
+            i = i + 1; local slot = tonumber(argv[i])
+            if not slot or slot < 0 or slot > 255 then
+                die("interlock-set SLOT 'DSL_STRING'")
+            end
+            i = i + 1; local dsl = argv[i]
+            if not dsl or #dsl == 0 then die("interlock-set: missing DSL string") end
+            if #dsl > 127 then die("interlock-set: DSL too long (max 127 chars)") end
+            local req_id = alloc_shell_req()
+            local cmd_id = CMD_INTERLOCK_SET
+            local payload = {
+                bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                bit.band(cmd_id, 0xFF), bit.band(bit.rshift(cmd_id, 8), 0xFF),
+                slot,
+            }
+            for k = 1, #dsl do table.insert(payload, string.byte(dsl, k)) end
+            table.insert(opts.send_seq, {
+                cmd        = 0x0109,
+                label      = string.format("OP_SHELL_EXEC(interlock_set sl=%d dsl=%q)", slot, dsl),
                 payload    = payload,
                 shell_req  = req_id,
                 shell_cmd  = cmd_id,
@@ -1168,6 +1198,12 @@ Options:
                       interlock. SHELL_STATUS_BUSY if slot already armed.
   --send-shell-interlock-disarm SLOT
                       Mark slot SLOT EMPTY. Idempotent.
+  --send-shell-interlock-set SLOT 'DSL_STRING'
+                      Configure slot SLOT with a text-DSL interlock. Format:
+                      "name;cfg[(pins):in,up];cfg[(pins):out];watch[pin:val,...];
+                       out_ok[pin:val];out_err[pin:val]". On parse error reply
+                      carries {error:u8, offset:u16}; on pin claim conflict
+                      reply is {0xFF}.
   --send-shell-i2c-write ADDR BYTE [BYTE ...]
                       I2C write: START + addr(W) + bytes + STOP (SAMD21
                       D4=SDA / D5=SCL @ 100 kHz). ADDR is 7-bit (0x08..0x77).
@@ -1893,22 +1929,63 @@ local function decode_s2m_frame()
             elseif status == 0 and (expected_cmd == CMD_GPIO_CONFIG or expected_cmd == CMD_GPIO_WRITE) and len == 3 then
                 io.write(string.format("\n  gpio: ok (no result payload)"))
                 pending_shell_requests[req_id] = nil
-            elseif status == 0 and (expected_cmd == CMD_INTERLOCK_ARM_NOOP or expected_cmd == CMD_INTERLOCK_DISARM) and len == 3 then
+            elseif status == 0 and (expected_cmd == CMD_INTERLOCK_ARM_NOOP or expected_cmd == CMD_INTERLOCK_DISARM or expected_cmd == CMD_INTERLOCK_SET) and len == 3 then
                 io.write(string.format("\n  interlock: ok (no result payload)"))
                 pending_shell_requests[req_id] = nil
-            elseif status == 0 and expected_cmd == CMD_INTERLOCK_STATUS and len >= 3 + 1 then
-                -- Reply: num_slots:u8 then per-slot {state, id, boot_counter}*N,
-                -- then crash_pc:u32 lr:u32 rstsr:u32 crashed_slot:u8.
+            elseif (status == 2 or status == 5) and expected_cmd == CMD_INTERLOCK_SET and len >= 3 then
+                -- Parse error (status=BAD_ARGS=2): {parse_err:u8, offset_lo:u8, offset_hi:u8}
+                -- Pin claim conflict (status=BUSY=5): {0xFF marker}
+                local PARSE_ERR_LABEL = {
+                    [0]="ok", [1]="unexpected_char", [2]="unexpected_end",
+                    [3]="bad_number", [4]="unknown_keyword", [5]="unknown_pin",
+                    [6]="unknown_mode", [7]="too_many_inputs", [8]="too_many_watches",
+                    [9]="too_many_outputs", [10]="name_too_long", [11]="duplicate_pin",
+                    [12]="watch_input_undecl", [13]="output_undecl",
+                    [14]="output_value_mismatch", [15]="missing_out_ok",
+                    [16]="missing_out_err", [17]="empty",
+                }
+                if len >= 6 and status == 2 then
+                    -- BAD_ARGS: {parse_err:u8, offset_lo:u8, offset_hi:u8}
+                    local err = f[11]
+                    local off = bit.bor(f[12], bit.lshift(f[13], 8))
+                    io.write(string.format("\n  interlock_set: parse error %s(%d) at offset %d",
+                        PARSE_ERR_LABEL[err] or "?", err, off))
+                elseif status == 5 and len == 4 then
+                    -- BUSY: 1-byte payload. 0xFF = pin claim conflict; 0 = slot
+                    -- already armed (must explicitly disarm first).
+                    local marker = f[11]
+                    if marker == 0xFF then
+                        io.write(string.format("\n  interlock_set: pin claim conflict (reserved or owned by other slot)"))
+                    else
+                        io.write(string.format("\n  interlock_set: slot is already armed (disarm first)"))
+                    end
+                elseif status == 5 and len == 3 then
+                    io.write(string.format("\n  interlock_set: busy (no detail)"))
+                end
+                pending_shell_requests[req_id] = nil
+            elseif status == 0 and expected_cmd == CMD_INTERLOCK_STATUS and len >= 3 + 2 then
+                -- v2 reply: version:u8, num_slots:u8, per-slot {state, id, bc, tf, name[16]},
+                -- crash_pc:u32 lr:u32 rstsr:u32 crashed_slot:u8.
                 local p = 11
+                local ver = f[p]; p = p + 1
                 local num_slots = f[p]; p = p + 1
                 local state_lbl = { [0]="EMPTY", [1]="ARMED", [2]="POISONED" }
-                io.write(string.format("\n  interlock: num_slots=%d", num_slots))
+                local tf_lbl    = { [0]="-", [1]="T(OK)", [2]="F(ERR)" }
+                io.write(string.format("\n  interlock: v%d num_slots=%d", ver, num_slots))
                 for s = 0, num_slots - 1 do
                     local st = f[p]; p = p + 1
                     local id = f[p]; p = p + 1
                     local bc = f[p]; p = p + 1
-                    io.write(string.format("\n    slot %d: %-8s id=%d boot_counter=%d",
-                        s, state_lbl[st] or string.format("?(%d)", st), id, bc))
+                    local tf = f[p]; p = p + 1
+                    local name = {}
+                    for k = 0, 15 do
+                        if f[p+k] == 0 then break end
+                        table.insert(name, string.char(f[p+k]))
+                    end
+                    p = p + 16
+                    io.write(string.format("\n    slot %d: %-8s id=%d bc=%d tf=%-7s name='%s'",
+                        s, state_lbl[st] or string.format("?(%d)", st),
+                        id, bc, tf_lbl[tf] or "?", table.concat(name)))
                 end
                 local u32at = function(o) return bit.bor(f[o],
                     bit.lshift(f[o+1],  8),

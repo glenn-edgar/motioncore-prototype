@@ -5,7 +5,10 @@
 
 #include "samd21_interlocks.h"
 #include "samd21.h"
+#include "samd21_hal_pin.h"
+#include "samd21_pin_table.h"
 #include "vendor/libcomm/opcodes.h"   // SHELL_STATUS_* values
+#include <string.h>
 
 // ---------------------------------------------------------------------------
 // Persistent state — lives in the .noinit linker section so RAM contents
@@ -60,8 +63,19 @@ static bool persist_is_valid(void) {
     for (uint8_t i = 0; i < INTERLOCK_MAX_SLOTS; i++) {
         const interlock_slot_persist_t* s = &g_interlock_persist.slots[i];
         if (s->state > INTERLOCK_SLOT_POISONED) return false;
-        if (s->id > g_interlock_count) return false;
+        // Valid IDs: 0 (none), 1 (compiled-in registry like noop), 2 (DSL).
+        // Future slices may add more well-known IDs; check against the
+        // hardcoded set rather than g_interlock_count (which only sizes
+        // the compiled registry).
+        if (s->id != INTERLOCK_ID_NONE
+            && s->id != INTERLOCK_ID_NOOP
+            && s->id != INTERLOCK_ID_DSL) return false;
         if (s->state == INTERLOCK_SLOT_ARMED && s->id == INTERLOCK_ID_NONE) return false;
+        // DSL slot must have a non-empty persisted DSL text.
+        if (s->state == INTERLOCK_SLOT_ARMED && s->id == INTERLOCK_ID_DSL) {
+            uint16_t L = g_interlock_persist.dsl_len[i];
+            if (L == 0u || L >= IL_DSL_MAX) return false;
+        }
     }
     if (g_interlock_persist.crash.last_crashed_slot != INTERLOCK_CRASHED_SLOT_NONE
         && g_interlock_persist.crash.last_crashed_slot >= INTERLOCK_MAX_SLOTS) {
@@ -81,6 +95,9 @@ static void persist_cold_init(void) {
         g_interlock_persist.slots[i].id           = INTERLOCK_ID_NONE;
         g_interlock_persist.slots[i].boot_counter = 0;
         g_interlock_persist.slots[i].reserved     = 0;
+        memset(&g_interlock_persist.inst[i], 0, sizeof(il_inst_t));
+        g_interlock_persist.dsl_len[i] = 0;
+        memset(g_interlock_persist.dsl_text[i], 0, IL_DSL_MAX);
     }
     g_interlock_persist.crash.last_pc            = 0;
     g_interlock_persist.crash.last_lr            = 0;
@@ -140,10 +157,165 @@ uint8_t interlock_arm_slot_noop(uint8_t slot) {
 uint8_t interlock_disarm_slot(uint8_t slot) {
     if (slot >= INTERLOCK_MAX_SLOTS) return SHELL_STATUS_BAD_ARGS;
     interlock_slot_persist_t* s = &g_interlock_persist.slots[slot];
+    // Release any HAL pin claims attached to this slot before clearing state.
+    hal_pin_release_slot(slot);
     s->state        = INTERLOCK_SLOT_EMPTY;
     s->id           = INTERLOCK_ID_NONE;
     s->boot_counter = 0;
+    memset(&g_interlock_persist.inst[slot], 0, sizeof(il_inst_t));
+    g_interlock_persist.dsl_len[slot] = 0;
     return SHELL_STATUS_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Slice 2 — DSL-driven slot admin + tick loop
+// ---------------------------------------------------------------------------
+
+static hal_pin_mode_t map_input_mode(uint8_t il_mode) {
+    switch ((il_pin_mode_t)il_mode) {
+        case IL_PIN_MODE_IN:    return HAL_PIN_MODE_GPIO_IN;
+        case IL_PIN_MODE_IN_PU: return HAL_PIN_MODE_GPIO_IN_PU;
+        case IL_PIN_MODE_IN_PD: return HAL_PIN_MODE_GPIO_IN_PD;
+        default:                return HAL_PIN_MODE_UNCLAIMED;
+    }
+}
+
+// Claim every input + output pin declared by `inst`, owned by `slot`. On any
+// failure releases all claims and returns false. On success returns true and
+// the HAL has the pins configured per the requested modes.
+static bool claim_inst_pins(uint8_t slot, const il_inst_t* inst) {
+    for (uint8_t i = 0; i < inst->input_count; i++) {
+        hal_pin_mode_t mode = map_input_mode(inst->inputs[i].mode);
+        if (mode == HAL_PIN_MODE_UNCLAIMED) goto rollback;
+        if (hal_pin_claim(inst->inputs[i].phys_id, slot, mode) != HAL_PIN_CLAIM_OK) goto rollback;
+    }
+    for (uint8_t i = 0; i < inst->output_count; i++) {
+        if (hal_pin_claim(inst->outputs[i].phys_id, slot, HAL_PIN_MODE_GPIO_OUT) != HAL_PIN_CLAIM_OK) goto rollback;
+    }
+    return true;
+rollback:
+    hal_pin_release_slot(slot);
+    return false;
+}
+
+uint8_t interlock_set_slot_dsl(uint8_t slot,
+                               const char* text, uint16_t text_len,
+                               uint8_t err_payload[3]) {
+    if (err_payload) { err_payload[0] = 0; err_payload[1] = 0; err_payload[2] = 0; }
+    if (slot >= INTERLOCK_MAX_SLOTS)             return SHELL_STATUS_BAD_ARGS;
+    if (text_len == 0u || text_len >= IL_DSL_MAX) return SHELL_STATUS_BAD_ARGS;
+
+    interlock_slot_persist_t* sp = &g_interlock_persist.slots[slot];
+    if (sp->state == INTERLOCK_SLOT_ARMED) return SHELL_STATUS_BUSY;
+
+    il_inst_t parsed;
+    uint16_t  err_off = 0;
+    il_parse_status_t pst = il_parse(text, text_len, &parsed, &err_off);
+    if (pst != IL_PARSE_OK) {
+        if (err_payload) {
+            err_payload[0] = (uint8_t)pst;
+            err_payload[1] = (uint8_t)(err_off & 0xFFu);
+            err_payload[2] = (uint8_t)((err_off >> 8) & 0xFFu);
+        }
+        return SHELL_STATUS_BAD_ARGS;
+    }
+
+    if (!claim_inst_pins(slot, &parsed)) {
+        if (err_payload) {
+            err_payload[0] = 0xFFu;  // claim-conflict marker (not a parse error)
+        }
+        return SHELL_STATUS_BUSY;
+    }
+
+    // Commit to .noinit. The text is the source of truth; on warm boot we
+    // re-parse from text rather than trusting the parsed struct directly.
+    g_interlock_persist.inst[slot]    = parsed;
+    g_interlock_persist.dsl_len[slot] = text_len;
+    memcpy(g_interlock_persist.dsl_text[slot], text, text_len);
+    if (text_len < IL_DSL_MAX) g_interlock_persist.dsl_text[slot][text_len] = '\0';
+
+    sp->state        = INTERLOCK_SLOT_ARMED;
+    sp->id           = INTERLOCK_ID_DSL;
+    sp->boot_counter = 0;
+    return SHELL_STATUS_OK;
+}
+
+// Re-parse + re-claim ARMED DSL slots after warm boot. Must run AFTER
+// peripheral_init so reserved-pin enforcement is consistent. Slots that
+// fail re-parse / re-claim are marked POISONED.
+void interlock_warm_restore(void) {
+    for (uint8_t slot = 0; slot < INTERLOCK_MAX_SLOTS; slot++) {
+        interlock_slot_persist_t* sp = &g_interlock_persist.slots[slot];
+        if (sp->state != INTERLOCK_SLOT_ARMED) continue;
+        if (sp->id != INTERLOCK_ID_DSL)        continue;  // noop has no pins
+
+        uint16_t text_len = g_interlock_persist.dsl_len[slot];
+        if (text_len == 0u || text_len >= IL_DSL_MAX) {
+            sp->state = INTERLOCK_SLOT_POISONED;
+            continue;
+        }
+        il_inst_t parsed;
+        il_parse_status_t pst = il_parse(g_interlock_persist.dsl_text[slot],
+                                         text_len, &parsed, 0);
+        if (pst != IL_PARSE_OK) {
+            sp->state = INTERLOCK_SLOT_POISONED;
+            continue;
+        }
+        if (!claim_inst_pins(slot, &parsed)) {
+            sp->state = INTERLOCK_SLOT_POISONED;
+            continue;
+        }
+        g_interlock_persist.inst[slot] = parsed;
+        // tf_state reset to UNEVALUATED — outputs will be re-asserted on
+        // first tick after restore.
+        g_interlock_persist.inst[slot].tf_state = (uint8_t)IL_TF_UNEVALUATED;
+    }
+}
+
+// Per-chain-pump tick. Walks ARMED DSL slots, reads inputs, evaluates
+// watches (implicit AND), drives outputs based on T/F. Slice 2 = each slot
+// drives independently — no multi-slot OR-of-vetoes yet (slice 3).
+void interlock_tick_all(void) {
+    for (uint8_t slot = 0; slot < INTERLOCK_MAX_SLOTS; slot++) {
+        interlock_slot_persist_t* sp = &g_interlock_persist.slots[slot];
+        if (sp->state != INTERLOCK_SLOT_ARMED) continue;
+        if (sp->id != INTERLOCK_ID_DSL) continue;
+
+        il_inst_t* inst = &g_interlock_persist.inst[slot];
+        g_active_interlock_slot = slot;
+
+        // Snapshot all inputs once before evaluating watches.
+        uint16_t input_vals[IL_MAX_INPUTS] = {0};
+        for (uint8_t i = 0; i < inst->input_count; i++) {
+            input_vals[i] = hal_pin_read(inst->inputs[i].phys_id);
+        }
+
+        bool all_pass = true;
+        for (uint8_t i = 0; i < inst->watch_count; i++) {
+            uint16_t v = input_vals[inst->watches[i].input_idx];
+            uint16_t t = inst->watches[i].threshold;
+            bool pass = false;
+            switch ((il_compare_op_t)inst->watches[i].op) {
+                case IL_OP_EQ: pass = (v == t); break;
+                case IL_OP_NE: pass = (v != t); break;
+                case IL_OP_LT: pass = (v <  t); break;
+                case IL_OP_GT: pass = (v >  t); break;
+                case IL_OP_LE: pass = (v <= t); break;
+                case IL_OP_GE: pass = (v >= t); break;
+                default: pass = false; break;
+            }
+            if (!pass) { all_pass = false; break; }
+        }
+
+        inst->tf_state = all_pass ? (uint8_t)IL_TF_TRUE : (uint8_t)IL_TF_FALSE;
+        for (uint8_t o = 0; o < inst->output_count; o++) {
+            uint8_t val = all_pass
+                ? inst->outputs[o].ok_value
+                : inst->outputs[o].err_value;
+            hal_pin_write(inst->outputs[o].phys_id, val);
+        }
+    }
+    g_active_interlock_slot = INTERLOCK_CRASHED_SLOT_NONE;
 }
 
 const interlock_slot_persist_t* interlock_get_slot(uint8_t slot) {

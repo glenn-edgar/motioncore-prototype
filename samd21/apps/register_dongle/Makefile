@@ -95,7 +95,10 @@ APP_SRCS := \
   $(HERE)/shell_commands.c \
   $(HERE)/samd21_commands.c \
   $(HERE)/samd21_hal.c \
+  $(HERE)/samd21_hal_pin.c \
+  $(HERE)/samd21_pin_table.c \
   $(HERE)/samd21_interlocks.c \
+  $(HERE)/samd21_interlock_dsl.c \
   $(HERE)/register_dongle_v2_module_rom.c
 
 LIBCOMM_SRCS := \

@@ -282,6 +282,11 @@ int main(void) {
     // pin_is_reserved() in samd21_commands.c.
     samd21_peripherals_init();
 
+    // Re-parse + re-claim pins for any DSL-defined interlock slots that
+    // survived the warm boot. Slots that fail re-parse / re-claim are
+    // marked POISONED. Idempotent on cold boot (no ARMED slots).
+    interlock_warm_restore();
+
     tusb_rhport_init_t const rhport_init = {
         .role  = TUSB_ROLE_DEVICE,
         .speed = TUSB_SPEED_AUTO,
@@ -381,6 +386,11 @@ int main(void) {
         if (tree != NULL && (int32_t)(now - next_tick_ms) >= 0) {
             next_tick_ms += 250;
             tick_and_drain(tree);
+            // After the chain pump, run the interlock tick. Sequential with
+            // the chain (single-core M0+) means no concurrency to worry
+            // about; the chain's just-drained event queue is now empty so a
+            // freshly-arrived CMD_INTERLOCK_SET won't race with the tick.
+            interlock_tick_all();
         }
 
         // Drain a chunk of the TX ring to CDC every loop. CFG_TUD_CDC_TX_BUFSIZE

@@ -602,8 +602,11 @@ void handle_shell_exec(s_expr_tree_instance_t* inst,
         if (status == SHELL_STATUS_OK) {
             if (r.overflow)      status = SHELL_STATUS_BAD_ARGS;
             else if (w.overflow) status = SHELL_STATUS_RESULT_TOO_BIG;
-            else                 result_len = sw_len(&w);
         }
+        // Capture any bytes the handler wrote regardless of status — failure
+        // paths may attach a diagnostic payload (e.g., interlock-set parse-
+        // error detail). Writer-overflow already promoted to RESULT_TOO_BIG.
+        if (!w.overflow) result_len = sw_len(&w);
     }
 
     // Build OP_SHELL_REPLY wrapper + result_message.
