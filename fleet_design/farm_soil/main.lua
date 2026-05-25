@@ -129,9 +129,12 @@ local conn_fns     = require("connection_user_functions")
 local moisture_fns = require("moisture_user_functions")
 local cimis_fns    = require("cimis_user_functions")
 local digest_fns   = require("digest_user_functions")
+local eto_sync_fns = require("eto_sync_user_functions")
+local watchdog_fns = require("irrigation_watchdog_user_functions")
 fn_registry.register_functions(ir, builtins,
     conn_fns.registry, moisture_fns.registry,
-    cimis_fns.registry, digest_fns.registry)
+    cimis_fns.registry, digest_fns.registry,
+    eto_sync_fns.registry, watchdog_fns.registry)
 
 local ok, missing = fn_registry.validate(ir)
 if not ok then

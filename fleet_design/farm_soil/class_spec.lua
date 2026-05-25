@@ -18,7 +18,8 @@ M.capabilities = {
 -- (chains/cimis.lua) — one per CIMIS provider, each with its own retry loop.
 -- digest publishes a 24h push-notification body on fleet/notify/digest/daily
 -- (notification_service POSTs to Discord).
-M.app_kbs = { "moisture", "cimis_station", "cimis_spatial", "digest" }
+M.app_kbs = { "moisture", "cimis_station", "cimis_spatial", "digest",
+              "eto_sync", "irrigation_watchdog" }
 
 -- TTN v3 storage API config for the moisture skill. The bearer token is NOT
 -- here — it is a secret, read from the TTN_BEARER_TOKEN env var (run.sh
@@ -82,6 +83,45 @@ M.digest = {
     retry_s      = 900,         -- 15 min retry cadence (matches CIMIS)
 }
 
+-- Irrigation-site config — read by chains/eto_sync_user_functions.lua.
+-- Host is deployment data, not a secret. Account/password come from the
+-- environment (IRRIGATION_ACCOUNT / IRRIGATION_PASSWORD, sourced by run.sh
+-- from secrets/ttn.env).
+M.irrigation = {
+    host      = "192.168.1.146",
+    timeout_s = 15,
+}
+
+-- ETO-sync skill config — read by chains/eto_sync_user_functions.lua.
+-- Daily one-shot that adjusts the irrigation controller's per-zone ETo
+-- accumulator (eto_update_table Redis hash) by the CIMIS station-vs-spatial
+-- delta, clamped to [floor, cap]. retry_s ticks; the actual once-per-day
+-- gate is evaluated inside ETO_SYNC_TICK. If we haven't succeeded by
+-- failure_hour_pacific, a single Discord failure notification fires for
+-- the day (failure_hour_pacific=17 = 5pm Pacific). See [[cimis-skill-2026-05-22]]
+-- for the daily-gate pattern this mirrors.
+M.eto_sync = {
+    hour_pacific          = 14,    -- window opens 14:00 PT (2pm)
+    failure_hour_pacific  = 17,    -- discord-failure deadline = 17:00 PT
+    retry_s               = 900,   -- 15 min retry cadence
+    cap                   = 0.20,  -- per-row upper clamp
+    floor                 = 0.0,   -- per-row lower clamp
+}
+
+-- Irrigation-site liveness watchdog config — read by
+-- chains/irrigation_watchdog_user_functions.lua.
+-- Polls M.irrigation.host every poll_s. After down_threshold_s of sustained
+-- unreachability, posts a Discord "DOWN, reset the Alexa plug" alert; while
+-- still down, re-posts every alert_interval_s. On recovery, posts one
+-- "RESTORED after X" ack. State is in-memory only (container restart resets
+-- to "assume up"; tradeoff documented in the user_functions module).
+M.irrigation_watchdog = {
+    poll_s             = 60,       -- probe cadence
+    down_threshold_s   = 300,      -- 5 min sustained down before first alert
+    alert_interval_s   = 300,      -- 5 min between repeated alerts
+    probe_timeout_s    = 3,        -- per-probe curl timeout
+}
+
 -- device_id -> location (the sensing-point sub-namespace). Adding a sensor is
 -- one line here. The locations below are placeholders — set the real
 -- plot/zone names per deployment. An unmapped device publishes under
@@ -131,6 +171,32 @@ function M.persistence_topology()
         path = "heartbeat",
         kind = "status",
         desc = "robot rolled-up heartbeat",
+    }
+    -- ETO-sync daily-run result — one stream entry per applied day, plus a
+    -- status leaf for the dashboard's most-recent panel.
+    topo[#topo + 1] = {
+        path   = "eto_sync/history",
+        kind   = "stream",
+        length = 30,                            -- ~1 month of daily runs
+        desc   = "irrigation eto_sync per-day apply result",
+    }
+    topo[#topo + 1] = {
+        path = "eto_sync/latest",
+        kind = "status",
+        desc = "irrigation eto_sync most-recent result",
+    }
+    -- Irrigation-site liveness watchdog: status leaf updated every probe,
+    -- events stream only on down/restored transitions.
+    topo[#topo + 1] = {
+        path   = "irrigation_watchdog/events",
+        kind   = "stream",
+        length = 60,                            -- ~headroom for a noisy outage week
+        desc   = "irrigation server down/restored transition events",
+    }
+    topo[#topo + 1] = {
+        path = "irrigation_watchdog/status",
+        kind = "status",
+        desc = "irrigation server liveness — most-recent probe result",
     }
     return topo
 end
