@@ -66,4 +66,5 @@ typedef enum {
     SHELL_STATUS_BAD_ARGS        = 2,  // args_message overflow / value out of range
     SHELL_STATUS_CMD_FAILED      = 3,  // runtime error inside the command
     SHELL_STATUS_RESULT_TOO_BIG  = 4,  // result_message would exceed COMM_PAYLOAD_MAX
+    SHELL_STATUS_BUSY            = 5,  // resource owned by an active interlock; slice 2+ HIL gating
 } shell_status_t;

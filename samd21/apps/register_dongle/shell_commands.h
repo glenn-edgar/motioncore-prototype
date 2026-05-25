@@ -110,6 +110,18 @@ const shell_cmd_entry_t* shell_find_cmd(uint16_t command_id);
 // only; no reply frame is ever produced (the command never returns).
 #define CMD_TEST_HANG         ((uint16_t)0x0120)
 
+// 0x0140..0x014F: interlock framework foundation (slice 1).
+// CMD_INTERLOCK_STATUS args: (empty)
+//   reply: num_slots:u8 then per-slot {state:u8, id:u8, boot_counter:u8},
+//          then crash_pc:u32, crash_lr:u32, crash_rstsr:u32, crashed_slot:u8.
+// CMD_INTERLOCK_ARM_NOOP args: slot:u8  reply: (empty); SHELL_STATUS_BUSY if armed.
+// CMD_INTERLOCK_DISARM    args: slot:u8  reply: (empty).
+// Slice 2 will repurpose / extend with CMD_SET_INTERLOCK that takes a text-DSL
+// configuration payload; for slice 1 we just need slot-lifecycle observability.
+#define CMD_INTERLOCK_STATUS  ((uint16_t)0x0140)
+#define CMD_INTERLOCK_ARM_NOOP ((uint16_t)0x0141)
+#define CMD_INTERLOCK_DISARM  ((uint16_t)0x0142)
+
 // 0x0130..0x0133: I2C master (SERCOM2 on D4=SDA / D5=SCL, 100 kHz).
 // Statically initialised at boot via samd21_peripherals_init(); D4/D5 are
 // hard-reserved from GPIO via pin_is_reserved(). Polling-mode in v1

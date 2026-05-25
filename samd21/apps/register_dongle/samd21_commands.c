@@ -895,6 +895,41 @@ static uint8_t cmd_test_hang(shell_reader_t* args, shell_writer_t* result) {
     return SHELL_STATUS_OK;  // unreachable
 }
 
+// ---------- Interlock framework (slice 1) ---------------------------------
+#include "samd21_interlocks.h"
+
+static uint8_t cmd_interlock_status(shell_reader_t* args, shell_writer_t* result) {
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    sw_u8(result, INTERLOCK_MAX_SLOTS);
+    for (uint8_t i = 0; i < INTERLOCK_MAX_SLOTS; i++) {
+        const interlock_slot_persist_t* s = interlock_get_slot(i);
+        sw_u8(result, s->state);
+        sw_u8(result, s->id);
+        sw_u8(result, s->boot_counter);
+    }
+    const interlock_crash_record_t* c = interlock_get_crash();
+    sw_u32(result, c->last_pc);
+    sw_u32(result, c->last_lr);
+    sw_u32(result, c->last_rstsr);
+    sw_u8(result, c->last_crashed_slot);
+    if (result->overflow) return SHELL_STATUS_RESULT_TOO_BIG;
+    return SHELL_STATUS_OK;
+}
+
+static uint8_t cmd_interlock_arm_noop(shell_reader_t* args, shell_writer_t* result) {
+    uint8_t slot = sr_u8(args);
+    if (args->overflow || sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    (void)result;
+    return interlock_arm_slot_noop(slot);
+}
+
+static uint8_t cmd_interlock_disarm(shell_reader_t* args, shell_writer_t* result) {
+    uint8_t slot = sr_u8(args);
+    if (args->overflow || sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    (void)result;
+    return interlock_disarm_slot(slot);
+}
+
 // ---------- chip-specific dispatch table ---------------------------------
 
 static const shell_cmd_entry_t g_chip_commands[] = {
@@ -911,6 +946,9 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_I2C_WRITE_READ,      "i2c_write_read",     cmd_i2c_write_read     },
     { CMD_I2C_SCAN,            "i2c_scan",           cmd_i2c_scan           },
     { CMD_TEST_HANG,           "test_hang",          cmd_test_hang          },
+    { CMD_INTERLOCK_STATUS,    "interlock_status",   cmd_interlock_status   },
+    { CMD_INTERLOCK_ARM_NOOP,  "interlock_arm_noop", cmd_interlock_arm_noop },
+    { CMD_INTERLOCK_DISARM,    "interlock_disarm",   cmd_interlock_disarm   },
 };
 
 const shell_cmd_entry_t* chip_commands_table(void) {

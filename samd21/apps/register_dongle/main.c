@@ -46,6 +46,7 @@
 #include "flash_storage.h"
 #include "shell_commands.h"  // firmware_sysinfo_t
 #include "samd21_hal.h"      // hal_wdt_init/pet, hal_capture_reset_cause
+#include "samd21_interlocks.h"
 
 // Implemented in user_functions.c.
 extern void     register_dongle_load_commissioning(void);
@@ -263,6 +264,12 @@ int main(void) {
     // reset / NVIC_SystemReset.
     hal_capture_reset_cause();
 
+    // Interlock framework boot decision. Reads .noinit persistence, applies
+    // bootloop guard, marks slots POISONED if they've crashed too many times
+    // in a row. Must run before board_init / engine setup so the framework
+    // can also report attribution if the very next thing crashes.
+    interlock_boot_decide();
+
     board_init();
 
     // Arm the WDT immediately after board_init so any subsequent hang in
@@ -317,6 +324,12 @@ int main(void) {
         buf[16] = hex[(rc >> 0) & 0xF];
         buf[17] = '\0';
         debug_packet_fn(NULL, buf);
+
+        // Companion line summarising interlock persistence + crash record.
+        // Always emitted, even on cold boot (slots EMPTY, crash zeroed).
+        char il_buf[96];
+        (void)interlock_format_boot_line(il_buf, sizeof(il_buf));
+        debug_packet_fn(NULL, il_buf);
     }
 
     // Engine tick cadence: 250 ms (chain expects 4 ticks/sec).

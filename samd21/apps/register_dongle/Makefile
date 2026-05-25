@@ -74,7 +74,7 @@ ASFLAGS := $(CPU_FLAGS) $(OPT) $(DEFS) $(INC)
 # Microchip hri headers re-declare some symbols; same suppression hello_cdc uses.
 CFLAGS += -Wno-error=redundant-decls
 
-LDSCRIPT := $(BSP_BOARD)/seeeduino_xiao.ld
+LDSCRIPT := $(HERE)/seeeduino_xiao_noinit.ld
 LDFLAGS  := $(CPU_FLAGS) \
             -T$(LDSCRIPT) \
             -nostartfiles \
@@ -95,6 +95,7 @@ APP_SRCS := \
   $(HERE)/shell_commands.c \
   $(HERE)/samd21_commands.c \
   $(HERE)/samd21_hal.c \
+  $(HERE)/samd21_interlocks.c \
   $(HERE)/register_dongle_v2_module_rom.c
 
 LIBCOMM_SRCS := \

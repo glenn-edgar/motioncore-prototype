@@ -132,6 +132,10 @@ local CMD_I2C_SCAN           = 0x0133
 -- Layer-2 WDT bench probe — disables IRQs and spins; chip resets ~4 s
 -- later. No reply frame; absence is the success signal. (SAMD21 build.)
 local CMD_TEST_HANG          = 0x0120
+-- Interlock framework foundation (slice 1). SAMD21-only for now.
+local CMD_INTERLOCK_STATUS   = 0x0140
+local CMD_INTERLOCK_ARM_NOOP = 0x0141
+local CMD_INTERLOCK_DISARM   = 0x0142
 -- RA4M1-specific (multi-mode control); see ra4m1/apps/register_dongle/ra4m1_commands.c.
 local CMD_SET_MODE           = 0x0110
 local CMD_GET_MODE           = 0x0111
@@ -455,6 +459,63 @@ local function parse_args(argv)
             table.insert(opts.send_seq, {
                 cmd        = 0x0109,
                 label      = "OP_SHELL_EXEC(test_hang)",
+                payload    = payload,
+                shell_req  = req_id,
+                shell_cmd  = cmd_id,
+            })
+        elseif a == "--send-shell-interlock-status" then
+            -- CMD_INTERLOCK_STATUS — empty args, returns per-slot state +
+            -- crash record. Use to verify .noinit persistence across WDT bites.
+            local req_id = alloc_shell_req()
+            local cmd_id = CMD_INTERLOCK_STATUS
+            local payload = {
+                bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                bit.band(cmd_id, 0xFF), bit.band(bit.rshift(cmd_id, 8), 0xFF),
+            }
+            table.insert(opts.send_seq, {
+                cmd        = 0x0109,
+                label      = "OP_SHELL_EXEC(interlock_status)",
+                payload    = payload,
+                shell_req  = req_id,
+                shell_cmd  = cmd_id,
+            })
+        elseif a == "--send-shell-interlock-arm-noop" then
+            -- Args: SLOT (0..N-1). Arms the hardcoded no-op interlock in
+            -- the given slot. SHELL_STATUS_BUSY if already armed.
+            i = i + 1; local slot = tonumber(argv[i])
+            if not slot or slot < 0 or slot > 255 then
+                die("interlock-arm-noop SLOT (decimal 0..255)")
+            end
+            local req_id = alloc_shell_req()
+            local cmd_id = CMD_INTERLOCK_ARM_NOOP
+            local payload = {
+                bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                bit.band(cmd_id, 0xFF), bit.band(bit.rshift(cmd_id, 8), 0xFF),
+                slot,
+            }
+            table.insert(opts.send_seq, {
+                cmd        = 0x0109,
+                label      = string.format("OP_SHELL_EXEC(interlock_arm_noop sl=%d)", slot),
+                payload    = payload,
+                shell_req  = req_id,
+                shell_cmd  = cmd_id,
+            })
+        elseif a == "--send-shell-interlock-disarm" then
+            -- Args: SLOT (0..N-1). Marks the slot EMPTY.
+            i = i + 1; local slot = tonumber(argv[i])
+            if not slot or slot < 0 or slot > 255 then
+                die("interlock-disarm SLOT (decimal 0..255)")
+            end
+            local req_id = alloc_shell_req()
+            local cmd_id = CMD_INTERLOCK_DISARM
+            local payload = {
+                bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                bit.band(cmd_id, 0xFF), bit.band(bit.rshift(cmd_id, 8), 0xFF),
+                slot,
+            }
+            table.insert(opts.send_seq, {
+                cmd        = 0x0109,
+                label      = string.format("OP_SHELL_EXEC(interlock_disarm sl=%d)", slot),
                 payload    = payload,
                 shell_req  = req_id,
                 shell_cmd  = cmd_id,
@@ -1098,6 +1159,15 @@ Options:
                       (SAMD21). Disables IRQs and spins; chip resets in ~4 s.
                       Success = chip re-enumerates and the next sync ladder
                       sees [BOOT] rstsr=0x20 (RCAUSE bit 5 = WDT).
+  --send-shell-interlock-status  Read interlock-framework state: per-slot
+                      {state, id, boot_counter} + crash record (PC/LR/RSTSR/
+                      crashed_slot). Pair with --send-shell-test-hang to
+                      verify .noinit persistence across WDT bites.
+  --send-shell-interlock-arm-noop SLOT
+                      Arm slot SLOT (0..N-1) with the hardcoded no-op
+                      interlock. SHELL_STATUS_BUSY if slot already armed.
+  --send-shell-interlock-disarm SLOT
+                      Mark slot SLOT EMPTY. Idempotent.
   --send-shell-i2c-write ADDR BYTE [BYTE ...]
                       I2C write: START + addr(W) + bytes + STOP (SAMD21
                       D4=SDA / D5=SCL @ 100 kHz). ADDR is 7-bit (0x08..0x77).
@@ -1414,6 +1484,7 @@ local SHELL_STATUS = {
     [2] = "bad_args",
     [3] = "cmd_failed",
     [4] = "result_too_big",
+    [5] = "busy",
 }
 
 -- Opcodes whose payload should be rendered as plain text (no hex column).
@@ -1821,6 +1892,36 @@ local function decode_s2m_frame()
                 pending_shell_requests[req_id] = nil
             elseif status == 0 and (expected_cmd == CMD_GPIO_CONFIG or expected_cmd == CMD_GPIO_WRITE) and len == 3 then
                 io.write(string.format("\n  gpio: ok (no result payload)"))
+                pending_shell_requests[req_id] = nil
+            elseif status == 0 and (expected_cmd == CMD_INTERLOCK_ARM_NOOP or expected_cmd == CMD_INTERLOCK_DISARM) and len == 3 then
+                io.write(string.format("\n  interlock: ok (no result payload)"))
+                pending_shell_requests[req_id] = nil
+            elseif status == 0 and expected_cmd == CMD_INTERLOCK_STATUS and len >= 3 + 1 then
+                -- Reply: num_slots:u8 then per-slot {state, id, boot_counter}*N,
+                -- then crash_pc:u32 lr:u32 rstsr:u32 crashed_slot:u8.
+                local p = 11
+                local num_slots = f[p]; p = p + 1
+                local state_lbl = { [0]="EMPTY", [1]="ARMED", [2]="POISONED" }
+                io.write(string.format("\n  interlock: num_slots=%d", num_slots))
+                for s = 0, num_slots - 1 do
+                    local st = f[p]; p = p + 1
+                    local id = f[p]; p = p + 1
+                    local bc = f[p]; p = p + 1
+                    io.write(string.format("\n    slot %d: %-8s id=%d boot_counter=%d",
+                        s, state_lbl[st] or string.format("?(%d)", st), id, bc))
+                end
+                local u32at = function(o) return bit.bor(f[o],
+                    bit.lshift(f[o+1],  8),
+                    bit.lshift(f[o+2], 16),
+                    bit.lshift(f[o+3], 24)) end
+                local pc = u32at(p); p = p + 4
+                local lr = u32at(p); p = p + 4
+                local rs = u32at(p); p = p + 4
+                local cs = f[p]
+                local cs_str = (cs == 0xFF) and "-" or tostring(cs)
+                io.write(string.format("\n    crash:  pc=0x%s lr=0x%s rstsr=0x%s slot=%s",
+                    bit.tohex(pc):upper(), bit.tohex(lr):upper(),
+                    bit.tohex(rs):upper(), cs_str))
                 pending_shell_requests[req_id] = nil
             elseif status == 0 and expected_cmd == CMD_SYSINFO and len >= 3 + 37 then
                 -- Decode firmware_sysinfo_t result_message (37 B, version=1 expected).
