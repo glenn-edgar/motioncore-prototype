@@ -19,6 +19,7 @@
 local cjson         = require("cjson")
 local clock         = require("clock")
 local app_heartbeat = require("app_heartbeat")
+local daily_marker  = require("daily_marker")
 local portal        = require("rancho_portal")
 local fmt           = require("rancho_format")
 
@@ -96,6 +97,14 @@ M.one_shot.DAILY_PULL = function(handle, _node)
 
     bb._rancho_state = bb._rancho_state or { last_published_date = nil }
     local state = bb._rancho_state
+    -- Hydrate from the persistent daily marker on first invocation so a
+    -- container restart after today's pull already went out doesn't
+    -- re-publish (used to re-spam Discord + persistence with the same data).
+    if not state._loaded_from_marker then
+        local persisted = daily_marker.read(id, "daily_pull")
+        if persisted then state.last_published_date = persisted end
+        state._loaded_from_marker = true
+    end
 
     -- Gate on Pacific civil time. We publish on day D for data of day D-1.
     local p             = clock.pacific_now()
@@ -183,6 +192,11 @@ M.one_shot.DAILY_PULL = function(handle, _node)
 
     if pok1 then
         state.last_published_date = pacific_today
+        local _, mark_err = daily_marker.write(id, "daily_pull", pacific_today)
+        if mark_err then
+            log(id, "WARN: daily_marker write failed (%s); restart could republish",
+                tostring(mark_err))
+        end
         local hours = (data and data.Usage) and #data.Usage or 0
         local total = (data and data.TotalGallons) or 0
         log(id, "published %s — %d hourly rows, %d gallons total",

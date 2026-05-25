@@ -344,10 +344,25 @@ async function loadDetail(kb, leaf) {
                    hourlyCharts(j.data) +
                    `<div class="value-block">${escapeHtml(JSON.stringify(j.data, null, 2))}</div>`;
         } else {
-            params.set("limit", "30");
+            // Walk the persistence stream RPC cursor: each page is capped
+            // at 4 KB on the server side so a single call typically returns
+            // only 3-6 rows for chunky JSON payloads (e.g. moisture readings
+            // with full TTN gateway metadata). Fetch up to MAX_PAGES so the
+            // chart has enough points to draw a useful history.
+            const TARGET_ROWS = 30, MAX_PAGES = 8;
+            params.set("limit", String(TARGET_ROWS));
             params.set("order", "desc");
-            const j = await api(`/api/robots/${kb.class}/${kb.instance}/stream?${params}`);
-            const rows = j.data || [];
+            let rows = [], page, nextPageAtStop;
+            for (let i = 0; i < MAX_PAGES; ++i) {
+                const pp = new URLSearchParams(params);
+                if (page) pp.set("page", page);
+                const j = await api(`/api/robots/${kb.class}/${kb.instance}/stream?${pp}`);
+                const got = j.data || [];
+                rows = rows.concat(got);
+                page = j.next_page;
+                nextPageAtStop = page;     // cursor preserved for the "more rows available" footer
+                if (!page || rows.length >= TARGET_ROWS) break;
+            }
 
             // Chart: extract every numeric leaf path across rows, hide
             // radio/counter noise, render the first useful one as a line
@@ -406,8 +421,8 @@ async function loadDetail(kb, leaf) {
                     : `<span class="muted">${escapeHtml(r.recorded_at)} (ingest)</span>`;
                 return `<tr><td class="num">${r.id}</td><td>${tsCell}</td>${cells}</tr>`;
             }).join("");
-            const nextPg = j.next_page
-                ? `<div class="pager"><span class="muted">more rows available (cursor=${escapeHtml(j.next_page)})</span></div>`
+            const nextPg = nextPageAtStop
+                ? `<div class="pager"><span class="muted">more rows available (cursor=${escapeHtml(nextPageAtStop)})</span></div>`
                 : `<div class="pager"><span class="muted">end of stream</span></div>`;
             html = `<h4>${escapeHtml(leaf.path)} (stream, last ${rows.length})</h4>` +
                    chartHtml +

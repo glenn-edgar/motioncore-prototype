@@ -14,8 +14,17 @@ ASSETS_DIR=$SCRIPT_DIR/build_assets
 LIB_DIR=$ASSETS_DIR/lib
 
 # Where the .so files live on the bench (WSL). Override with env if elsewhere.
+# As of 2026-05-25 the canonical libzenoh_rpc.so has the refcount UAF fix
+# (closure-context use-after-free that was crashing application_gateway
+# ~once/hour); see zenoh_rpc_uaf_fix_2026-05-25 memory for context.
 ZENOH_PICO_DIR=${ZENOH_PICO_DIR:-$HOME/src/zenoh-pico/lib-combined}
 ZENOH_SHIM_DIR=${ZENOH_SHIM_DIR:-$HOME/knowledge_base_assembly/luajit_programs_and_containers/building_blocks/knowledge_base/zenoh}
+
+# Per-lib overrides if someone wants to point at a different build
+# (e.g., zenoh_libs/c/rpc/build/ for an in-progress patch).
+ZENOH_RPC_SO=${ZENOH_RPC_SO:-$ZENOH_SHIM_DIR/libzenoh_rpc.so}
+ZENOH_PUBSUB_SO=${ZENOH_PUBSUB_SO:-$ZENOH_SHIM_DIR/libzenoh_pubsub.so}
+ZENOH_TOKEN_SO=${ZENOH_TOKEN_SO:-$ZENOH_SHIM_DIR/libzenoh_token.so}
 
 IMAGE_TAG=${IMAGE_TAG:-fleet-mcfarland:wsl}
 
@@ -28,13 +37,13 @@ rm -f "$LIB_DIR"/*.so
 
 for src in \
     "$ZENOH_PICO_DIR/libzenohpico.so" \
-    "$ZENOH_SHIM_DIR/libzenoh_pubsub.so" \
-    "$ZENOH_SHIM_DIR/libzenoh_rpc.so" \
-    "$ZENOH_SHIM_DIR/libzenoh_token.so" \
+    "$ZENOH_PUBSUB_SO" \
+    "$ZENOH_RPC_SO" \
+    "$ZENOH_TOKEN_SO" \
     ; do
     if [ ! -f "$src" ]; then
         echo "ERROR: missing $src" >&2
-        echo "Set ZENOH_PICO_DIR / ZENOH_SHIM_DIR to override defaults." >&2
+        echo "Set ZENOH_PICO_DIR / ZENOH_SHIM_DIR / ZENOH_*_SO to override defaults." >&2
         exit 1
     fi
     cp "$src" "$LIB_DIR/"

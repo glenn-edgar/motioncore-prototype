@@ -73,6 +73,23 @@ M.one_shot.MOISTURE_FETCH = function(handle, node)
 
     bb._moisture_slots = bb._moisture_slots or {}
     local slots = bb._moisture_slots
+    -- First fetch after a process boot: hydrate the rings from the bind
+    -- mount. Without this, every container restart treats the TTN backlog
+    -- as all-new (the in-memory ring is empty) and republishes ~10x
+    -- duplicates of the same f_cnts, evicting the real history from the
+    -- persistence ring. With hydration, ring_append's received_at dedup
+    -- naturally drops the overlap.
+    if not bb._moisture_hydrated then
+        local loaded = moisture.load_all_slots(id, cs.device_locations)
+        for sp, slot in pairs(loaded) do
+            if not slots[sp] then slots[sp] = slot end
+        end
+        bb._moisture_hydrated = true
+        local n = 0; for _ in pairs(loaded) do n = n + 1 end
+        if n > 0 then
+            log(id, "hydrated %d ring(s) from disk", n)
+        end
+    end
 
     -- Fetch the lookback window. ttn_client returns errors, never raises.
     local client = ttn_client.new{
@@ -111,6 +128,14 @@ M.one_shot.MOISTURE_FETCH = function(handle, node)
         local record = moisture.record_from_uplink(up)
         if moisture.ring_append(slot, record) then
             appended = appended + 1
+            -- Persist the slot after every accepted append. Cheap (a few
+            -- hundred KB JSON write at most), and guarantees the next
+            -- restart sees this uplink already in the ring so we won't
+            -- republish it. pcall-wrapped: a disk error is non-fatal.
+            local sok, serr = pcall(moisture.save_slot, id, slot)
+            if not sok then
+                log(id, "ring save failed for %s/%s: %s", device, location, tostring(serr))
+            end
             if publish_reading(id, ps, device, location, record) then
                 published = published + 1
             end

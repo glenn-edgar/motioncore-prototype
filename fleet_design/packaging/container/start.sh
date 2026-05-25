@@ -27,6 +27,11 @@ FLEET_LOG_DIR="${FLEET_LOG_DIR:-$FLEET_DATA_DIR/logs}"
 FLEET_SECRETS_DIR="${FLEET_SECRETS_DIR:-/secrets}"
 EVENT_LOG="$FLEET_LOG_DIR/supervisor.log"
 ROTATE_AT_LINES="${ROTATE_AT_LINES:-100}"
+# Dedup window: crash events with identical (proc, rc) within this many
+# seconds of the prior one are suppressed (burst storms compress to one
+# entry). Crashes spread further apart each land in the log, so the
+# maintenance program sees the real cadence in the log gaps. Default 5 min.
+DEDUP_WINDOW_S="${DEDUP_WINDOW_S:-300}"
 
 mkdir -p "$FLEET_LOG_DIR"
 
@@ -63,15 +68,26 @@ mkdir -p "$IDENTITY_DIR_ROOT"
 log_event() {
     local level="$1" event="$2" proc="${3:-supervisor}" pid="${4:-null}" rc="${5:-null}"
 
-    # Dedup: suppress crash events identical to the last recorded crash.
+    # Dedup: suppress crash events identical to the last recorded crash
+    # ONLY IF that prior crash was within DEDUP_WINDOW_S seconds. Burst
+    # storms compress; recurrent same-signature crashes hours apart each
+    # land in the log so the operator sees the real cadence.
     if [ "$event" = "crash" ] && [ -f "$EVENT_LOG" ]; then
-        local last_crash last_proc last_rc
+        local last_crash last_proc last_rc last_ts last_epoch now_epoch age
         last_crash=$(grep '"event":"crash"' "$EVENT_LOG" 2>/dev/null | tail -1)
         if [ -n "$last_crash" ]; then
             last_proc=$(echo "$last_crash" | grep -oE '"proc":"[^"]*"' | cut -d'"' -f4)
             last_rc=$(echo "$last_crash"   | grep -oE '"rc":-?[0-9]+'  | cut -d: -f2)
             if [ "$last_proc" = "$proc" ] && [ "$last_rc" = "$rc" ]; then
-                return    # same crash as last time — leave the log alone
+                last_ts=$(echo "$last_crash" | grep -oE '"ts":"[^"]*"' | cut -d'"' -f4)
+                last_epoch=$(date -u -d "$last_ts" +%s 2>/dev/null || echo "")
+                now_epoch=$(date -u +%s)
+                if [ -n "$last_epoch" ]; then
+                    age=$(( now_epoch - last_epoch ))
+                    if [ "$age" -lt "$DEDUP_WINDOW_S" ]; then
+                        return    # within window — burst storm dedup
+                    fi
+                fi
             fi
         fi
     fi

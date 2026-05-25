@@ -98,3 +98,19 @@ desktop.ini
 /s_engine/lib/
 /s_engine/include/
 /s_engine/runtime/obj/
+
+# === Claude Code working state ===
+.claude/
+
+# === External library working copies (canonical lives in knowledge_base_assembly) ===
+/zenoh_libs/
+
+# === fleet_design per-deploy state (bind-mounted into the container) ===
+/fleet_design/packaging/wsl/var/
+/fleet_design/packaging/wsl/secrets/
+/fleet_design/packaging/wsl/fleet.env
+/fleet_design/packaging/wsl/build_assets/lib/
+
+# === fleet_design per-machine bench identity (not source-controlled) ===
+/fleet_design/identity/
+/fleet_design/fake_robot/identity/

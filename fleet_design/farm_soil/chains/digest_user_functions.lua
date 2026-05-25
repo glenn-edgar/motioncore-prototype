@@ -21,6 +21,7 @@ local cjson         = require("cjson")
 local clock         = require("clock")
 local format_table  = require("format_table")
 local app_heartbeat = require("app_heartbeat")
+local daily_marker  = require("daily_marker")
 
 local M = { main = {}, one_shot = {}, boolean = {} }
 
@@ -104,9 +105,9 @@ end
 --   * pre-window (hour < hour_pacific) -> idle, ok
 --   * in-window, gap pending       -> format and publish, stamp date
 --
--- bb._digest_state.last_published_date is in-memory only; a reboot after
--- today's digest already went out will re-publish today on the first
--- in-window tick. Documented in class_spec.M.digest.
+-- last_published_date is mirrored to a daily_marker file on the bind mount
+-- so a container restart after today's digest already went out does NOT
+-- re-fire on the next in-window tick (used to spam Discord).
 M.one_shot.DAILY_DIGEST = function(handle, _node)
     local bb     = handle.blackboard
     local id, ps = bb._identity, bb._pubsub
@@ -117,6 +118,13 @@ M.one_shot.DAILY_DIGEST = function(handle, _node)
 
     bb._digest_state = bb._digest_state or { last_published_date = nil }
     local state = bb._digest_state
+    -- On first invocation after a process boot, hydrate from the persistent
+    -- marker so we don't re-publish today's digest after a container restart.
+    if not state._loaded_from_marker then
+        local persisted = daily_marker.read(id, "digest")
+        if persisted then state.last_published_date = persisted end
+        state._loaded_from_marker = true
+    end
 
     local p           = clock.pacific_now()
     local pacific_today = clock.california_today()
@@ -176,6 +184,11 @@ M.one_shot.DAILY_DIGEST = function(handle, _node)
     local ok, err = pcall(function() ps:publish(DIGEST_TOPIC, payload) end)
     if ok then
         state.last_published_date = pacific_today
+        local _, mark_err = daily_marker.write(id, "digest", pacific_today)
+        if mark_err then
+            log(id, "WARN: daily_marker write failed (%s); restart could republish",
+                tostring(mark_err))
+        end
         log(id, "published digest for %s (%d moisture rows, %d eto rows, %d body chars)",
             pacific_today, #moisture_rows, #eto_rows, #body)
         app_heartbeat.stamp(handle, "digest", "ok",
