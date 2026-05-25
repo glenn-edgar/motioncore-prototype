@@ -181,21 +181,29 @@ static hal_pin_mode_t map_input_mode(uint8_t il_mode) {
 }
 
 // Claim every input + output pin declared by `inst`, owned by `slot`. On any
-// failure releases all claims and returns false. On success returns true and
-// the HAL has the pins configured per the requested modes.
-static bool claim_inst_pins(uint8_t slot, const il_inst_t* inst) {
+// failure releases all claims this call made and returns the HAL status of
+// the failing claim. On success returns HAL_PIN_CLAIM_OK.
+//
+// Outputs go through hal_pin_claim_output() so shared-output sharing rules
+// (matching ok/err values) apply across slots; inputs are still single-owner.
+static hal_pin_claim_status_t claim_inst_pins(uint8_t slot, const il_inst_t* inst) {
+    hal_pin_claim_status_t cs = HAL_PIN_CLAIM_OK;
     for (uint8_t i = 0; i < inst->input_count; i++) {
         hal_pin_mode_t mode = map_input_mode(inst->inputs[i].mode);
-        if (mode == HAL_PIN_MODE_UNCLAIMED) goto rollback;
-        if (hal_pin_claim(inst->inputs[i].phys_id, slot, mode) != HAL_PIN_CLAIM_OK) goto rollback;
+        if (mode == HAL_PIN_MODE_UNCLAIMED) { cs = HAL_PIN_CLAIM_BAD_MODE; goto rollback; }
+        cs = hal_pin_claim(inst->inputs[i].phys_id, slot, mode);
+        if (cs != HAL_PIN_CLAIM_OK) goto rollback;
     }
     for (uint8_t i = 0; i < inst->output_count; i++) {
-        if (hal_pin_claim(inst->outputs[i].phys_id, slot, HAL_PIN_MODE_GPIO_OUT) != HAL_PIN_CLAIM_OK) goto rollback;
+        cs = hal_pin_claim_output(inst->outputs[i].phys_id, slot,
+                                  inst->outputs[i].ok_value,
+                                  inst->outputs[i].err_value);
+        if (cs != HAL_PIN_CLAIM_OK) goto rollback;
     }
-    return true;
+    return HAL_PIN_CLAIM_OK;
 rollback:
     hal_pin_release_slot(slot);
-    return false;
+    return cs;
 }
 
 uint8_t interlock_set_slot_dsl(uint8_t slot,
@@ -220,9 +228,11 @@ uint8_t interlock_set_slot_dsl(uint8_t slot,
         return SHELL_STATUS_BAD_ARGS;
     }
 
-    if (!claim_inst_pins(slot, &parsed)) {
+    hal_pin_claim_status_t cs = claim_inst_pins(slot, &parsed);
+    if (cs != HAL_PIN_CLAIM_OK) {
         if (err_payload) {
-            err_payload[0] = 0xFFu;  // claim-conflict marker (not a parse error)
+            err_payload[0] = 0xFFu;        // claim-conflict marker (not a parse error)
+            err_payload[1] = (uint8_t)cs;  // sub-reason: hal_pin_claim_status_t
         }
         return SHELL_STATUS_BUSY;
     }
@@ -261,7 +271,7 @@ void interlock_warm_restore(void) {
             sp->state = INTERLOCK_SLOT_POISONED;
             continue;
         }
-        if (!claim_inst_pins(slot, &parsed)) {
+        if (claim_inst_pins(slot, &parsed) != HAL_PIN_CLAIM_OK) {
             sp->state = INTERLOCK_SLOT_POISONED;
             continue;
         }
@@ -272,50 +282,67 @@ void interlock_warm_restore(void) {
     }
 }
 
-// Per-chain-pump tick. Walks ARMED DSL slots, reads inputs, evaluates
-// watches (implicit AND), drives outputs based on T/F. Slice 2 = each slot
-// drives independently — no multi-slot OR-of-vetoes yet (slice 3).
+// Evaluate one slot's watches against a fresh input snapshot. Updates
+// inst->tf_state in place. Does NOT touch outputs — that's the drive phase.
+static void eval_slot(uint8_t slot, il_inst_t* inst) {
+    g_active_interlock_slot = slot;
+
+    uint16_t input_vals[IL_MAX_INPUTS] = {0};
+    for (uint8_t i = 0; i < inst->input_count; i++) {
+        input_vals[i] = hal_pin_read(inst->inputs[i].phys_id);
+    }
+
+    bool all_pass = true;
+    for (uint8_t i = 0; i < inst->watch_count; i++) {
+        uint16_t v = input_vals[inst->watches[i].input_idx];
+        uint16_t t = inst->watches[i].threshold;
+        bool pass = false;
+        switch ((il_compare_op_t)inst->watches[i].op) {
+            case IL_OP_EQ: pass = (v == t); break;
+            case IL_OP_NE: pass = (v != t); break;
+            case IL_OP_LT: pass = (v <  t); break;
+            case IL_OP_GT: pass = (v >  t); break;
+            case IL_OP_LE: pass = (v <= t); break;
+            case IL_OP_GE: pass = (v >= t); break;
+            default: pass = false; break;
+        }
+        if (!pass) { all_pass = false; break; }
+    }
+    inst->tf_state = all_pass ? (uint8_t)IL_TF_TRUE : (uint8_t)IL_TF_FALSE;
+}
+
+// Per-chain-pump tick. Two phases:
+//   1. Eval: every ARMED DSL slot reads inputs + evaluates watches → tf_state
+//   2. Drive: build veto_mask (bit i = slot i is F) and hand to the HAL,
+//      which writes every shared output exactly once with OR-of-vetoes
+//      semantics.
+//
+// Splitting into phases is what makes multi-slot output sharing well-defined:
+// without it the second slot would silently overwrite the first slot's vote
+// every tick. With it, both slots contribute to a single combined value.
 void interlock_tick_all(void) {
+    // Phase 1 — evaluate.
     for (uint8_t slot = 0; slot < INTERLOCK_MAX_SLOTS; slot++) {
         interlock_slot_persist_t* sp = &g_interlock_persist.slots[slot];
         if (sp->state != INTERLOCK_SLOT_ARMED) continue;
         if (sp->id != INTERLOCK_ID_DSL) continue;
-
-        il_inst_t* inst = &g_interlock_persist.inst[slot];
-        g_active_interlock_slot = slot;
-
-        // Snapshot all inputs once before evaluating watches.
-        uint16_t input_vals[IL_MAX_INPUTS] = {0};
-        for (uint8_t i = 0; i < inst->input_count; i++) {
-            input_vals[i] = hal_pin_read(inst->inputs[i].phys_id);
-        }
-
-        bool all_pass = true;
-        for (uint8_t i = 0; i < inst->watch_count; i++) {
-            uint16_t v = input_vals[inst->watches[i].input_idx];
-            uint16_t t = inst->watches[i].threshold;
-            bool pass = false;
-            switch ((il_compare_op_t)inst->watches[i].op) {
-                case IL_OP_EQ: pass = (v == t); break;
-                case IL_OP_NE: pass = (v != t); break;
-                case IL_OP_LT: pass = (v <  t); break;
-                case IL_OP_GT: pass = (v >  t); break;
-                case IL_OP_LE: pass = (v <= t); break;
-                case IL_OP_GE: pass = (v >= t); break;
-                default: pass = false; break;
-            }
-            if (!pass) { all_pass = false; break; }
-        }
-
-        inst->tf_state = all_pass ? (uint8_t)IL_TF_TRUE : (uint8_t)IL_TF_FALSE;
-        for (uint8_t o = 0; o < inst->output_count; o++) {
-            uint8_t val = all_pass
-                ? inst->outputs[o].ok_value
-                : inst->outputs[o].err_value;
-            hal_pin_write(inst->outputs[o].phys_id, val);
-        }
+        eval_slot(slot, &g_interlock_persist.inst[slot]);
     }
     g_active_interlock_slot = INTERLOCK_CRASHED_SLOT_NONE;
+
+    // Phase 2 — drive outputs. Build the veto mask from slots that
+    // evaluated to FALSE. EMPTY/POISONED/non-DSL slots contribute no
+    // claims to the HAL so they're naturally excluded.
+    uint8_t veto_mask = 0;
+    for (uint8_t slot = 0; slot < INTERLOCK_MAX_SLOTS; slot++) {
+        const interlock_slot_persist_t* sp = &g_interlock_persist.slots[slot];
+        if (sp->state != INTERLOCK_SLOT_ARMED) continue;
+        if (sp->id != INTERLOCK_ID_DSL) continue;
+        if (g_interlock_persist.inst[slot].tf_state == (uint8_t)IL_TF_FALSE) {
+            veto_mask |= (uint8_t)(1u << slot);
+        }
+    }
+    hal_pin_drive_outputs(veto_mask);
 }
 
 const interlock_slot_persist_t* interlock_get_slot(uint8_t slot) {

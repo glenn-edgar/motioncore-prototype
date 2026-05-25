@@ -955,7 +955,12 @@ static uint8_t cmd_interlock_set(shell_reader_t* args, shell_writer_t* result) {
         sw_u8(result, err_payload[2]);
         if (result->overflow) return SHELL_STATUS_RESULT_TOO_BIG;
     } else if (st == SHELL_STATUS_BUSY) {
-        sw_u8(result, err_payload[0]);  // 0xFF for claim-conflict, 0 for slot-already-armed
+        // payload[0]: 0xFF = pin claim conflict, 0 = slot already armed.
+        // payload[1] (claim-conflict only): hal_pin_claim_status_t sub-reason
+        // (3=TAKEN, 6=VALUE_MISMATCH, 2=RESERVED, ...). Slot-already-armed
+        // path leaves [1]=0 which the host renders as the generic message.
+        sw_u8(result, err_payload[0]);
+        sw_u8(result, err_payload[1]);
         if (result->overflow) return SHELL_STATUS_RESULT_TOO_BIG;
     }
     return st;

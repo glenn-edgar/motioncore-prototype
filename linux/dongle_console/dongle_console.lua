@@ -1934,7 +1934,9 @@ local function decode_s2m_frame()
                 pending_shell_requests[req_id] = nil
             elseif (status == 2 or status == 5) and expected_cmd == CMD_INTERLOCK_SET and len >= 3 then
                 -- Parse error (status=BAD_ARGS=2): {parse_err:u8, offset_lo:u8, offset_hi:u8}
-                -- Pin claim conflict (status=BUSY=5): {0xFF marker}
+                -- BUSY (status=5): {marker:u8, sub_reason:u8}
+                --   marker 0xFF = pin claim conflict (sub_reason = hal_pin_claim_status_t)
+                --   marker 0    = slot already armed (sub_reason = 0, ignored)
                 local PARSE_ERR_LABEL = {
                     [0]="ok", [1]="unexpected_char", [2]="unexpected_end",
                     [3]="bad_number", [4]="unknown_keyword", [5]="unknown_pin",
@@ -1944,15 +1946,29 @@ local function decode_s2m_frame()
                     [14]="output_value_mismatch", [15]="missing_out_ok",
                     [16]="missing_out_err", [17]="empty",
                 }
+                local CLAIM_ERR_LABEL = {
+                    [0]="ok", [1]="no_such_pin", [2]="reserved",
+                    [3]="taken (other slot)", [4]="cap_missing",
+                    [5]="bad_mode", [6]="value_mismatch (shared output ok/err differ)",
+                }
                 if len >= 6 and status == 2 then
                     -- BAD_ARGS: {parse_err:u8, offset_lo:u8, offset_hi:u8}
                     local err = f[11]
                     local off = bit.bor(f[12], bit.lshift(f[13], 8))
                     io.write(string.format("\n  interlock_set: parse error %s(%d) at offset %d",
                         PARSE_ERR_LABEL[err] or "?", err, off))
+                elseif status == 5 and len >= 5 then
+                    -- BUSY: 2-byte payload {marker, sub_reason}.
+                    local marker = f[11]
+                    local sub    = f[12]
+                    if marker == 0xFF then
+                        io.write(string.format("\n  interlock_set: pin claim conflict — %s(%d)",
+                            CLAIM_ERR_LABEL[sub] or "?", sub))
+                    else
+                        io.write(string.format("\n  interlock_set: slot is already armed (disarm first)"))
+                    end
                 elseif status == 5 and len == 4 then
-                    -- BUSY: 1-byte payload. 0xFF = pin claim conflict; 0 = slot
-                    -- already armed (must explicitly disarm first).
+                    -- Legacy 1-byte BUSY payload (slice 2 firmware).
                     local marker = f[11]
                     if marker == 0xFF then
                         io.write(string.format("\n  interlock_set: pin claim conflict (reserved or owned by other slot)"))
