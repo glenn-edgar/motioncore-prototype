@@ -80,7 +80,7 @@ LDFLAGS  := $(CPU_FLAGS) \
             -nostartfiles \
             --specs=nano.specs --specs=nosys.specs \
             -Wl,--gc-sections \
-            -Wl,--defsym=__stack_size__=0x800 \
+            -Wl,--defsym=__stack_size__=0x1000 \
             -Wl,-Map=$(BUILD)/$(TARGET).map
 LIBS     := -lc -lm -lgcc -lnosys
 

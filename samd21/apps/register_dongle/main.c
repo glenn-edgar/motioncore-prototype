@@ -152,6 +152,40 @@ static uint8_t       g_tx_ring_buf[TX_RING_SIZE];
 frame_ring_t         g_tx_ring;
 
 // ----------------------------------------------------------------------------
+// Stack hardening (slice-4): paint .stack at boot with STACK_PAINT_VALUE,
+// reserve the lowest 4 bytes at _sstack as a canary, then check the canary
+// + scan for high-water mark after every chain pump tick. Overflow triggers
+// a deferred reset so the diagnostic log line drains via TX ring first.
+//
+// Linker symbols (placed by seeeduino_xiao_noinit.ld):
+//   _sstack — lowest address of the .stack region
+//   _estack — highest address; initial SP value loaded by the vector table
+//
+// .noinit now sits ABOVE .stack (after slice-4 reorder), so SP dropping
+// below _sstack writes into .bss/heap instead of corrupting g_interlock_persist.
+// ----------------------------------------------------------------------------
+// _sstack/_estack declared as `char[]` higher up in this file (for sysinfo).
+#define STACK_PAINT_VALUE   0xDEADBEEFu
+#define STACK_CANARY_VALUE  0xCAFEBABEu
+
+volatile uint16_t g_stack_hwm_bytes      = 0;     // peak observed depth (bytes)
+volatile uint16_t g_stack_size_bytes     = 0;     // total stack region size
+volatile uint8_t  g_stack_canary_tripped = 0;     // 1 = overflow detected
+
+static void stack_paint_and_canary(void) {
+    // Paint from _sstack up to (current SP - safety). Don't write above SP —
+    // that would clobber our own stack frame.
+    uint32_t sp;
+    __asm__ volatile ("mov %0, sp" : "=r"(sp));
+    uint32_t* p   = (uint32_t*)(uintptr_t)_sstack;
+    uint32_t* end = (uint32_t*)(sp - 64);     // 64 B safety from current SP
+    while (p < end) *p++ = STACK_PAINT_VALUE;
+    // Canary at the LOWEST word — first thing overwritten by stack overflow.
+    *(volatile uint32_t*)(uintptr_t)_sstack = STACK_CANARY_VALUE;
+    g_stack_size_bytes = (uint16_t)((uintptr_t)_estack - (uintptr_t)_sstack);
+}
+
+// ----------------------------------------------------------------------------
 // RX frame decoder. Direction = M2S (5-byte header). Persistent state — the
 // in_escape flag does NOT reset between calls. Frames feed in one byte at a
 // time from tud_cdc_read; on FRAME_READY we push the cmd to the engine.
@@ -263,6 +297,11 @@ int main(void) {
     // WDT bite (the layer-2 chain-stuck signal) from power-on / external
     // reset / NVIC_SystemReset.
     hal_capture_reset_cause();
+
+    // Paint stack + install canary. Must run AFTER reset cause capture
+    // (which uses minimal stack) and BEFORE any deeper call chain that
+    // would consume more stack than our 64 B paint-safety margin allows.
+    stack_paint_and_canary();
 
     // Interlock framework boot decision. Reads .noinit persistence, applies
     // bootloop guard, marks slots POISONED if they've crashed too many times
@@ -391,6 +430,23 @@ int main(void) {
             // about; the chain's just-drained event queue is now empty so a
             // freshly-arrived CMD_INTERLOCK_SET won't race with the tick.
             interlock_tick_all();
+
+            // Stack hardening: verify canary + update HWM after every
+            // chain pump cycle. Canary trip → defer-reset so the diag
+            // log line drains via the TX ring before the chip resets.
+            if (*(volatile uint32_t*)(uintptr_t)_sstack != STACK_CANARY_VALUE) {
+                g_stack_canary_tripped = 1;
+                if (module.debug_fn) {
+                    module.debug_fn(NULL, "[STACK_CANARY_TRIPPED] forcing reset");
+                }
+                firmware_request_reboot(200);
+            } else {
+                uint32_t* p   = (uint32_t*)((uintptr_t)_sstack + 4);
+                uint32_t* end = (uint32_t*)(uintptr_t)_estack;
+                while (p < end && *p == STACK_PAINT_VALUE) p++;
+                uint16_t used = (uint16_t)((uintptr_t)end - (uintptr_t)p);
+                if (used > g_stack_hwm_bytes) g_stack_hwm_bytes = used;
+            }
         }
 
         // Drain a chunk of the TX ring to CDC every loop. CFG_TUD_CDC_TX_BUFSIZE

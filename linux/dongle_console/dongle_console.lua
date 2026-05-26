@@ -134,6 +134,7 @@ local CMD_I2C_SCAN           = 0x0133
 local CMD_TEST_HANG          = 0x0120
 -- Interlock framework foundation (slice 1). SAMD21-only for now.
 local CMD_INTERLOCK_STATUS   = 0x0140
+local CMD_STACK_HWM          = 0x0050
 local CMD_INTERLOCK_ARM_NOOP = 0x0141
 local CMD_INTERLOCK_DISARM   = 0x0142
 local CMD_INTERLOCK_SET      = 0x0143
@@ -517,6 +518,21 @@ local function parse_args(argv)
             table.insert(opts.send_seq, {
                 cmd        = 0x0109,
                 label      = string.format("OP_SHELL_EXEC(interlock_disarm sl=%d)", slot),
+                payload    = payload,
+                shell_req  = req_id,
+                shell_cmd  = cmd_id,
+            })
+        elseif a == "--send-shell-stack-hwm" then
+            -- Stack high-water-mark + canary-tripped flag. No args.
+            local req_id = alloc_shell_req()
+            local cmd_id = CMD_STACK_HWM
+            local payload = {
+                bit.band(req_id, 0xFF), bit.band(bit.rshift(req_id, 8), 0xFF),
+                bit.band(cmd_id, 0xFF), bit.band(bit.rshift(cmd_id, 8), 0xFF),
+            }
+            table.insert(opts.send_seq, {
+                cmd        = 0x0109,
+                label      = "OP_SHELL_EXEC(stack_hwm)",
                 payload    = payload,
                 shell_req  = req_id,
                 shell_cmd  = cmd_id,
@@ -2020,6 +2036,15 @@ local function decode_s2m_frame()
                 io.write(string.format("\n    crash:  pc=0x%s lr=0x%s rstsr=0x%s slot=%s",
                     bit.tohex(pc):upper(), bit.tohex(lr):upper(),
                     bit.tohex(rs):upper(), cs_str))
+                pending_shell_requests[req_id] = nil
+            elseif status == 0 and expected_cmd == CMD_STACK_HWM and len >= 3 + 5 then
+                local hwm  = bit.bor(f[11], bit.lshift(f[12], 8))
+                local size = bit.bor(f[13], bit.lshift(f[14], 8))
+                local trip = f[15]
+                local pct  = (size > 0) and math.floor((hwm * 100) / size) or 0
+                io.write(string.format(
+                    "\n  stack_hwm: peak=%d/%d B (%d%%) canary_tripped=%d",
+                    hwm, size, pct, trip))
                 pending_shell_requests[req_id] = nil
             elseif status == 0 and expected_cmd == CMD_SYSINFO and len >= 3 + 37 then
                 -- Decode firmware_sysinfo_t result_message (37 B, version=1 expected).

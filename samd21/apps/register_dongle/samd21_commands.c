@@ -993,6 +993,19 @@ static uint8_t cmd_interlock_disarm(shell_reader_t* args, shell_writer_t* result
     return interlock_disarm_slot(slot);
 }
 
+// Slice-4 stack hardening: surface the runtime stack budget + peak depth.
+static uint8_t cmd_stack_hwm(shell_reader_t* args, shell_writer_t* result) {
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    extern volatile uint16_t g_stack_hwm_bytes;
+    extern volatile uint16_t g_stack_size_bytes;
+    extern volatile uint8_t  g_stack_canary_tripped;
+    sw_u16(result, g_stack_hwm_bytes);
+    sw_u16(result, g_stack_size_bytes);
+    sw_u8 (result, g_stack_canary_tripped);
+    if (result->overflow) return SHELL_STATUS_RESULT_TOO_BIG;
+    return SHELL_STATUS_OK;
+}
+
 // ---------- chip-specific dispatch table ---------------------------------
 
 static const shell_cmd_entry_t g_chip_commands[] = {
@@ -1013,6 +1026,7 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_INTERLOCK_ARM_NOOP,  "interlock_arm_noop", cmd_interlock_arm_noop },
     { CMD_INTERLOCK_DISARM,    "interlock_disarm",   cmd_interlock_disarm   },
     { CMD_INTERLOCK_SET,       "interlock_set",      cmd_interlock_set      },
+    { CMD_STACK_HWM,           "stack_hwm",          cmd_stack_hwm          },
 };
 
 const shell_cmd_entry_t* chip_commands_table(void) {

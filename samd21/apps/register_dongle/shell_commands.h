@@ -126,6 +126,9 @@ const shell_cmd_entry_t* shell_find_cmd(uint16_t command_id);
 //   SHELL_STATUS_BAD_ARGS   → {parse_err:u8, offset_lo:u8, offset_hi:u8}
 //   SHELL_STATUS_BUSY       → {0xFF marker} (slot armed or pin-claim conflict)
 #define CMD_INTERLOCK_SET     ((uint16_t)0x0143)
+// Slice 4 stack hardening: read peak observed stack depth + total budget +
+// canary-tripped flag. Reply (5 B): hwm_bytes:u16, size_bytes:u16, tripped:u8
+#define CMD_STACK_HWM         ((uint16_t)0x0050)
 
 // 0x0130..0x0133: I2C master (SERCOM2 on D4=SDA / D5=SCL, 100 kHz).
 // Statically initialised at boot via samd21_peripherals_init(); D4/D5 are
