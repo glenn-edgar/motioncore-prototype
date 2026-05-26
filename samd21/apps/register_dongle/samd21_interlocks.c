@@ -176,6 +176,7 @@ static hal_pin_mode_t map_input_mode(uint8_t il_mode) {
         case IL_PIN_MODE_IN:    return HAL_PIN_MODE_GPIO_IN;
         case IL_PIN_MODE_IN_PU: return HAL_PIN_MODE_GPIO_IN_PU;
         case IL_PIN_MODE_IN_PD: return HAL_PIN_MODE_GPIO_IN_PD;
+        case IL_PIN_MODE_ADC:   return HAL_PIN_MODE_ADC_SCAN;
         default:                return HAL_PIN_MODE_UNCLAIMED;
     }
 }
@@ -186,12 +187,19 @@ static hal_pin_mode_t map_input_mode(uint8_t il_mode) {
 //
 // Outputs go through hal_pin_claim_output() so shared-output sharing rules
 // (matching ok/err values) apply across slots; inputs are still single-owner.
+// ADC inputs go through hal_pin_claim_adc() with the per-input oversample/sh.
 static hal_pin_claim_status_t claim_inst_pins(uint8_t slot, const il_inst_t* inst) {
     hal_pin_claim_status_t cs = HAL_PIN_CLAIM_OK;
     for (uint8_t i = 0; i < inst->input_count; i++) {
-        hal_pin_mode_t mode = map_input_mode(inst->inputs[i].mode);
-        if (mode == HAL_PIN_MODE_UNCLAIMED) { cs = HAL_PIN_CLAIM_BAD_MODE; goto rollback; }
-        cs = hal_pin_claim(inst->inputs[i].phys_id, slot, mode);
+        if ((il_pin_mode_t)inst->inputs[i].mode == IL_PIN_MODE_ADC) {
+            cs = hal_pin_claim_adc(inst->inputs[i].phys_id, slot,
+                                   inst->inputs[i].oversample_exp,
+                                   inst->inputs[i].sh_cyc);
+        } else {
+            hal_pin_mode_t mode = map_input_mode(inst->inputs[i].mode);
+            if (mode == HAL_PIN_MODE_UNCLAIMED) { cs = HAL_PIN_CLAIM_BAD_MODE; goto rollback; }
+            cs = hal_pin_claim(inst->inputs[i].phys_id, slot, mode);
+        }
         if (cs != HAL_PIN_CLAIM_OK) goto rollback;
     }
     for (uint8_t i = 0; i < inst->output_count; i++) {
@@ -289,7 +297,11 @@ static void eval_slot(uint8_t slot, il_inst_t* inst) {
 
     uint16_t input_vals[IL_MAX_INPUTS] = {0};
     for (uint8_t i = 0; i < inst->input_count; i++) {
-        input_vals[i] = hal_pin_read(inst->inputs[i].phys_id);
+        if ((il_pin_mode_t)inst->inputs[i].mode == IL_PIN_MODE_ADC) {
+            input_vals[i] = hal_pin_read_adc(inst->inputs[i].phys_id);
+        } else {
+            input_vals[i] = hal_pin_read(inst->inputs[i].phys_id);
+        }
     }
 
     bool all_pass = true;

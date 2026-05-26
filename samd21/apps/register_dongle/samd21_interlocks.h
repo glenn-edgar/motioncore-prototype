@@ -37,7 +37,8 @@
 // future-firmware boots detect old-firmware noinit data and re-initialise.
 // v1 (slice 1): magic + per-slot state/id/boot_counter + crash record only.
 // v2 (slice 2): adds il_inst_t + dsl_text per slot.
-#define INTERLOCK_PERSIST_VERSION    2u
+// v3 (slice 4): grows il_input_t with oversample_exp + sh_cyc for ADC inputs.
+#define INTERLOCK_PERSIST_VERSION    3u
 
 // ---- Slice 2: DSL-driven interlock instance ------------------------------
 
@@ -56,6 +57,7 @@ typedef enum {
     IL_PIN_MODE_IN_PU  = 1,
     IL_PIN_MODE_IN_PD  = 2,
     IL_PIN_MODE_OUT    = 3,
+    IL_PIN_MODE_ADC    = 4,   // slice 4: 12-bit analog input
 } il_pin_mode_t;
 
 typedef enum {
@@ -76,6 +78,8 @@ typedef enum {
 typedef struct {
     uint8_t  phys_id;             // resolved board_pin_phys_id()
     uint8_t  mode;                // il_pin_mode_t
+    uint8_t  oversample_exp;      // ADC mode only (0..4); ignored for GPIO
+    uint8_t  sh_cyc;              // ADC mode only (0..63); ignored for GPIO
 } il_input_t;
 
 typedef struct {
@@ -122,6 +126,12 @@ typedef enum {
     IL_PARSE_MISSING_OUT_OK        = 15,
     IL_PARSE_MISSING_OUT_ERR       = 16,
     IL_PARSE_EMPTY                 = 17,
+    // Slice 4 — ADC + comparison-op extensions
+    IL_PARSE_UNKNOWN_OP             = 18,  // watch op not in {eq,ne,lt,gt,le,ge}
+    IL_PARSE_OVERSAMPLE_OUT_OF_RANGE = 19, // oversample_N: N not in {1,2,4,8,16}
+    IL_PARSE_SH_OUT_OF_RANGE        = 20,  // sh_N: N > 63
+    IL_PARSE_MODIFIER_ON_GPIO       = 21,  // oversample_N or sh_N on non-adc cfg
+    IL_PARSE_THRESHOLD_OUT_OF_RANGE = 22,  // watch threshold > 65535 (defence — read_number truncates)
 } il_parse_status_t;
 
 // Parse DSL text into out. text is not required to be NUL-terminated.

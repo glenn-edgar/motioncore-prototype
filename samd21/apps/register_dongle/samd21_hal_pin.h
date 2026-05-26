@@ -52,6 +52,23 @@ typedef enum {
 // On failure NO side effects (no register writes, no ownership recorded).
 hal_pin_claim_status_t hal_pin_claim(uint8_t phys_id, uint8_t slot, hal_pin_mode_t mode);
 
+// Claim an ADC INPUT pin for `slot` with explicit oversample + sample-hold
+// config. Single-owner like GPIO inputs (no sharing).
+//
+// `oversample_exp` is 0..7 (SAMPLENUM = 2^N); `sh_cyc` is 0..63. Values
+// outside those ranges → BAD_MODE. Pin must have BOARD_PIN_CAP_ADC.
+//
+// On success the (channel, oversample, sh) is recorded in the claim table
+// but no conversion is performed — that's hal_pin_read_adc's job.
+hal_pin_claim_status_t hal_pin_claim_adc(uint8_t phys_id, uint8_t slot,
+                                         uint8_t oversample_exp, uint8_t sh_cyc);
+
+// Read the current 12-bit-equivalent ADC value (0..4095) for an ADC pin
+// previously claimed by hal_pin_claim_adc. Triggers a synchronous conversion
+// using the per-claim oversample + sh config. Returns 0 if the pin isn't
+// claimed as ADC.
+uint16_t               hal_pin_read_adc(uint8_t phys_id);
+
 // Claim an OUTPUT pin for `slot` with explicit ok/err values. Sharing rules:
 //   * unclaimed → claim, record values
 //   * already claimed by `slot` → idempotent re-config

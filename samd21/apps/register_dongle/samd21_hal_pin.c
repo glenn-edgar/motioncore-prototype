@@ -5,19 +5,26 @@
 
 #include "samd21_hal_pin.h"
 #include "samd21.h"
+#include "samd21_adc.h"
 #include <string.h>
 
 // Pin-ownership table indexed by physical pin id (port<<5 | pin). 64 entries
-// covers PA0..PA31 + PB0..PB31. ~256 B in .bss.
+// covers PA0..PA31 + PB0..PB31. ~512 B in .bss (8 B/record × 64).
 //
 // slot_mask: bit i set means slot i is sharing this pin. 0 = unclaimed.
 // ok_value/err_value: meaningful for GPIO_OUT only; uniform across all
 //   slots sharing the pin (enforced at claim time).
+// oversample_exp/sh_cyc/adc_channel: meaningful for ADC_SCAN only; recorded
+//   at claim time and reapplied on every hal_pin_read_adc.
 typedef struct {
     uint8_t slot_mask;
-    uint8_t mode;         // hal_pin_mode_t (uniform across sharers)
-    uint8_t ok_value;
-    uint8_t err_value;
+    uint8_t mode;             // hal_pin_mode_t (uniform across sharers)
+    uint8_t ok_value;         // output mode only
+    uint8_t err_value;        // output mode only
+    uint8_t oversample_exp;   // ADC mode only (0..7)
+    uint8_t sh_cyc;           // ADC mode only (0..63)
+    uint8_t adc_channel;      // ADC mode only (AIN index from pin table)
+    uint8_t reserved;         // pad to 8 B
 } hal_pin_claim_record_t;
 
 static hal_pin_claim_record_t g_claims[HAL_PIN_TABLE_SIZE];
@@ -26,10 +33,14 @@ static bool                   g_claims_initialised = false;
 static void ensure_initialised(void) {
     if (g_claims_initialised) return;
     for (uint8_t i = 0; i < HAL_PIN_TABLE_SIZE; i++) {
-        g_claims[i].slot_mask = 0;
-        g_claims[i].mode      = HAL_PIN_MODE_UNCLAIMED;
-        g_claims[i].ok_value  = 0;
-        g_claims[i].err_value = 0;
+        g_claims[i].slot_mask      = 0;
+        g_claims[i].mode           = HAL_PIN_MODE_UNCLAIMED;
+        g_claims[i].ok_value       = 0;
+        g_claims[i].err_value      = 0;
+        g_claims[i].oversample_exp = 0;
+        g_claims[i].sh_cyc         = 0;
+        g_claims[i].adc_channel    = 0xFFu;
+        g_claims[i].reserved       = 0;
     }
     g_claims_initialised = true;
 }
@@ -87,6 +98,8 @@ hal_pin_claim_status_t hal_pin_claim(uint8_t phys_id, uint8_t slot, hal_pin_mode
     }
     // Outputs MUST use hal_pin_claim_output for the (ok,err) declaration.
     if (mode == HAL_PIN_MODE_GPIO_OUT) return HAL_PIN_CLAIM_BAD_MODE;
+    // ADC MUST use hal_pin_claim_adc for oversample/sh declaration.
+    if (mode == HAL_PIN_MODE_ADC_SCAN) return HAL_PIN_CLAIM_BAD_MODE;
 
     const board_pin_t* bp = find_board_pin(phys_id);
     if (bp == 0) return HAL_PIN_CLAIM_NO_SUCH_PIN;
@@ -95,9 +108,7 @@ hal_pin_claim_status_t hal_pin_claim(uint8_t phys_id, uint8_t slot, hal_pin_mode
     bool needs_gpio = (mode == HAL_PIN_MODE_GPIO_IN
                     || mode == HAL_PIN_MODE_GPIO_IN_PU
                     || mode == HAL_PIN_MODE_GPIO_IN_PD);
-    bool needs_adc  = (mode == HAL_PIN_MODE_ADC_SCAN);
     if (needs_gpio && (bp->caps & BOARD_PIN_CAP_GPIO) == 0u) return HAL_PIN_CLAIM_CAP_MISSING;
-    if (needs_adc  && (bp->caps & BOARD_PIN_CAP_ADC)  == 0u) return HAL_PIN_CLAIM_CAP_MISSING;
 
     const uint8_t slot_bit = (uint8_t)(1u << slot);
 
@@ -110,13 +121,57 @@ hal_pin_claim_status_t hal_pin_claim(uint8_t phys_id, uint8_t slot, hal_pin_mode
     if (needs_gpio) {
         port_configure_input(bp->port, bp->pin, mode);
     }
-    // ADC mode: future slice 4 will set up the ADC mux here.
 
     g_claims[phys_id].slot_mask = slot_bit;
     g_claims[phys_id].mode      = (uint8_t)mode;
     g_claims[phys_id].ok_value  = 0;
     g_claims[phys_id].err_value = 0;
     return HAL_PIN_CLAIM_OK;
+}
+
+hal_pin_claim_status_t hal_pin_claim_adc(uint8_t phys_id, uint8_t slot,
+                                         uint8_t oversample_exp, uint8_t sh_cyc) {
+    ensure_initialised();
+    if (phys_id >= HAL_PIN_TABLE_SIZE)    return HAL_PIN_CLAIM_NO_SUCH_PIN;
+    if (oversample_exp > 7u)              return HAL_PIN_CLAIM_BAD_MODE;
+    if (sh_cyc > 63u)                     return HAL_PIN_CLAIM_BAD_MODE;
+
+    const board_pin_t* bp = find_board_pin(phys_id);
+    if (bp == 0)                          return HAL_PIN_CLAIM_NO_SUCH_PIN;
+    if (board_pin_is_reserved(bp))        return HAL_PIN_CLAIM_RESERVED;
+    if ((bp->caps & BOARD_PIN_CAP_ADC) == 0u) return HAL_PIN_CLAIM_CAP_MISSING;
+    if (bp->adc_channel == BOARD_PIN_ADC_NONE) return HAL_PIN_CLAIM_CAP_MISSING;
+
+    const uint8_t slot_bit = (uint8_t)(1u << slot);
+
+    // ADC inputs are single-owner. Allow re-claim by the same slot (idempotent).
+    if (g_claims[phys_id].slot_mask != 0
+        && g_claims[phys_id].slot_mask != slot_bit) {
+        return HAL_PIN_CLAIM_TAKEN;
+    }
+    // If reclaiming, must be ADC mode — refuse if a non-ADC claim is present.
+    if (g_claims[phys_id].slot_mask == slot_bit
+        && g_claims[phys_id].mode != (uint8_t)HAL_PIN_MODE_ADC_SCAN) {
+        return HAL_PIN_CLAIM_TAKEN;
+    }
+
+    g_claims[phys_id].slot_mask      = slot_bit;
+    g_claims[phys_id].mode           = (uint8_t)HAL_PIN_MODE_ADC_SCAN;
+    g_claims[phys_id].ok_value       = 0;
+    g_claims[phys_id].err_value      = 0;
+    g_claims[phys_id].oversample_exp = oversample_exp;
+    g_claims[phys_id].sh_cyc         = sh_cyc;
+    g_claims[phys_id].adc_channel    = bp->adc_channel;
+    return HAL_PIN_CLAIM_OK;
+}
+
+uint16_t hal_pin_read_adc(uint8_t phys_id) {
+    ensure_initialised();
+    if (phys_id >= HAL_PIN_TABLE_SIZE) return 0;
+    const hal_pin_claim_record_t* c = &g_claims[phys_id];
+    if (c->mode != (uint8_t)HAL_PIN_MODE_ADC_SCAN) return 0;
+    if (c->adc_channel == 0xFFu) return 0;
+    return samd21_adc_read_oneshot(c->adc_channel, c->oversample_exp, c->sh_cyc);
 }
 
 hal_pin_claim_status_t hal_pin_claim_output(uint8_t phys_id, uint8_t slot,

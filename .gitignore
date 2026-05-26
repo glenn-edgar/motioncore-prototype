@@ -5,6 +5,10 @@ build/
 *.hex
 *.map
 *.ino.cpp
+*.uf2
+
+# === Bench artifacts (per feedback-no-tmp rule) ===
+/samd21/apps/*/var/
 
 # === ESP-IDF ===
 sdkconfig.old

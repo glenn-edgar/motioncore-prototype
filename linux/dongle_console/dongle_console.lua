@@ -1945,6 +1945,11 @@ local function decode_s2m_frame()
                     [12]="watch_input_undecl", [13]="output_undecl",
                     [14]="output_value_mismatch", [15]="missing_out_ok",
                     [16]="missing_out_err", [17]="empty",
+                    [18]="unknown_op (eq|ne|lt|gt|le|ge)",
+                    [19]="oversample_out_of_range (must be 1|2|4|8|16)",
+                    [20]="sh_out_of_range (0..63)",
+                    [21]="modifier_on_gpio (oversample_N/sh_N is adc-only)",
+                    [22]="threshold_out_of_range",
                 }
                 local CLAIM_ERR_LABEL = {
                     [0]="ok", [1]="no_such_pin", [2]="reserved",

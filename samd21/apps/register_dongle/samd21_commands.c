@@ -22,6 +22,7 @@
 #include "vendor/libcomm/opcodes.h"   // SHELL_STATUS_*
 #include "samd21.h"
 #include "bsp/board_api.h"           // board_millis()
+#include "samd21_adc.h"              // samd21_adc_read_oneshot public API
 
 // ---------- pin validation -------------------------------------------------
 
@@ -540,6 +541,33 @@ static uint32_t adc_min_sample_period_us(uint8_t oversample_exp, uint8_t sample_
     return (ns + 999u) / 1000u;
 }
 
+// ---------- Public single-shot ADC reader ---------------------------------
+// Exposed via samd21_adc.h for use by the interlock framework's adc_int
+// input source. Mirrors the conversion path used by CMD_ADC_READ; callers
+// are responsible for not interleaving with a long-running ADC capture.
+uint16_t samd21_adc_read_oneshot(uint8_t channel,
+                                 uint8_t oversample_exp,
+                                 uint8_t sh_cyc) {
+    if (channel > 19u) return 0;
+
+    adc_init();
+    (void)adc_apply_avg_hold(oversample_exp, sh_cyc);
+
+    ain_to_pad_t pad = g_ain_to_pad[channel];
+    if (pad.port != 0xFFu) {
+        adc_pin_config(pad.port, pad.pin);
+    }
+
+    ADC->INPUTCTRL.bit.MUXPOS = channel;
+    while (ADC->STATUS.bit.SYNCBUSY) { /* spin */ }
+    ADC->INTFLAG.reg = ADC_INTFLAG_RESRDY;
+    ADC->SWTRIG.bit.START = 1;
+    while (!ADC->INTFLAG.bit.RESRDY) { /* spin */ }
+    uint16_t value = (uint16_t)ADC->RESULT.reg;
+    ADC->INTFLAG.reg = ADC_INTFLAG_RESRDY;
+    return value;
+}
+
 // ---------- CMD_ADC_READ -------------------------------------------------
 // args:   channel:u8 (AIN index, 0..19)
 //         oversample_exp:u8  (0..7 → 1..128 samples averaged)
@@ -551,28 +579,13 @@ static uint8_t cmd_adc_read(shell_reader_t* args, shell_writer_t* result) {
     uint8_t channel         = sr_u8(args);
     uint8_t oversample_exp  = sr_u8(args);
     uint8_t sample_hold_cyc = sr_u8(args);
-    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
-    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
-    if (channel > 19u)           return SHELL_STATUS_BAD_ARGS;
+    if (args->overflow)                       return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0)              return SHELL_STATUS_BAD_ARGS;
+    if (channel > 19u)                        return SHELL_STATUS_BAD_ARGS;
+    if (oversample_exp > ADC_OVERSAMPLE_MAX)  return SHELL_STATUS_BAD_ARGS;
+    if (sample_hold_cyc > ADC_SAMPLE_HOLD_MAX) return SHELL_STATUS_BAD_ARGS;
 
-    uint8_t st = adc_apply_avg_hold(oversample_exp, sample_hold_cyc);
-    if (st != SHELL_STATUS_OK) return st;
-
-    // Configure the pad for analog input. (Idempotent — safe to call repeatedly.)
-    ain_to_pad_t pad = g_ain_to_pad[channel];
-    if (pad.port != 0xFFu) {
-        adc_pin_config(pad.port, pad.pin);
-    }
-
-    // Set positive input channel + start a conversion.
-    ADC->INPUTCTRL.bit.MUXPOS = channel;
-    while (ADC->STATUS.bit.SYNCBUSY) { /* spin */ }
-    ADC->INTFLAG.reg = ADC_INTFLAG_RESRDY;   // clear stale
-    ADC->SWTRIG.bit.START = 1;
-    while (!ADC->INTFLAG.bit.RESRDY) { /* spin */ }
-    uint16_t value = (uint16_t)ADC->RESULT.reg;
-    ADC->INTFLAG.reg = ADC_INTFLAG_RESRDY;
-
+    uint16_t value = samd21_adc_read_oneshot(channel, oversample_exp, sample_hold_cyc);
     sw_u16(result, value);
     return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
 }
