@@ -1,0 +1,10184 @@
+{
+  "satellite_2:11": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 39.736,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 35.528,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 36.636,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 39.074,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 43.408,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 45.956,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 39.736,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 39.736,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 39.074,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 39.736,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 38.435,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 37.217,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 42.62,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.501,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 39.736,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 37.816,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 37.816,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 45.956,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.501,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 37.816,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_1:40": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 330.64,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 211.522,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 211.522,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 211.522,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 289.838,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 330.64,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 289.838,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 460.228,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 289.838,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 232.456,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 289.838,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 289.838,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 232.456,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 289.838,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 384.822,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 166.525,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 289.838,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 460.228,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 257.995,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 257.995,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 330.64,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 211.522,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 211.522,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 211.522,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 330.64,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 460.228,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 232.456,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 232.456,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 384.822,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 166.525,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 460.228,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 257.995,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 257.995,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_4:9": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 38.435,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 34.998,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 34.998,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 38.435,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 37.816,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 38.435,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 37.816,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 37.217,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 37.217,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 36.636,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 36.636,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 34.484,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 39.074,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 38.435,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 32.126,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 37.816,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 37.217,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 36.636,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 36.073,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 34.484,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 32.126,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 36.073,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_1:43": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 36.073,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 33.029,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 33.029,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 33.501,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 33.501,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 33.501,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 36.073,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 36.073,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 34.998,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 33.029,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 33.501,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 36.073,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 35.528,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 33.985,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 33.985,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.029,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 36.636,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 37.217,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 36.073,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 34.998,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 33.029,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 33.029,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 33.501,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 33.501,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 33.501,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 33.029,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 33.501,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 33.985,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 33.985,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.029,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 34.998,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_3:13": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 40.408,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 36.736,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 35.435,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 36.074,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 40.408,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 41.225,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 41.225,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 42.074,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 39.62,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 39.62,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 40.408,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 38.86,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 38.127,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 38.86,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 41.225,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.636,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 38.86,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 41.225,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 38.127,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 38.127,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 36.736,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 35.435,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 36.074,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 42.074,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 38.86,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 38.127,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 38.86,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.636,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 38.86,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 38.127,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 38.127,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_4:12": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 44.225,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 39.736,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 36.636,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 38.435,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 42.62,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 42.62,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 42.62,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 43.408,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 43.408,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 40.419,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 41.86,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 41.86,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 39.736,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 42.62,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 43.408,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 36.073,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 41.127,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 44.225,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 41.86,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 40.419,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 44.225,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 44.225,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 40.419,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_4:13": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 42.62,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 37.816,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 38.435,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 37.816,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 41.127,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 41.127,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 41.86,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 42.62,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 40.419,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 39.736,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 39.074,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 39.736,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 39.074,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 42.62,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 41.86,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 36.073,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 40.419,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 43.408,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 40.419,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 39.736,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 39.736,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_2:7": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 40.419,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 36.636,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 36.073,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 36.636,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 40.419,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 43.408,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 44.225,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 40.419,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 39.736,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 39.736,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 39.074,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 38.435,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 38.435,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 45.074,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 34.998,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 39.736,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 40.419,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 39.074,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 39.074,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 44.225,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 45.074,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 39.074,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_1:17": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 39.074,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 36.073,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 33.501,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 34.998,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 39.074,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 37.816,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 37.816,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 38.435,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 37.816,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 37.217,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 37.816,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 37.217,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 36.073,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 37.816,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.029,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 37.217,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 38.435,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 37.217,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 36.073,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 33.501,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.029,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 36.073,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_1:28": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 289.838,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 179.235,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 194.043,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 194.043,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 289.838,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 232.456,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 257.995,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 289.838,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 232.456,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 211.522,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 257.995,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 289.838,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 211.522,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 289.838,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 289.838,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 166.525,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 289.838,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 460.228,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 289.838,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 232.456,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 179.235,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 194.043,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 194.043,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 232.456,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 257.995,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 232.456,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 211.522,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 257.995,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 211.522,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 166.525,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 460.228,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 232.456,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_4:4": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 40.419,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 36.636,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 37.217,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 39.074,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 40.419,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 40.419,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 41.127,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 39.736,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 39.074,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 37.816,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 39.074,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 37.816,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 39.736,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 40.419,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 34.998,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 40.419,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 39.736,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 38.435,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 38.435,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_1:29": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 38.435,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 36.073,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 35.528,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 36.073,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 38.435,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 37.816,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 39.736,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 39.074,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 37.816,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 37.816,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 37.816,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 37.217,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 36.636,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 39.074,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 38.435,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.501,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 38.435,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 39.074,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 38.435,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 37.217,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.501,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 37.217,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_4:1": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 40.419,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 36.636,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 38.435,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 39.736,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 39.736,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 39.736,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 40.419,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 37.816,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 39.074,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 39.736,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 38.435,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 37.217,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 39.736,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.985,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 40.419,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 42.62,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 39.074,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 39.736,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.985,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 39.736,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_3:5": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 42.62,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 39.074,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 37.816,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 38.435,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 41.127,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 41.86,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 41.86,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 41.86,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 41.86,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 40.419,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 40.419,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 39.736,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 39.736,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 41.127,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 43.408,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 36.636,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 42.62,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 41.86,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 40.419,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 39.736,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 39.736,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_2:4": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 38.435,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 35.528,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 33.029,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 36.636,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 40.419,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 42.62,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 44.225,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 39.074,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 39.736,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 37.816,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 39.074,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 38.435,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 37.816,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 40.419,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 39.074,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 36.636,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 37.217,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 39.736,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 36.636,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 34.998,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 33.029,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 44.225,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 34.998,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_1:32": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 40.419,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 35.528,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 36.073,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 39.074,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 39.074,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 40.419,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 41.127,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 38.435,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 38.435,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 40.419,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 37.816,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 36.636,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 40.419,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 40.419,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.985,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 41.127,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 38.435,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 36.636,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.985,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 36.636,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_1:39": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 39.736,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 36.636,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 36.073,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 37.217,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 36.636,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 37.217,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 41.86,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 42.62,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 39.074,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 36.636,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 38.435,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 39.074,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 38.435,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 38.435,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 38.435,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.985,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 39.736,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 39.736,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 37.816,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.985,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 37.816,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_3:14": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 42.074,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 36.736,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 34.816,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 37.419,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 40.408,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 41.225,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 42.074,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 42.074,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 39.62,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 39.62,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 39.62,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 38.86,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 38.127,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 40.408,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 39.62,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.073,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 39.62,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 39.62,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 38.86,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 37.419,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 42.074,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 36.736,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 34.816,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 37.419,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 42.074,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 42.074,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 38.86,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 38.127,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.073,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 38.86,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 37.419,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_2:2": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 39.074,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 36.636,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 35.528,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 38.435,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 42.62,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 41.86,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 40.419,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 39.074,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 38.435,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 37.816,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 39.074,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 37.217,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 43.408,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.985,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 39.736,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 38.435,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 38.435,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.985,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 38.435,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_4:7": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 38.435,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 34.998,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 33.985,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 34.484,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 37.217,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 37.816,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 39.074,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 38.435,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 37.816,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 37.217,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 36.636,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 36.636,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 35.528,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 37.217,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 37.816,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 32.571,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 37.816,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 39.074,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 37.217,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 36.636,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 33.985,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 34.484,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 32.571,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 36.636,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_4:6": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 289.838,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 194.043,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 179.235,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 194.043,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 232.456,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 289.838,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 289.838,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 330.64,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 289.838,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 211.522,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 257.995,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 257.995,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 232.456,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 257.995,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 289.838,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 145.843,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 257.995,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 384.822,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 211.522,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 211.522,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 194.043,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 179.235,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 194.043,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 232.456,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 330.64,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 211.522,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 257.995,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 257.995,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 232.456,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 257.995,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 145.843,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 257.995,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 384.822,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 211.522,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 211.522,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_1:38": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 330.64,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 194.043,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 211.522,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 194.043,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 257.995,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 289.838,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 330.64,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 384.822,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 330.64,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 289.838,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 330.64,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 330.64,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 211.522,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 330.64,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 330.64,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 166.525,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 384.822,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -1,
+        "r": 330.64,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 232.456,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 330.64,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 194.043,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 211.522,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 194.043,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 257.995,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 330.64,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 384.822,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 330.64,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 330.64,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 330.64,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 211.522,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 330.64,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 330.64,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 166.525,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 384.822,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 330.64,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 232.456,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 19,
+    "n_total": 19
+  },
+  "satellite_3:15": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 42.074,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 36.736,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 36.074,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 36.736,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 40.408,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 41.225,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 42.074,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 41.225,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 39.62,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 39.62,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 40.408,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 40.408,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 39.62,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 42.074,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 41.225,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.636,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 40.408,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 42.956,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 40.408,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 38.86,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 42.074,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 36.736,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 36.074,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 36.736,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 42.074,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 42.074,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.636,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 42.956,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 38.86,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_4:3": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 41.86,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 37.217,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 36.636,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 36.636,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 41.86,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 41.127,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 41.86,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 40.419,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 37.816,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 37.816,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 37.816,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 39.736,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 37.217,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 40.419,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 41.127,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 34.484,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 40.419,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 42.62,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 39.074,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 37.816,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 34.484,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 37.816,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_2:3": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 39.736,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 35.528,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 36.073,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 36.073,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 39.074,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 43.408,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 44.225,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 39.074,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 39.074,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 37.217,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 39.074,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 37.816,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 37.816,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 43.408,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 39.074,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 34.484,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 39.736,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 38.435,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 37.816,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 44.225,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 34.484,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 37.816,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_2:5": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 40.419,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 37.217,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 36.073,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 39.736,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 44.225,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 42.62,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 39.736,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 39.736,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 38.435,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 39.074,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 38.435,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 38.435,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 44.225,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 40.419,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 34.998,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 37.816,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 41.127,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 39.074,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 38.435,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 44.225,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 44.225,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 38.435,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_1:1": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 330.64,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 211.522,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 166.525,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 194.043,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 289.838,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 257.995,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 330.64,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 289.838,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 257.995,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 232.456,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 257.995,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 289.838,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 257.995,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 330.64,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 289.838,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 166.525,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 289.838,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 289.838,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 289.838,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 257.995,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 330.64,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 211.522,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 166.525,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 194.043,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 257.995,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 330.64,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 257.995,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 232.456,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 257.995,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 257.995,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 330.64,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 166.525,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 257.995,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_2:13": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 43.25,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 38.822,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 35.074,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 36.873,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 39.859,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 42.07,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 42.07,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 42.07,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 40.94,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 42.07,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 43.25,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 42.07,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 40.94,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 43.25,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 42.07,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 34.225,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 44.486,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 45.78,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 43.25,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 42.07,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 38.822,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 35.074,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 36.873,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 39.859,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 40.94,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 40.94,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 34.225,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 44.486,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 45.78,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 42.07,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_2:1": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 39.736,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 36.073,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 35.528,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 36.073,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 39.736,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 44.225,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 42.62,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 39.736,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 39.736,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 39.074,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 39.736,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 38.435,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 37.816,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 44.225,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.985,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 40.419,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 39.074,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 37.816,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 44.225,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 44.225,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.985,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 37.816,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_2:14": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 43.25,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 36.873,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 35.074,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 38.822,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 42.07,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 42.07,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 43.25,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 44.486,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 42.07,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 40.94,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 42.07,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 43.25,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 39.859,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 44.486,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 44.486,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 36.873,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 44.486,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 47.137,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 43.25,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 40.94,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 36.873,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 35.074,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 38.822,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 44.486,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 40.94,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 39.859,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 44.486,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 44.486,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 36.873,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 44.486,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 47.137,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 40.94,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_3:19": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 42.62,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 39.736,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 39.074,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 40.419,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 41.86,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 41.86,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 42.62,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 41.86,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 42.62,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 43.408,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 42.62,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 40.419,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 39.736,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 42.62,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 44.225,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 36.636,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 40.419,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 43.408,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 41.86,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 39.736,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 44.225,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 39.736,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_3:11": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 42.074,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 38.127,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 36.736,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 36.736,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 40.408,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 42.074,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 41.225,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 42.074,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 39.62,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 39.62,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 39.62,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 37.419,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 37.419,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 40.408,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 40.408,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 35.435,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 38.86,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 40.408,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 38.86,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 38.86,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 42.074,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 38.127,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 36.736,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 36.736,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 42.074,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 42.074,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 37.419,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 37.419,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 35.435,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 38.86,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 38.86,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 38.86,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_4:2": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 39.736,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 37.217,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 36.636,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 38.435,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 40.419,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 39.074,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 40.419,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 41.127,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 39.074,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 38.435,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 39.736,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 38.435,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 37.816,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 39.736,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 41.86,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.029,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 39.736,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 41.127,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 39.736,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 38.435,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.029,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 38.435,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_4:11": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 41.86,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 37.816,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 37.816,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 37.816,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 41.86,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 41.86,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 41.86,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 43.408,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 40.419,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 41.127,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 40.419,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 40.419,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 41.127,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 42.62,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 43.408,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 35.528,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 41.86,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 43.408,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 40.419,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 39.074,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 39.074,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_1:31": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 40.419,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 35.528,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 35.528,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 35.528,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 39.074,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 38.435,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 38.435,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 39.074,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 37.816,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 39.074,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 39.074,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 37.816,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 37.217,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 39.074,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.501,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 38.435,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 39.736,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 37.816,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 37.816,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.501,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 37.816,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_2:17": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 42.07,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 38.822,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 35.074,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 37.828,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 40.94,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 42.07,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 44.486,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 43.25,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 40.94,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 40.94,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 42.07,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 40.94,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 39.859,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 42.07,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 44.486,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 34.225,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 43.25,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 47.137,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 44.486,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 40.94,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 38.822,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 35.074,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 37.828,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 40.94,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 44.486,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 40.94,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 40.94,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 40.94,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 39.859,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 44.486,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 34.225,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 47.137,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 44.486,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 40.94,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_1:44": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 43.051,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 41.164,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 40.11,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 40.807,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 43.051,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 42.276,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 43.855,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 43.051,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 43.855,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 43.051,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 42.66,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 42.276,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 41.899,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 44.689,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 43.855,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 38.785,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 42.66,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 44.268,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 43.449,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 43.051,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 43.051,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 41.164,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 40.11,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 40.807,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 43.051,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 42.276,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 43.855,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 43.051,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 43.855,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 43.051,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 42.66,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 42.276,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 41.899,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 44.689,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 43.855,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 38.785,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 42.66,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 44.268,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 43.449,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 43.051,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_2:6": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 41.127,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 37.217,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 38.435,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 37.816,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 40.419,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 43.408,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 45.074,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 40.419,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 41.86,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 39.736,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 39.736,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 39.736,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 37.816,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 44.225,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 42.62,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 35.528,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 41.127,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 41.86,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 40.419,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 41.127,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 45.074,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 44.225,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 41.127,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_2:15": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 44.486,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 37.828,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 36.873,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 36.873,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 43.25,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 43.25,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 44.486,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 43.25,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 40.94,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 42.07,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 43.25,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 39.859,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 38.822,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 44.486,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 44.486,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 35.074,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 42.07,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 47.137,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 43.25,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 42.07,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 44.486,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 37.828,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 36.873,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 36.873,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 44.486,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 40.94,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 39.859,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 38.822,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 44.486,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 44.486,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 35.074,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 47.137,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 42.07,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_3:4": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 41.86,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 39.074,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 37.816,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 40.419,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 42.62,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 43.408,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 41.86,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 42.62,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 41.127,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 41.127,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 40.419,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 37.816,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 40.419,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 41.86,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 41.86,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 35.528,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 41.127,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 42.62,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 41.86,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 40.419,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 40.419,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_2:16": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 45.78,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 36.873,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 35.956,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 37.828,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 43.25,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 43.25,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 43.25,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 44.486,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 42.07,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 40.94,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 43.25,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 40.94,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 38.822,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 44.486,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 43.25,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 35.956,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 45.78,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 47.137,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 44.486,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 43.25,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 45.78,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 36.873,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 35.956,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 37.828,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 44.486,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 42.07,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 40.94,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 40.94,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 38.822,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 44.486,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 43.25,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 35.956,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 45.78,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 47.137,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 44.486,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 43.25,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_4:8": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 39.074,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 34.998,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 33.985,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 35.528,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 37.217,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 39.074,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 39.074,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 37.816,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 38.435,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 38.435,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 37.816,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 39.074,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 37.217,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 36.636,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.501,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 38.435,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 38.435,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 37.816,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 35.528,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 33.985,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 35.528,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.501,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 35.528,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_1:30": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 41.127,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 36.636,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 36.636,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 40.419,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 40.419,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 41.127,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 41.127,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 40.419,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 39.736,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 41.127,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 39.074,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 37.816,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 39.736,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 34.484,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 40.419,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 38.435,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 39.074,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 36.636,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 34.484,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 39.074,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_3:2": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 43.408,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 39.736,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 38.435,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 39.074,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 42.62,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 41.127,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 42.62,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 42.62,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 42.62,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 40.419,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 41.86,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 41.127,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 39.074,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 41.127,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 43.408,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 36.073,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 41.127,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 43.408,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 41.127,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 40.419,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 36.073,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 40.419,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_3:1": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 257.995,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 211.522,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 166.525,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 194.043,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 289.838,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 289.838,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 289.838,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 384.822,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 289.838,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 257.995,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 289.838,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 232.456,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 194.043,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 289.838,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 330.64,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 155.5,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 289.838,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 289.838,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 211.522,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 257.995,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 257.995,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 211.522,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 166.525,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 194.043,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 384.822,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 257.995,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 232.456,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 194.043,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 330.64,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 155.5,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 289.838,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 211.522,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 257.995,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_3:18": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 41.225,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 37.419,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 36.074,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 37.419,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 41.225,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 41.225,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 41.225,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 40.408,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 41.225,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 40.408,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 40.408,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 38.86,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 38.86,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 40.408,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 41.225,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 33.073,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 40.408,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 42.074,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 38.86,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 38.127,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 37.419,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 36.074,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 37.419,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 38.86,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 38.86,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 33.073,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 42.074,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 38.86,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 38.127,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_3:7": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 41.86,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 38.435,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 37.816,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 38.435,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 39.736,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 41.127,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 40.419,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 41.127,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 41.86,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 39.736,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 41.127,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 39.736,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 38.435,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 41.127,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 42.62,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 34.484,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 39.736,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 41.127,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 39.736,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 39.074,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 37.816,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 34.484,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 39.736,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 39.074,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_4:10": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 42.62,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 38.435,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 37.217,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 38.435,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 42.62,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 41.127,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 42.62,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 41.86,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 40.419,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 41.127,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 41.127,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 40.419,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 39.074,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 41.86,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 43.408,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 34.998,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 41.86,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 42.62,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 41.127,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 39.074,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 37.217,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 38.435,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 40.419,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 39.074,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 43.408,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 34.998,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 41.86,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 42.62,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 41.127,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 39.074,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  },
+  "satellite_3:12": {
+    "cold": [
+      {
+        "ord": -19,
+        "r": 42.956,
+        "source": "cold_d19"
+      },
+      {
+        "ord": -18,
+        "r": 39.62,
+        "source": "cold_d18"
+      },
+      {
+        "ord": -17,
+        "r": 37.419,
+        "source": "cold_d17"
+      },
+      {
+        "ord": -16,
+        "r": 38.86,
+        "source": "cold_d16"
+      },
+      {
+        "ord": -15,
+        "r": 41.225,
+        "source": "cold_d15"
+      },
+      {
+        "ord": -14,
+        "r": 41.225,
+        "source": "cold_d14"
+      },
+      {
+        "ord": -13,
+        "r": 42.956,
+        "source": "cold_d13"
+      },
+      {
+        "ord": -12,
+        "r": 42.956,
+        "source": "cold_d12"
+      },
+      {
+        "ord": -11,
+        "r": 39.62,
+        "source": "cold_d11"
+      },
+      {
+        "ord": -10,
+        "r": 40.408,
+        "source": "cold_d10"
+      },
+      {
+        "ord": -9,
+        "r": 41.225,
+        "source": "cold_d9"
+      },
+      {
+        "ord": -8,
+        "r": 40.408,
+        "source": "cold_d8"
+      },
+      {
+        "ord": -7,
+        "r": 38.86,
+        "source": "cold_d7"
+      },
+      {
+        "ord": -6,
+        "r": 41.225,
+        "source": "cold_d6"
+      },
+      {
+        "ord": -5,
+        "r": 42.074,
+        "source": "cold_d5"
+      },
+      {
+        "ord": -4,
+        "r": 35.435,
+        "source": "cold_d4"
+      },
+      {
+        "ord": -3,
+        "r": 40.408,
+        "source": "cold_d3"
+      },
+      {
+        "ord": -2,
+        "r": 43.873,
+        "source": "cold_d2"
+      },
+      {
+        "ord": -1,
+        "r": 40.408,
+        "source": "cold_d1"
+      },
+      {
+        "ord": 0,
+        "r": 38.86,
+        "source": "cold_d0"
+      }
+    ],
+    "stitched": [
+      {
+        "ord": -19,
+        "r": 42.956,
+        "source": "cold"
+      },
+      {
+        "ord": -18,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -17,
+        "r": 37.419,
+        "source": "cold"
+      },
+      {
+        "ord": -16,
+        "r": 38.86,
+        "source": "cold"
+      },
+      {
+        "ord": -15,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -14,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -13,
+        "r": 42.956,
+        "source": "cold"
+      },
+      {
+        "ord": -12,
+        "r": 42.956,
+        "source": "cold"
+      },
+      {
+        "ord": -11,
+        "r": 39.62,
+        "source": "cold"
+      },
+      {
+        "ord": -10,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -9,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -8,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -7,
+        "r": 38.86,
+        "source": "cold"
+      },
+      {
+        "ord": -6,
+        "r": 41.225,
+        "source": "cold"
+      },
+      {
+        "ord": -5,
+        "r": 42.074,
+        "source": "cold"
+      },
+      {
+        "ord": -4,
+        "r": 35.435,
+        "source": "cold"
+      },
+      {
+        "ord": -3,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": -2,
+        "r": 43.873,
+        "source": "cold"
+      },
+      {
+        "ord": -1,
+        "r": 40.408,
+        "source": "cold"
+      },
+      {
+        "ord": 0,
+        "r": 38.86,
+        "source": "cold"
+      }
+    ],
+    "n_cold": 20,
+    "n_total": 20
+  }
+}

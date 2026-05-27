@@ -194,13 +194,67 @@ The dropping margin is the actionable signal — not the absolute R.
 1. KB1 detector rules are physics-justified for modes 1, 3, 4. Mode 2
    (sub-operational drop) requires the KB2 expected-I table; KB1 falls
    back to crude threshold (e.g., < 0.5 × cohort mean) on day 1.
-2. Heat-margin is the right remaining-life proxy, not absolute R.
-3. R_hot from each run is more diagnostic than R_cold from daily check —
-   captures sub-daily thermal drift.
+2. Heat-margin is the right remaining-life proxy *in principle*, **but
+   see §8 — not applicable to LaCima with current sensor stack**.
+3. R_hot from each run is NOT recoverable from this data — master valve
+   parallel + supply/sensor calibration unknowns. **Use cold-R from
+   daily test as the primary R proxy.**
 4. Per-valve trend (Mann-Kendall) stratified by sun-exposure cohort is
    the right early-warning detector, not population-wide R thresholds.
 5. Drop HF-impedance / spectral-analysis ideas — not feasible with our
    sampling and sensor stack.
+
+---
+
+## 8. Why the heat-margin model fails on this data (2026-05-27 finding)
+
+The literature says heat margin = T_class − T_asymptote is the right
+RUL proxy. The math:
+
+    R_hot = V / I_asym − R_wire
+    ΔT    = (R_hot − R_cold) / (R_cold · α)        α = 0.0039 /°C for Cu
+    T_asym = T_ambient + ΔT
+    margin = T_class(130 °C) − T_asym
+
+**Walked through on sat_1:20/1:39 last normal run (run 43, I_asym=1.20 A,
+parallel decomposed assuming R_master=40 Ω):**
+
+    R_parallel = 15.5 / 1.20 = 12.92 Ω
+    R_zone     = (R_par · R_master) / (R_master − R_par) = 19.08 Ω
+    ΔT         = (19.08 − 43) / (43 · 0.0039) = **−143 °C**
+    T_asym     = 25 + (−143) = **−118 °C  ← unphysical**
+
+**The model produces negative T_asymptote, which is impossible.** The
+copper temperature coefficient says R must *rise* with heating, so R_hot
+must exceed R_cold. Observed R_hot (after master decomposition) is
+*below* R_cold by a factor of >2.
+
+**Three blocking measurement-stack issues:**
+
+1. **Master valve always parallel during runs** — even "solo" bins in
+   time_history energize the master in parallel with the zone valve.
+   Decomposition requires assuming R_master, which we don't know
+   independently. See
+   [[master-valve-parallel-correction-2026-05-27]].
+
+2. **Supply voltage may differ between cold-R test and run-time.** The
+   daily R-scan likely uses a 12 V test pulse; runs energize at 24 V AC.
+   Without knowing the run-time voltage, V/I gives the wrong R.
+
+3. **ACS712 calibration regime mismatch.** The 0.0133 A offset we
+   physically anchored is for the cold-R test current range (~0.4 A
+   single-valve). At run-time currents (0.7–1.2 A) and possibly AC
+   excitation, that offset is not validated.
+
+**Operational consequence**: do NOT build a thermal-rise inference
+component. The KB2-daily R-drift Mann-Kendall trend on cold-R is the
+*de facto* RUL proxy for this system. It catches mode 2 with high
+fidelity (sat_2:4 caught at z=−2.09). It does not catch mode 4 (which
+is runway-less anyway — see `failure_signatures.md`).
+
+If a future hardware upgrade lands per-zone current sensing with known
+supply voltage, this model becomes computable. Until then it is
+recorded as theoretically-sound but data-blocked.
 
 ---
 
