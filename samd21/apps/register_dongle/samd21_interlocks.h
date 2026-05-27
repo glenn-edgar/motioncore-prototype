@@ -266,9 +266,21 @@ extern il_status_buffer_t g_il_status_buffer;
 // Read-only accessor — host-side OP_POLL handler copies this into the reply.
 const il_status_buffer_t* interlock_get_status_buffer(void);
 
-// Compile-time registry entry. Slice 1 only uses .name; tick / init /
-// terminate are placeholders for slice 2+.
-typedef void (*interlock_fn_t)(void);
+// Compile-time registry entry. Each entry is one "role mode" of safety
+// supervision — the noop (id=1) and DSL (id=2) entries are role models;
+// custom-C modes go in as additional entries (id=3+).
+//
+// init/tick/terminate take the slot index so the same mode can be armed
+// into different slots without reading globals.
+//
+//   init(slot)       called once when the host arms this mode into slot.
+//                    Claim any HAL pins, init mode-private state.
+//   tick(slot)       called every chain pump (~250 ms). Read inputs,
+//                    decide pass/fail, write it via interlock_set_slot_tf.
+//                    Phase-2 veto picks up the tf regardless of mode id.
+//   terminate(slot)  called once on disarm. Release any non-HAL resources;
+//                    HAL claims auto-release via hal_pin_release_slot.
+typedef void (*interlock_fn_t)(uint8_t slot);
 typedef struct {
     const char*    name;
     interlock_fn_t init;
@@ -306,10 +318,21 @@ uint8_t  interlock_armed_count(void);
 
 // ---- Slot administration (slice 1 stubs) ---------------------------------
 
-// Returns SHELL_STATUS_OK on success, *_BAD_ARGS on out-of-range slot,
-// *_BUSY if the slot is already ARMED. Slice 1 only supports id =
-// INTERLOCK_ID_NOOP; later slices accept DSL configurations.
+// Arm a compile-time registry entry into a slot. `id` must be a valid
+// registry index (1..g_interlock_count) and must NOT be INTERLOCK_ID_DSL
+// (use interlock_set_slot_dsl for that). Calls g_interlocks[id-1].init(slot)
+// after marking the slot ARMED. Returns SHELL_STATUS_OK / _BAD_ARGS / _BUSY.
+uint8_t  interlock_arm_slot_compiled(uint8_t slot, uint8_t id);
+
+// Thin wrapper around interlock_arm_slot_compiled(slot, INTERLOCK_ID_NOOP).
+// Retained for host CLI back-compat.
 uint8_t  interlock_arm_slot_noop(uint8_t slot);
+
+// Helper for custom-C interlock tick callbacks: write this slot's tf state.
+// Phase 2 of interlock_tick_all reads this to build the veto mask. Safe to
+// call at any point inside a tick callback — no validation overhead beyond
+// the slot-range bound check. Out-of-range slot is silently ignored.
+void     interlock_set_slot_tf(uint8_t slot, il_tf_state_t tf);
 
 // Mark slot EMPTY. No-op if already EMPTY. Releases all HAL pin claims
 // belonging to this slot.

@@ -116,9 +116,13 @@ static uint16_t read_virtual_input(uint8_t virt_id) {
 // add gpio_int / adc_int entries driven by parsed DSL.
 // ---------------------------------------------------------------------------
 
-static void noop_init(void)      { /* nothing */ }
-static void noop_tick(void)      { /* nothing */ }
-static void noop_terminate(void) { /* nothing */ }
+// Noop role-model demonstration. Shows the contract every custom-C mode
+// honors: init claims nothing, tick writes tf each pump, terminate cleans
+// up nothing. Real modes add HAL claims in init, real input reads + tf
+// decisions in tick, and resource teardown in terminate.
+static void noop_init(uint8_t slot)      { (void)slot; }
+static void noop_tick(uint8_t slot)      { interlock_set_slot_tf(slot, IL_TF_TRUE); }
+static void noop_terminate(uint8_t slot) { (void)slot; }
 
 const interlock_def_t g_interlocks[] = {
     // id = 1 (INTERLOCK_ID_NOOP)
@@ -242,22 +246,56 @@ uint8_t interlock_armed_count(void) {
     return n;
 }
 
-uint8_t interlock_arm_slot_noop(uint8_t slot) {
+uint8_t interlock_arm_slot_compiled(uint8_t slot, uint8_t id) {
     verify_persist_or_panic();
-    if (slot >= INTERLOCK_MAX_SLOTS)             return SHELL_STATUS_BAD_ARGS;
+    if (slot >= INTERLOCK_MAX_SLOTS)            return SHELL_STATUS_BAD_ARGS;
+    if (id == INTERLOCK_ID_NONE)                return SHELL_STATUS_BAD_ARGS;
+    if (id == INTERLOCK_ID_DSL)                 return SHELL_STATUS_BAD_ARGS;
+    if (id > g_interlock_count)                 return SHELL_STATUS_BAD_ARGS;
     interlock_slot_persist_t* s = &g_interlock_persist.slots[slot];
-    if (s->state == INTERLOCK_SLOT_ARMED)        return SHELL_STATUS_BUSY;
+    if (s->state == INTERLOCK_SLOT_ARMED)       return SHELL_STATUS_BUSY;
     // POISONED slot is OK to overwrite — explicit re-arm clears the poison.
     s->state        = INTERLOCK_SLOT_ARMED;
-    s->id           = INTERLOCK_ID_NOOP;
+    s->id           = id;
     s->boot_counter = 0;
+    // Fresh-arm: zero inst[slot] so leftover bytes from a prior arm cycle
+    // don't masquerade as state. Compiled modes only use tf_state.
+    memset(&g_interlock_persist.inst[slot], 0, sizeof(il_inst_t));
+    clear_slot_runtime(slot);
+    // Call the mode's init now that persist is committed. If init crashes,
+    // HardFault attribution shows this slot via g_active_interlock_slot.
+    g_active_interlock_slot = slot;
+    if (g_interlocks[id - 1].init) g_interlocks[id - 1].init(slot);
+    g_active_interlock_slot = INTERLOCK_CRASHED_SLOT_NONE;
     return SHELL_STATUS_OK;
+}
+
+uint8_t interlock_arm_slot_noop(uint8_t slot) {
+    return interlock_arm_slot_compiled(slot, INTERLOCK_ID_NOOP);
+}
+
+void interlock_set_slot_tf(uint8_t slot, il_tf_state_t tf) {
+    if (slot >= INTERLOCK_MAX_SLOTS) return;
+    g_interlock_persist.inst[slot].tf_state = (uint8_t)tf;
 }
 
 uint8_t interlock_disarm_slot(uint8_t slot) {
     verify_persist_or_panic();
     if (slot >= INTERLOCK_MAX_SLOTS) return SHELL_STATUS_BAD_ARGS;
     interlock_slot_persist_t* s = &g_interlock_persist.slots[slot];
+    // For compiled (non-DSL) modes, call terminate while the slot is still
+    // ARMED so the callback can read its own state. HAL pin claims are
+    // released afterward — terminate may want to drop its own pin drivers
+    // explicitly before then.
+    if (s->state == INTERLOCK_SLOT_ARMED
+        && s->id != INTERLOCK_ID_NONE
+        && s->id != INTERLOCK_ID_DSL
+        && s->id <= g_interlock_count
+        && g_interlocks[s->id - 1].terminate) {
+        g_active_interlock_slot = slot;
+        g_interlocks[s->id - 1].terminate(slot);
+        g_active_interlock_slot = INTERLOCK_CRASHED_SLOT_NONE;
+    }
     // Release any HAL pin claims attached to this slot before clearing state.
     hal_pin_release_slot(slot);
     s->state        = INTERLOCK_SLOT_EMPTY;
@@ -377,8 +415,21 @@ void interlock_warm_restore(void) {
     for (uint8_t slot = 0; slot < INTERLOCK_MAX_SLOTS; slot++) {
         interlock_slot_persist_t* sp = &g_interlock_persist.slots[slot];
         if (sp->state != INTERLOCK_SLOT_ARMED) continue;
-        if (sp->id != INTERLOCK_ID_DSL)        continue;  // noop has no pins
-
+        // Compiled (non-DSL) modes: re-run init so the mode can re-claim
+        // pins / re-arm peripherals after the WDT bite. Mode-private
+        // .noinit state (if any) is the mode's responsibility to validate.
+        if (sp->id != INTERLOCK_ID_DSL) {
+            if (sp->id != INTERLOCK_ID_NONE
+                && sp->id <= g_interlock_count
+                && g_interlocks[sp->id - 1].init) {
+                g_active_interlock_slot = slot;
+                g_interlocks[sp->id - 1].init(slot);
+                g_active_interlock_slot = INTERLOCK_CRASHED_SLOT_NONE;
+            }
+            clear_slot_runtime(slot);
+            continue;
+        }
+        // DSL path — re-parse + re-claim from persisted text.
         uint16_t text_len = g_interlock_persist.dsl_len[slot];
         if (text_len == 0u || text_len >= IL_DSL_MAX) {
             sp->state = INTERLOCK_SLOT_POISONED;
@@ -528,25 +579,34 @@ static void emit_op_event(uint16_t seq, uint8_t slot,
 
 void interlock_tick_all(void) {
     verify_persist_or_panic();
-    // Phase 1 — evaluate. Capture per-input values into the status buffer's
-    // input_vals slot so we don't re-read hardware in phase 3.
+    // Phase 1 — evaluate. Dispatch by role mode:
+    //   DSL slot  → eval_slot (parser-driven inputs + watches)
+    //   Compiled  → g_interlocks[id-1].tick(slot); the mode writes its own
+    //               tf via interlock_set_slot_tf and may read/drive HAL
+    //               pins it claimed in init.
     for (uint8_t slot = 0; slot < INTERLOCK_MAX_SLOTS; slot++) {
         interlock_slot_persist_t* sp = &g_interlock_persist.slots[slot];
         if (sp->state != INTERLOCK_SLOT_ARMED) continue;
-        if (sp->id != INTERLOCK_ID_DSL) continue;
-        eval_slot(slot, &g_interlock_persist.inst[slot],
-                  g_il_status_buffer.input_vals[slot]);
+        if (sp->id == INTERLOCK_ID_DSL) {
+            eval_slot(slot, &g_interlock_persist.inst[slot],
+                      g_il_status_buffer.input_vals[slot]);
+        } else if (sp->id != INTERLOCK_ID_NONE
+                   && sp->id <= g_interlock_count) {
+            g_active_interlock_slot = slot;
+            if (g_interlocks[sp->id - 1].tick) g_interlocks[sp->id - 1].tick(slot);
+        }
     }
     g_active_interlock_slot = INTERLOCK_CRASHED_SLOT_NONE;
 
-    // Phase 2 — drive outputs. Build the veto mask from slots that
-    // evaluated to FALSE. EMPTY/POISONED/non-DSL slots contribute no
-    // claims to the HAL so they're naturally excluded.
+    // Phase 2 — drive outputs. Build the veto mask from any ARMED slot
+    // whose tf is FALSE, regardless of role mode. Compiled modes
+    // participate by claiming outputs via hal_pin_claim_output in their
+    // init and writing tf in their tick. Empty/POISONED slots have no
+    // HAL claims so they don't affect output drive.
     uint8_t veto_mask = 0;
     for (uint8_t slot = 0; slot < INTERLOCK_MAX_SLOTS; slot++) {
         const interlock_slot_persist_t* sp = &g_interlock_persist.slots[slot];
         if (sp->state != INTERLOCK_SLOT_ARMED) continue;
-        if (sp->id != INTERLOCK_ID_DSL) continue;
         if (g_interlock_persist.inst[slot].tf_state == (uint8_t)IL_TF_FALSE) {
             veto_mask |= (uint8_t)(1u << slot);
         }
@@ -563,7 +623,10 @@ void interlock_tick_all(void) {
         const interlock_slot_persist_t* sp = &g_interlock_persist.slots[slot];
         uint8_t new_state = sp->state;
         uint8_t new_id    = sp->id;
-        uint8_t new_tf    = (sp->state == INTERLOCK_SLOT_ARMED && sp->id == INTERLOCK_ID_DSL)
+        // tf comes from inst[slot].tf_state regardless of role — DSL's
+        // eval_slot writes it from watch evaluation, compiled modes
+        // write it via interlock_set_slot_tf.
+        uint8_t new_tf    = (sp->state == INTERLOCK_SLOT_ARMED)
                             ? g_interlock_persist.inst[slot].tf_state
                             : (uint8_t)IL_TF_UNEVALUATED;
         uint8_t old_state = g_il_status_buffer.slots[slot].state;
@@ -581,10 +644,25 @@ void interlock_tick_all(void) {
         s->bc        = sp->boot_counter;
         s->veto_mask = (veto_mask >> slot) & 1u;
         s->reserved  = 0;
-        // Copy first 8 bytes of inst.name (may not be null-terminated).
+        // Name source by role: DSL pulls from parsed inst.name (which may
+        // not be null-terminated); compiled modes pull from the registry
+        // entry's static name string (always null-terminated).
         if (new_state == INTERLOCK_SLOT_ARMED && new_id == INTERLOCK_ID_DSL) {
             for (uint8_t k = 0; k < IL_STATUS_SLOT_NAME_MAX; k++) {
                 s->name[k] = g_interlock_persist.inst[slot].name[k];
+            }
+        } else if (new_state == INTERLOCK_SLOT_ARMED
+                   && new_id != INTERLOCK_ID_NONE
+                   && new_id <= g_interlock_count) {
+            const char* src = g_interlocks[new_id - 1].name;
+            for (uint8_t k = 0; k < IL_STATUS_SLOT_NAME_MAX; k++) {
+                s->name[k] = src[k];
+                if (src[k] == '\0') {
+                    for (uint8_t j = k + 1; j < IL_STATUS_SLOT_NAME_MAX; j++) {
+                        s->name[j] = '\0';
+                    }
+                    break;
+                }
             }
         } else {
             memset(s->name, 0, IL_STATUS_SLOT_NAME_MAX);
