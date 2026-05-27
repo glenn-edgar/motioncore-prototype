@@ -26,8 +26,8 @@ from collections import defaultdict
 
 V_SUPPLY = 15.5
 ACS712_OFFSET = 0.0133
-DISCONNECTS = {"satellite_1:1", "satellite_1:28", "satellite_1:38",
-               "satellite_1:40", "satellite_3:1", "satellite_4:6"}
+NONEXISTENT = {"satellite_1:1", "satellite_1:28", "satellite_1:38",
+               "satellite_1:40", "satellite_3:1", "satellite_4:6"}  # 6 phantom null-anchors
 WIRE_OFFSET_OHMS = {**{f"satellite_2:{p}": 10.0 for p in (13, 14, 15, 16, 17)},
                     **{f"satellite_3:{p}":  3.0 for p in (11, 12, 13, 14, 15, 16, 17, 18)}}
 PARALLEL_PAIRS = {"satellite_1:44"}

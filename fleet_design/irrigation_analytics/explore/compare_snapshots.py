@@ -17,15 +17,15 @@ from pathlib import Path
 
 V_SUPPLY = 15.5
 ACS712_OFFSET = 0.0133  # physical-anchored 2026-05-26 to sat_2:4 = 35 Ω
-DISCONNECTS = {"satellite_1:1", "satellite_1:28", "satellite_1:38",
-               "satellite_1:40", "satellite_3:1", "satellite_4:6"}
+NONEXISTENT = {"satellite_1:1", "satellite_1:28", "satellite_1:38",
+               "satellite_1:40", "satellite_3:1", "satellite_4:6"}  # 6 phantom null-anchors
 WIRE_OFFSET_OHMS = {**{f"satellite_2:{p}": 10.0 for p in (13,14,15,16,17)},
                     **{f"satellite_3:{p}":  3.0 for p in (11,12,13,14,15,16,17,18)}}
 
 
-def leakage(valve_test):
-    """Drift indicator only — disconnects pass ~0.077 A leakage through high-R paths."""
-    return statistics.median([valve_test[v][-1] for v in DISCONNECTS
+def phantom_drift(valve_test):
+    """Daily drift indicator — median I across phantom pins (sensor null + noise floor)."""
+    return statistics.median([valve_test[v][-1] for v in NONEXISTENT
                               if v in valve_test and valve_test[v]])
 
 
@@ -70,11 +70,11 @@ def main():
 
     A = load_snapshot(args.date_a)
     B = load_snapshot(args.date_b)
-    leak_a, leak_b = leakage(A), leakage(B)
+    leak_a, leak_b = phantom_drift(A), phantom_drift(B)
 
     print(f"\n=== day-over-day diff: {args.date_a} → {args.date_b} ===")
     print(f"  ACS712 offset:    {ACS712_OFFSET:.4f} A  (physical-anchored, fixed)")
-    print(f"  Disconnect leak:  {leak_a:.4f} → {leak_b:.4f}  (Δ={leak_b-leak_a:+.4f} A — drift indicator)")
+    print(f"  Phantom drift:    {leak_a:.4f} → {leak_b:.4f}  (Δ={leak_b-leak_a:+.4f} A — sensor/supply drift)")
     print()
 
     valves = sorted(set(A) & set(B))
