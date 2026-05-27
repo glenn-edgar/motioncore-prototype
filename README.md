@@ -84,6 +84,20 @@ ssh robot 'cd ~/work/motioncore-prototype/firmware/pico/apps/00_smp_hello && \
 To flash a Pico 2 W: hold BOOTSEL while plugging USB, copy the `.uf2`
 onto the resulting `RPI-RP2`/`RP2350` drive.
 
+## Safety baseline
+
+All firmware in this repo follows a defensive coding baseline distilled
+from WITTENSTEIN's SAFERTOS commercial safety-certified RTOS. The
+techniques apply equally to bare-metal main-loop code and to RTOS-based
+firmware: pre-overflow stack-pointer checks, magic+version+size headers
+on cross-boundary structs, linker-defined guard regions between memory
+zones, a single non-returning `panic()` with discriminated codes, and a
+`system_self_check()` gate at end of init.
+
+The full recipe — including per-chip adaptation tables for SAMD21,
+RA4M1, RP2350, and ESP32-C6 — lives in `docs/defensive_baseline.md`.
+Any new chip port should inherit from that document on day 1.
+
 ## License
 
 MIT — see `LICENSE`. The vendored Waveshare STM32 SDK is included on the
