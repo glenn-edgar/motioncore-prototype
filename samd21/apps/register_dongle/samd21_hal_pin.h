@@ -20,6 +20,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "samd21_pin_table.h"
 
 #define HAL_PIN_TABLE_SIZE   64u
@@ -91,6 +92,12 @@ void                   hal_pin_release_slot(uint8_t slot);
 // (bit i = slot i is sharing this pin), or 0 if unclaimed.
 uint8_t                hal_pin_get_owners(uint8_t phys_id);
 hal_pin_mode_t         hal_pin_get_mode  (uint8_t phys_id);
+
+// Consistency check for system_self_check() (slice 5 amendment D). Walks the
+// claim table; returns true iff every INPUT-mode claim has exactly one owner
+// (popcount(owners) == 1). Output-mode claims may legitimately share, so
+// they aren't checked here. Returns false on first violation.
+bool                   hal_pin_check_consistency(void);
 
 // ---- runtime I/O ---------------------------------------------------------
 

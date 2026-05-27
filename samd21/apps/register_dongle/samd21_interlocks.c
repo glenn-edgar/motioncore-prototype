@@ -60,6 +60,7 @@ const uint8_t g_interlock_count = (uint8_t)(sizeof(g_interlocks) / sizeof(g_inte
 static bool persist_is_valid(void) {
     if (g_interlock_persist.magic != INTERLOCK_MAGIC) return false;
     if (g_interlock_persist.version != INTERLOCK_PERSIST_VERSION) return false;
+    if (g_interlock_persist.self_size != (uint16_t)sizeof(interlock_persist_t)) return false;
     for (uint8_t i = 0; i < INTERLOCK_MAX_SLOTS; i++) {
         const interlock_slot_persist_t* s = &g_interlock_persist.slots[i];
         if (s->state > INTERLOCK_SLOT_POISONED) return false;
@@ -84,12 +85,34 @@ static bool persist_is_valid(void) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Amendment B — verify magic + version + self_size at every public-API entry.
+//
+// Already validated at boot by persist_is_valid(); this catches mid-run
+// corruption (stack overflow, errant write, future bug) at the boundary
+// where it would otherwise propagate into a torn read or worse.
+//
+// Static inline so the compiler can drop arg setup on each call site. Each
+// site adds ~10 B text after dedup; 7 sites total → ~70 B.
+// ---------------------------------------------------------------------------
+
+static inline void verify_persist_or_panic(void) {
+    if (g_interlock_persist.magic != INTERLOCK_MAGIC) {
+        panic(PANIC_PERSIST_MAGIC_BAD, g_interlock_persist.magic);
+    }
+    if (g_interlock_persist.version != INTERLOCK_PERSIST_VERSION) {
+        panic(PANIC_PERSIST_VERSION_BAD, g_interlock_persist.version);
+    }
+    if (g_interlock_persist.self_size != (uint16_t)sizeof(interlock_persist_t)) {
+        panic(PANIC_PERSIST_SIZE_BAD, g_interlock_persist.self_size);
+    }
+}
+
 static void persist_cold_init(void) {
-    g_interlock_persist.magic   = INTERLOCK_MAGIC;
-    g_interlock_persist.version = INTERLOCK_PERSIST_VERSION;
-    g_interlock_persist.reserved[0] = 0;
-    g_interlock_persist.reserved[1] = 0;
-    g_interlock_persist.reserved[2] = 0;
+    g_interlock_persist.magic     = INTERLOCK_MAGIC;
+    g_interlock_persist.version   = INTERLOCK_PERSIST_VERSION;
+    g_interlock_persist.reserved  = 0;
+    g_interlock_persist.self_size = (uint16_t)sizeof(interlock_persist_t);
     for (uint8_t i = 0; i < INTERLOCK_MAX_SLOTS; i++) {
         g_interlock_persist.slots[i].state        = INTERLOCK_SLOT_EMPTY;
         g_interlock_persist.slots[i].id           = INTERLOCK_ID_NONE;
@@ -103,9 +126,11 @@ static void persist_cold_init(void) {
     g_interlock_persist.crash.last_lr            = 0;
     g_interlock_persist.crash.last_rstsr         = 0;
     g_interlock_persist.crash.last_crashed_slot  = INTERLOCK_CRASHED_SLOT_NONE;
-    g_interlock_persist.crash.reserved[0] = 0;
-    g_interlock_persist.crash.reserved[1] = 0;
-    g_interlock_persist.crash.reserved[2] = 0;
+    g_interlock_persist.crash.panic_code         = PANIC_NONE;
+    g_interlock_persist.crash.reserved[0]        = 0;
+    g_interlock_persist.crash.reserved[1]        = 0;
+    g_interlock_persist.crash.panic_arg          = 0;
+    g_interlock_persist.crash.panic_sp           = 0;
 }
 
 void interlock_boot_decide(void) {
@@ -144,6 +169,7 @@ uint8_t interlock_armed_count(void) {
 }
 
 uint8_t interlock_arm_slot_noop(uint8_t slot) {
+    verify_persist_or_panic();
     if (slot >= INTERLOCK_MAX_SLOTS)             return SHELL_STATUS_BAD_ARGS;
     interlock_slot_persist_t* s = &g_interlock_persist.slots[slot];
     if (s->state == INTERLOCK_SLOT_ARMED)        return SHELL_STATUS_BUSY;
@@ -155,6 +181,7 @@ uint8_t interlock_arm_slot_noop(uint8_t slot) {
 }
 
 uint8_t interlock_disarm_slot(uint8_t slot) {
+    verify_persist_or_panic();
     if (slot >= INTERLOCK_MAX_SLOTS) return SHELL_STATUS_BAD_ARGS;
     interlock_slot_persist_t* s = &g_interlock_persist.slots[slot];
     // Release any HAL pin claims attached to this slot before clearing state.
@@ -217,6 +244,7 @@ rollback:
 uint8_t interlock_set_slot_dsl(uint8_t slot,
                                const char* text, uint16_t text_len,
                                uint8_t err_payload[3]) {
+    verify_persist_or_panic();
     if (err_payload) { err_payload[0] = 0; err_payload[1] = 0; err_payload[2] = 0; }
     if (slot >= INTERLOCK_MAX_SLOTS)             return SHELL_STATUS_BAD_ARGS;
     if (text_len == 0u || text_len >= IL_DSL_MAX) return SHELL_STATUS_BAD_ARGS;
@@ -262,6 +290,7 @@ uint8_t interlock_set_slot_dsl(uint8_t slot,
 // peripheral_init so reserved-pin enforcement is consistent. Slots that
 // fail re-parse / re-claim are marked POISONED.
 void interlock_warm_restore(void) {
+    verify_persist_or_panic();
     for (uint8_t slot = 0; slot < INTERLOCK_MAX_SLOTS; slot++) {
         interlock_slot_persist_t* sp = &g_interlock_persist.slots[slot];
         if (sp->state != INTERLOCK_SLOT_ARMED) continue;
@@ -333,6 +362,7 @@ static void eval_slot(uint8_t slot, il_inst_t* inst) {
 // without it the second slot would silently overwrite the first slot's vote
 // every tick. With it, both slots contribute to a single combined value.
 void interlock_tick_all(void) {
+    verify_persist_or_panic();
     // Phase 1 — evaluate.
     for (uint8_t slot = 0; slot < INTERLOCK_MAX_SLOTS; slot++) {
         interlock_slot_persist_t* sp = &g_interlock_persist.slots[slot];
@@ -358,11 +388,13 @@ void interlock_tick_all(void) {
 }
 
 const interlock_slot_persist_t* interlock_get_slot(uint8_t slot) {
+    verify_persist_or_panic();
     if (slot >= INTERLOCK_MAX_SLOTS) return 0;
     return &g_interlock_persist.slots[slot];
 }
 
 const interlock_crash_record_t* interlock_get_crash(void) {
+    verify_persist_or_panic();
     return &g_interlock_persist.crash;
 }
 
@@ -433,6 +465,16 @@ uint16_t interlock_format_boot_line(char* buf, uint16_t bufsize) {
     } else {
         p = emit_dec_small(buf, p, bufsize, g_interlock_persist.crash.last_crashed_slot);
     }
+    // Panic record (only when this boot follows a software-detected panic).
+    // Format: " pn=N pa=0xNNNN psp=0xNNNN". Skipped when panic_code == 0.
+    if (g_interlock_persist.crash.panic_code != PANIC_NONE) {
+        p = emit_str(buf, p, bufsize, " pn=");
+        p = emit_dec_small(buf, p, bufsize, g_interlock_persist.crash.panic_code);
+        p = emit_str(buf, p, bufsize, " pa=");
+        p = emit_hex32(buf, p, bufsize, g_interlock_persist.crash.panic_arg);
+        p = emit_str(buf, p, bufsize, " psp=");
+        p = emit_hex32(buf, p, bufsize, g_interlock_persist.crash.panic_sp);
+    }
     if (p < bufsize) buf[p] = '\0';
     return p;
 }
@@ -459,8 +501,37 @@ void interlock_hardfault_record(uint32_t* msp) {
     g_interlock_persist.crash.last_lr            = msp[5];
     g_interlock_persist.crash.last_rstsr         = (uint32_t)PM->RCAUSE.reg;
     g_interlock_persist.crash.last_crashed_slot  = g_active_interlock_slot;
+    g_interlock_persist.crash.panic_code         = PANIC_NONE;  // hardware path
     // NVIC_SystemReset() is inline; the asm DSB+DMB inside ensures the
     // .noinit writes commit before the reset takes effect.
+    NVIC_SystemReset();
+    for (;;) { /* unreachable */ }
+}
+
+// ---------------------------------------------------------------------------
+// panic() — software-detected invariant violations
+//
+// Distinct from HardFault: panic() runs in normal context, so SP/LR live in
+// the current frame rather than an exception stack frame. We grab SP via
+// inline asm and use __builtin_return_address(0) for the caller PC. Records
+// commit to .noinit, then immediate NVIC_SystemReset (per slice-5 Q5
+// ratification — get out fast, crash record carries the post-mortem).
+// ---------------------------------------------------------------------------
+
+__attribute__((noreturn))
+void panic(panic_code_t code, uint32_t arg) {
+    uint32_t sp;
+    __asm__ volatile ("mov %0, sp" : "=r"(sp));
+    uint32_t caller_pc = (uint32_t)__builtin_return_address(0);
+
+    g_interlock_persist.crash.last_pc            = caller_pc;
+    g_interlock_persist.crash.last_lr            = 0;          // n/a for panic
+    g_interlock_persist.crash.last_rstsr         = (uint32_t)PM->RCAUSE.reg;
+    g_interlock_persist.crash.last_crashed_slot  = g_active_interlock_slot;
+    g_interlock_persist.crash.panic_arg          = arg;
+    g_interlock_persist.crash.panic_sp           = sp;
+    g_interlock_persist.crash.panic_code         = (uint8_t)code;
+
     NVIC_SystemReset();
     for (;;) { /* unreachable */ }
 }

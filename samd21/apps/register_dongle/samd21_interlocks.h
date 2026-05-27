@@ -38,7 +38,8 @@
 // v1 (slice 1): magic + per-slot state/id/boot_counter + crash record only.
 // v2 (slice 2): adds il_inst_t + dsl_text per slot.
 // v3 (slice 4): grows il_input_t with oversample_exp + sh_cyc for ADC inputs.
-#define INTERLOCK_PERSIST_VERSION    3u
+// v4 (slice 5): adds self_size header + panic_code/panic_arg/panic_sp to crash record.
+#define INTERLOCK_PERSIST_VERSION    4u
 
 // ---- Slice 2: DSL-driven interlock instance ------------------------------
 
@@ -157,17 +158,22 @@ typedef struct {
 } interlock_slot_persist_t;
 
 typedef struct {
-    uint32_t last_pc;            // PC of faulting instruction, 0 if none
-    uint32_t last_lr;            // LR at fault entry
-    uint32_t last_rstsr;         // PM->RCAUSE snapshot at the time of fault
+    uint32_t last_pc;            // PC of faulting instruction (HardFault) or
+                                 // panic() return-address. 0 if none.
+    uint32_t last_lr;            // LR at fault entry (HardFault only; 0 for panic)
+    uint32_t last_rstsr;         // PM->RCAUSE snapshot at the time of fault/panic
     uint8_t  last_crashed_slot;  // slot index active during last fault, 0xFF if N/A
-    uint8_t  reserved[3];
+    uint8_t  panic_code;         // panic_code_t value; 0 = no panic (HardFault path or fresh)
+    uint8_t  reserved[2];
+    uint32_t panic_arg;          // panic()'s second argument (e.g., bad-magic value, SP)
+    uint32_t panic_sp;           // SP at panic() entry — useful for stack-near-overflow
 } interlock_crash_record_t;
 
 typedef struct {
     uint32_t                 magic;
     uint8_t                  version;
-    uint8_t                  reserved[3];
+    uint8_t                  reserved;        // pad to align self_size at offset 6
+    uint16_t                 self_size;       // sizeof(interlock_persist_t); 0 in v<=3
     interlock_slot_persist_t slots[INTERLOCK_MAX_SLOTS];
     interlock_crash_record_t crash;
     // Slice 2 additions — present only when version >= 2.
@@ -175,6 +181,27 @@ typedef struct {
     uint16_t                 dsl_len[INTERLOCK_MAX_SLOTS];
     char                     dsl_text[INTERLOCK_MAX_SLOTS][IL_DSL_MAX];
 } interlock_persist_t;
+
+// ---- Panic codes (slice 5, Amendment C) ----------------------------------
+// Software-detected invariant violations. HardFault_Handler still uses its
+// own record path (last_pc/lr from exception frame) and writes panic_code=0.
+typedef enum {
+    PANIC_NONE                  = 0,
+    PANIC_STACK_NEAR_OVERFLOW   = 1,  // SP dropped below _sstack + margin
+    PANIC_PERSIST_MAGIC_BAD     = 2,  // g_interlock_persist.magic mismatched mid-run
+    PANIC_PERSIST_VERSION_BAD   = 3,  // version mismatched mid-run
+    PANIC_PERSIST_SIZE_BAD      = 4,  // self_size mismatched mid-run
+    PANIC_HAL_PIN_DUPLICATE     = 5,  // pin-claim table has duplicate non-shared entry
+    PANIC_INIT_CANARY_BAD       = 6,  // stack canary failed at end of init
+    PANIC_CRASH_RECORD_BAD      = 7,  // crash record self-inconsistent at boot
+    /* extend per slice */
+} panic_code_t;
+
+// Non-returning. Records code/arg/SP/uptime into the crash slot and resets
+// the chip. Use only for software-detected invariants — HardFault has its
+// own path.
+__attribute__((noreturn))
+void panic(panic_code_t code, uint32_t arg);
 
 // Compile-time registry entry. Slice 1 only uses .name; tick / init /
 // terminate are placeholders for slice 2+.

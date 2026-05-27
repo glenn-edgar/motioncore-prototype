@@ -46,6 +46,7 @@
 #include "flash_storage.h"
 #include "shell_commands.h"  // firmware_sysinfo_t
 #include "samd21_hal.h"      // hal_wdt_init/pet, hal_capture_reset_cause
+#include "samd21_hal_pin.h"  // hal_pin_check_consistency
 #include "samd21_interlocks.h"
 
 // Implemented in user_functions.c.
@@ -183,6 +184,60 @@ static void stack_paint_and_canary(void) {
     // Canary at the LOWEST word — first thing overwritten by stack overflow.
     *(volatile uint32_t*)(uintptr_t)_sstack = STACK_CANARY_VALUE;
     g_stack_size_bytes = (uint16_t)((uintptr_t)_estack - (uintptr_t)_sstack);
+}
+
+// ----------------------------------------------------------------------------
+// system_self_check (slice 5, defensive amendment D).
+//
+// Called at end of init, immediately before the for(;;) main loop. Validates
+// every invariant the main loop assumes; any failure routes through panic()
+// so the next boot prints [BOOT_IL] ... pn=N ... with the discriminator.
+//
+// Six invariants per slice-5 prep memory Q6 ratification:
+//   1. Stack canary intact at _sstack
+//   2. interlock_persist magic == INTERLOCK_MAGIC
+//   3. interlock_persist version == INTERLOCK_PERSIST_VERSION
+//   4. interlock_persist self_size == sizeof(interlock_persist_t)
+//   5. HAL pin claim table has no duplicate non-shared owners
+//   6. Crash record self-consistency (if last_pc != 0 then last_crashed_slot
+//      must be 0xFF (no-slot) OR < INTERLOCK_MAX_SLOTS)
+// ----------------------------------------------------------------------------
+
+extern interlock_persist_t g_interlock_persist;   // declared in samd21_interlocks.h
+
+static void system_self_check(void) {
+    // 1. Stack canary
+    if (*(volatile uint32_t*)(uintptr_t)_sstack != STACK_CANARY_VALUE) {
+        panic(PANIC_INIT_CANARY_BAD, 0);
+    }
+    // 2. Persist magic
+    if (g_interlock_persist.magic != INTERLOCK_MAGIC) {
+        panic(PANIC_PERSIST_MAGIC_BAD, g_interlock_persist.magic);
+    }
+    // 3. Persist version
+    if (g_interlock_persist.version != INTERLOCK_PERSIST_VERSION) {
+        panic(PANIC_PERSIST_VERSION_BAD, g_interlock_persist.version);
+    }
+    // 4. Persist self_size
+    if (g_interlock_persist.self_size != (uint16_t)sizeof(interlock_persist_t)) {
+        panic(PANIC_PERSIST_SIZE_BAD, g_interlock_persist.self_size);
+    }
+    // 5. HAL pin claim table
+    if (!hal_pin_check_consistency()) {
+        panic(PANIC_HAL_PIN_DUPLICATE, 0);
+    }
+    // 6. Crash record consistency — if there's a recorded crash (last_pc != 0
+    //    or panic_code != 0), the slot field must be either NONE (0xFF) or a
+    //    valid slot index.
+    {
+        const interlock_crash_record_t* cr = &g_interlock_persist.crash;
+        bool has_crash = (cr->last_pc != 0) || (cr->panic_code != PANIC_NONE);
+        bool slot_ok   = (cr->last_crashed_slot == INTERLOCK_CRASHED_SLOT_NONE)
+                      || (cr->last_crashed_slot < INTERLOCK_MAX_SLOTS);
+        if (has_crash && !slot_ok) {
+            panic(PANIC_CRASH_RECORD_BAD, cr->last_crashed_slot);
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -393,6 +448,10 @@ int main(void) {
     bool prev_cdc_connected = false;
     bool saw_disconnect     = false;
 
+    // Defensive amendment D — gate entry to the main loop on invariants.
+    // Any failure panics with a discriminated code; next boot prints it.
+    system_self_check();
+
     for (;;) {
         tud_task();
 
@@ -431,15 +490,29 @@ int main(void) {
             // freshly-arrived CMD_INTERLOCK_SET won't race with the tick.
             interlock_tick_all();
 
+            // Amendment A — pre-overflow SP check. Catches a near-overflow
+            // BEFORE any deeper call chain can write below _sstack. 256 B
+            // margin sized to cover the deepest IRQ chain (~500 B for
+            // TinyUSB CDC) with half the margin reserved for IRQ overhead
+            // between this check and the overflow point.
+            {
+                uint32_t sp;
+                __asm__ volatile ("mov %0, sp" : "=r"(sp));
+                if (sp < ((uintptr_t)_sstack + 256u)) {
+                    panic(PANIC_STACK_NEAR_OVERFLOW, sp);
+                }
+            }
+
             // Stack hardening: verify canary + update HWM after every
-            // chain pump cycle. Canary trip → defer-reset so the diag
-            // log line drains via the TX ring before the chip resets.
+            // chain pump cycle. Canary trip → panic (immediate reset) so
+            // the post-mortem code surfaces in the next boot's [BOOT_IL]
+            // line via panic_code = INIT_CANARY_BAD or equivalent.
             if (*(volatile uint32_t*)(uintptr_t)_sstack != STACK_CANARY_VALUE) {
                 g_stack_canary_tripped = 1;
                 if (module.debug_fn) {
-                    module.debug_fn(NULL, "[STACK_CANARY_TRIPPED] forcing reset");
+                    module.debug_fn(NULL, "[STACK_CANARY_TRIPPED] panicking");
                 }
-                firmware_request_reboot(200);
+                panic(PANIC_INIT_CANARY_BAD, 0);
             } else {
                 uint32_t* p   = (uint32_t*)((uintptr_t)_sstack + 4);
                 uint32_t* end = (uint32_t*)(uintptr_t)_estack;

@@ -242,6 +242,23 @@ hal_pin_mode_t hal_pin_get_mode(uint8_t phys_id) {
     return (hal_pin_mode_t)g_claims[phys_id].mode;
 }
 
+bool hal_pin_check_consistency(void) {
+    ensure_initialised();
+    for (uint8_t id = 0; id < HAL_PIN_TABLE_SIZE; id++) {
+        const hal_pin_claim_record_t* c = &g_claims[id];
+        if (c->slot_mask == 0u) continue;
+        // Output sharing is allowed; only input modes are single-owner.
+        if (c->mode == (uint8_t)HAL_PIN_MODE_GPIO_OUT) continue;
+        // popcount on an 8-bit value (Cortex-M0+ has no CLZ/POPCNT — use
+        // the Kernighan loop).
+        uint8_t m = c->slot_mask;
+        uint8_t bits = 0;
+        while (m) { m &= (uint8_t)(m - 1u); bits++; }
+        if (bits > 1u) return false;
+    }
+    return true;
+}
+
 uint8_t hal_pin_read(uint8_t phys_id) {
     ensure_initialised();
     if (phys_id >= HAL_PIN_TABLE_SIZE) return 0;
