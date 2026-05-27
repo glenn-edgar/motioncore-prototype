@@ -203,6 +203,51 @@ typedef enum {
 __attribute__((noreturn))
 void panic(panic_code_t code, uint32_t arg);
 
+// ---- Status buffer (slice 5, main work) ----------------------------------
+// 64 B compact snapshot built by interlock_tick_all() at the end of each
+// tick. Optimised for high-frequency host polling (replaces the on-demand
+// 55 B CMD_INTERLOCK_STATUS assembly path).
+//
+// Wire format: this struct is copied verbatim into an OP_POLL_REPLY frame
+// payload. All multi-byte fields are little-endian (Cortex-M0+ native).
+//
+// Compatibility: bump IL_STATUS_BUFFER_VERSION on any layout change. Host
+// decoder reads version first and refuses unknown.
+#define IL_STATUS_BUFFER_VERSION   1u
+#define IL_STATUS_BUFFER_SIZE      64u
+#define IL_STATUS_SLOT_NAME_MAX    8u    // truncated from IL_NAME_MAX=16
+
+typedef struct __attribute__((packed)) {
+    uint8_t  state;                          // interlock_slot_state_t
+    uint8_t  id;                             // INTERLOCK_ID_* value
+    uint8_t  tf;                             // il_tf_state_t
+    uint8_t  bc;                             // boot_counter
+    char     name[IL_STATUS_SLOT_NAME_MAX];  // first 8 chars of inst.name
+    uint8_t  veto_mask;                      // OR-of-vetoes contribution
+    uint8_t  reserved;
+} il_status_slot_t;   // 14 B
+
+typedef struct __attribute__((packed)) {
+    uint8_t  version;            // IL_STATUS_BUFFER_VERSION
+    uint8_t  num_slots;          // INTERLOCK_MAX_SLOTS
+    uint16_t status_seq;         // monotonic; bumps on any slot state/tf change
+    uint8_t  crash_panic_code;   // last recorded panic code (0 = none)
+    uint8_t  reserved0;
+    uint16_t stack_hwm_bytes;    // peak observed stack depth
+    il_status_slot_t slots[INTERLOCK_MAX_SLOTS];   // 14 × N bytes
+    uint16_t input_vals[INTERLOCK_MAX_SLOTS][IL_MAX_INPUTS];  // raw readings
+    uint8_t  reserved1[12];      // padding to 64 B
+} il_status_buffer_t;
+
+_Static_assert(sizeof(il_status_buffer_t) == IL_STATUS_BUFFER_SIZE,
+               "il_status_buffer_t layout drift");
+
+// Lives in .data (not .noinit — rebuilt fresh every tick; no persistence needed).
+extern il_status_buffer_t g_il_status_buffer;
+
+// Read-only accessor — host-side OP_POLL handler copies this into the reply.
+const il_status_buffer_t* interlock_get_status_buffer(void);
+
 // Compile-time registry entry. Slice 1 only uses .name; tick / init /
 // terminate are placeholders for slice 2+.
 typedef void (*interlock_fn_t)(void);

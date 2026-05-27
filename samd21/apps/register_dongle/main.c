@@ -305,6 +305,24 @@ static void tick_and_drain(s_expr_tree_instance_t* tree) {
 static uint8_t g_rx_buf[64];
 static uint8_t g_rx_payload[COMM_PAYLOAD_MAX];
 
+static uint8_t g_poll_reply_seq = 0;
+
+// OP_POLL is handled inline (not through the chain) so it works in any
+// dongle state — useful for diagnostics during BOOT/L1_DONE. Reply is the
+// 64 B il_status_buffer_t pre-built by interlock_tick_all().
+static void handle_op_poll_inline(void) {
+    const il_status_buffer_t* sb = interlock_get_status_buffer();
+    frame_meta_t meta = {
+        .addr        = 1,
+        .cmd         = OP_POLL_REPLY,
+        .seq         = g_poll_reply_seq++,
+        .ack_seq     = 0,
+        .ack_status  = 0,
+        .payload_len = (uint8_t)IL_STATUS_BUFFER_SIZE,
+    };
+    (void)frame_encode_s2m(&meta, (const uint8_t*)sb, &g_tx_ring);
+}
+
 static void rx_drain_to_event_queue(s_expr_tree_instance_t* tree) {
     if (!tud_cdc_connected() || !tud_cdc_available()) return;
     uint32_t n = tud_cdc_read(g_rx_buf, sizeof(g_rx_buf));
@@ -322,6 +340,11 @@ static void rx_drain_to_event_queue(s_expr_tree_instance_t* tree) {
                     ((uint32_t)g_rx_payload[1] <<  8) |
                     ((uint32_t)g_rx_payload[2] << 16) |
                     ((uint32_t)g_rx_payload[3] << 24);
+            }
+            // OP_POLL: inline-handled (skips chain); replies with status buffer.
+            if (meta.cmd == OP_POLL) {
+                handle_op_poll_inline();
+                continue;
             }
             // OP_SHELL_EXEC carries a variable-length binary message that
             // outlives a single rx_drain pass. Queue it; only push the engine

@@ -410,6 +410,7 @@ local function parse_args(argv)
         elseif a == "--send-ping" then table.insert(opts.send_seq, {cmd=0x0104, label="OP_PING"})
         elseif a == "--send-manifest" then table.insert(opts.send_seq, {cmd=0x0107, label="OP_GET_MANIFEST"})
         elseif a == "--send-operational" then table.insert(opts.send_seq, {cmd=0x0108, label="OP_OPERATIONAL_BEGIN"})
+        elseif a == "--send-poll" then table.insert(opts.send_seq, {cmd=0x010A, label="OP_POLL"})
         elseif a == "--send-shell-echo" then
             i = i + 1
             local s = argv[i] or ""
@@ -1197,6 +1198,9 @@ Options:
   --send-ping         Send one m2s OP_PING (0x0104) frame after open
   --send-manifest     Send one m2s OP_GET_MANIFEST (0x0107) frame after open
   --send-operational  Send one m2s OP_OPERATIONAL_BEGIN (0x0108) frame after open
+  --send-poll         Send one m2s OP_POLL (0x010A) frame; expect 64-byte
+                      OP_POLL_REPLY with per-slot state/tf/name + input vals.
+                      Inline-handled on dongle; works in any state.
   --send-shell-echo S Send one m2s OP_SHELL_EXEC frame invoking CMD_ECHO with
                       string S as args. Expect OP_SHELL_REPLY echoing it back.
   --send-shell-sysinfo Send one m2s OP_SHELL_EXEC frame invoking CMD_SYSINFO.
@@ -1520,6 +1524,8 @@ local OPCODE_NAMES = {
     [0x0008] = "OP_MANIFEST_REPLY",
     [0x0010] = "OP_DBG_LOG",
     [0x0011] = "OP_SHELL_REPLY",
+    [0x0012] = "OP_POLL_REPLY",
+    [0x0013] = "OP_EVENT",
     -- m2s (host -> dongle)
     [0x0103] = "OP_REGISTER_ACK",
     [0x0104] = "OP_PING",
@@ -1528,6 +1534,7 @@ local OPCODE_NAMES = {
     [0x0107] = "OP_GET_MANIFEST",
     [0x0108] = "OP_OPERATIONAL_BEGIN",
     [0x0109] = "OP_SHELL_EXEC",
+    [0x010A] = "OP_POLL",
 }
 
 local SHELL_STATUS = {
@@ -2100,6 +2107,60 @@ local function decode_s2m_frame()
             local rcmd   = bit.bor(f[9], bit.lshift(f[10], 8))
             io.write(string.format("\n  nak:  reason=%s(%d)  rejected_cmd=0x%04X (%s)",
                 NAK_REASONS[reason] or "?", reason, rcmd, opcode_label(rcmd)))
+        elseif cmd == 0x0012 and len == 64 then
+            -- OP_POLL_REPLY: 64 B il_status_buffer_t (slice 5).
+            -- Layout: ver(1) num(1) seq(2 LE) panic_code(1) rsvd(1) hwm(2 LE)
+            --         + 2x slot{state, id, tf, bc, name[8], veto, rsvd} (28 B)
+            --         + 2x input_vals[4 u16] (16 B) + reserved[12]
+            local ver  = f[8]
+            local num  = f[9]
+            local sseq = bit.bor(f[10], bit.lshift(f[11], 8))
+            local pn   = f[12]
+            local hwm  = bit.bor(f[14], bit.lshift(f[15], 8))
+            local state_lbl = { [0]="EMPTY", [1]="ARMED", [2]="POISONED" }
+            local tf_lbl    = { [0]="-", [1]="T(OK)", [2]="F(ERR)" }
+            io.write(string.format("\n  poll: v%d num_slots=%d seq=%d pn=%d hwm=%d B",
+                ver, num, sseq, pn, hwm))
+            for s = 0, num - 1 do
+                local base = 16 + s * 14    -- 14 B per slot record
+                local st = f[base]
+                local id = f[base + 1]
+                local tf = f[base + 2]
+                local bc = f[base + 3]
+                local name = {}
+                for k = 0, 7 do
+                    if f[base + 4 + k] == 0 then break end
+                    table.insert(name, string.char(f[base + 4 + k]))
+                end
+                local vm = f[base + 12]
+                io.write(string.format("\n    slot %d: %-8s id=%d tf=%-7s bc=%d veto=%d name='%s'",
+                    s, state_lbl[st] or "?", id, tf_lbl[tf] or "?", bc, vm, table.concat(name)))
+            end
+            -- Input vals: 2 slots × 4 inputs × 2 B each, starting at byte 44.
+            for s = 0, num - 1 do
+                local base = 44 + s * 8
+                local v = {}
+                for k = 0, 3 do
+                    table.insert(v, tostring(bit.bor(f[base + k*2], bit.lshift(f[base + k*2 + 1], 8))))
+                end
+                io.write(string.format("\n    slot %d in: %s", s, table.concat(v, " ")))
+            end
+        elseif cmd == 0x0013 and len == 6 then
+            -- OP_EVENT: { seq:u16, slot:u8, new_state:u8, new_tf:u8,
+            --             packed_old:u8 (hi nibble=old_state, lo=old_tf) }
+            local eseq = bit.bor(f[8], bit.lshift(f[9], 8))
+            local slot = f[10]
+            local ns   = f[11]
+            local ntf  = f[12]
+            local pk   = f[13]
+            local os_  = bit.band(bit.rshift(pk, 4), 0x0F)
+            local otf  = bit.band(pk, 0x0F)
+            local state_lbl = { [0]="EMPTY", [1]="ARMED", [2]="POISONED" }
+            local tf_lbl    = { [0]="-", [1]="T(OK)", [2]="F(ERR)" }
+            io.write(string.format("\n  event: seq=%d slot=%d  %s/%s -> %s/%s",
+                eseq, slot,
+                state_lbl[os_] or "?", tf_lbl[otf] or "?",
+                state_lbl[ns] or "?", tf_lbl[ntf] or "?"))
         elseif cmd == 0x0008 and len >= 9 then
             -- OP_MANIFEST_REPLY: schema_hash(u32) + fw_version(u32) + m2s_count(u8) + m2s_opcodes(u16[])
             -- bit.tohex is unsigned-aware; plain %08X sign-extends when high bit is set.

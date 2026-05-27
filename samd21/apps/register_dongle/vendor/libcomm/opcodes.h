@@ -26,6 +26,8 @@
 #define OP_MANIFEST_REPLY    ((uint16_t)0x0008)  // L2: schema_hash + fw_version + m2s opcode list
 #define OP_DBG_LOG           ((uint16_t)0x0010)  // se_log output (UTF-8 text payload)
 #define OP_SHELL_REPLY       ((uint16_t)0x0011)  // app-shell command result
+#define OP_POLL_REPLY        ((uint16_t)0x0012)  // 64 B status buffer snapshot (slice 5)
+#define OP_EVENT             ((uint16_t)0x0013)  // edge-trigger slot state/tf change (slice 5)
 
 // ----- m2s (host -> dongle) -----
 #define OP_REGISTER_ACK      ((uint16_t)0x0103)  // L1: host acknowledges OP_REGISTER -> BOOT → L1_DONE
@@ -35,6 +37,7 @@
 #define OP_GET_MANIFEST      ((uint16_t)0x0107)  // L2: request OP_MANIFEST_REPLY
 #define OP_OPERATIONAL_BEGIN ((uint16_t)0x0108)  // advance L1_DONE → OPERATIONAL
 #define OP_SHELL_EXEC        ((uint16_t)0x0109)  // app-shell command invocation
+#define OP_POLL              ((uint16_t)0x010A)  // request 64 B status buffer snapshot (slice 5)
 
 // ----- engine-internal events (never appear on the wire) -----
 // main.c (or other firmware-internal code) pushes these to the engine

@@ -7,8 +7,14 @@
 #include "samd21.h"
 #include "samd21_hal_pin.h"
 #include "samd21_pin_table.h"
-#include "vendor/libcomm/opcodes.h"   // SHELL_STATUS_* values
+#include "vendor/libcomm/opcodes.h"   // SHELL_STATUS_* values, OP_EVENT
+#include "vendor/libcomm/frame.h"     // frame_encode_s2m for OP_EVENT push
 #include <string.h>
+
+// TX ring defined in main.c. We push OP_EVENT frames directly into it from
+// interlock_tick_all when a slot state/tf transition is detected.
+extern frame_ring_t g_tx_ring;
+extern volatile uint16_t g_stack_hwm_bytes;   // defined in main.c
 
 // ---------------------------------------------------------------------------
 // Persistent state — lives in the .noinit linker section so RAM contents
@@ -35,6 +41,22 @@ interlock_persist_t g_interlock_persist __attribute__((section(".noinit")));
 // crash that NEXT happens, not a prior one). Initialise to "none" so a
 // HardFault occurring outside any interlock tick is recorded that way.
 volatile uint8_t g_active_interlock_slot = INTERLOCK_CRASHED_SLOT_NONE;
+
+// ---------------------------------------------------------------------------
+// Status buffer (slice 5). Rebuilt at the end of every interlock_tick_all()
+// run. Lives in .data — does NOT need to survive WDT (host can re-poll the
+// new snapshot post-boot).
+//
+// status_seq monotonically increments whenever any slot's state or tf flips.
+// We track the previous tick's slot snapshot in a static below so the diff
+// can be computed cheaply.
+// ---------------------------------------------------------------------------
+
+il_status_buffer_t g_il_status_buffer;
+
+const il_status_buffer_t* interlock_get_status_buffer(void) {
+    return &g_il_status_buffer;
+}
 
 // ---------------------------------------------------------------------------
 // Compile-time interlock registry. Slice-1 stub: the only entry is a no-op
@@ -321,7 +343,9 @@ void interlock_warm_restore(void) {
 
 // Evaluate one slot's watches against a fresh input snapshot. Updates
 // inst->tf_state in place. Does NOT touch outputs — that's the drive phase.
-static void eval_slot(uint8_t slot, il_inst_t* inst) {
+// Writes captured input values into out_input_vals[IL_MAX_INPUTS] so the
+// status buffer can include them without re-reading hardware.
+static void eval_slot(uint8_t slot, il_inst_t* inst, uint16_t* out_input_vals) {
     g_active_interlock_slot = slot;
 
     uint16_t input_vals[IL_MAX_INPUTS] = {0};
@@ -331,6 +355,9 @@ static void eval_slot(uint8_t slot, il_inst_t* inst) {
         } else {
             input_vals[i] = hal_pin_read(inst->inputs[i].phys_id);
         }
+    }
+    if (out_input_vals) {
+        for (uint8_t i = 0; i < IL_MAX_INPUTS; i++) out_input_vals[i] = input_vals[i];
     }
 
     bool all_pass = true;
@@ -361,14 +388,41 @@ static void eval_slot(uint8_t slot, il_inst_t* inst) {
 // Splitting into phases is what makes multi-slot output sharing well-defined:
 // without it the second slot would silently overwrite the first slot's vote
 // every tick. With it, both slots contribute to a single combined value.
+// Emit a 6 B OP_EVENT frame announcing a slot state or tf transition. Cheap;
+// fire-and-forget into the TX ring. If the ring is full the frame is silently
+// dropped — host can re-sync from the next OP_POLL.
+static void emit_op_event(uint16_t seq, uint8_t slot,
+                          uint8_t old_state, uint8_t new_state,
+                          uint8_t old_tf,    uint8_t new_tf) {
+    uint8_t payload[6];
+    payload[0] = (uint8_t)(seq & 0xFFu);
+    payload[1] = (uint8_t)((seq >> 8) & 0xFFu);
+    payload[2] = slot;
+    payload[3] = new_state;
+    payload[4] = new_tf;
+    // Pack the previous state+tf into one byte: high nibble=old_state, low=old_tf.
+    payload[5] = (uint8_t)(((old_state & 0x0Fu) << 4) | (old_tf & 0x0Fu));
+    frame_meta_t meta = {
+        .addr        = 1,
+        .cmd         = OP_EVENT,
+        .seq         = (uint8_t)(seq & 0xFFu),
+        .ack_seq     = 0,
+        .ack_status  = 0,
+        .payload_len = sizeof(payload),
+    };
+    (void)frame_encode_s2m(&meta, payload, &g_tx_ring);
+}
+
 void interlock_tick_all(void) {
     verify_persist_or_panic();
-    // Phase 1 — evaluate.
+    // Phase 1 — evaluate. Capture per-input values into the status buffer's
+    // input_vals slot so we don't re-read hardware in phase 3.
     for (uint8_t slot = 0; slot < INTERLOCK_MAX_SLOTS; slot++) {
         interlock_slot_persist_t* sp = &g_interlock_persist.slots[slot];
         if (sp->state != INTERLOCK_SLOT_ARMED) continue;
         if (sp->id != INTERLOCK_ID_DSL) continue;
-        eval_slot(slot, &g_interlock_persist.inst[slot]);
+        eval_slot(slot, &g_interlock_persist.inst[slot],
+                  g_il_status_buffer.input_vals[slot]);
     }
     g_active_interlock_slot = INTERLOCK_CRASHED_SLOT_NONE;
 
@@ -385,6 +439,54 @@ void interlock_tick_all(void) {
         }
     }
     hal_pin_drive_outputs(veto_mask);
+
+    // Phase 3 — populate status buffer + emit OP_EVENT on slot transitions.
+    // Compare new slot snapshots against the previous tick's status buffer
+    // (slots[] are valid because Phase 3 is the only writer). status_seq
+    // bumps only on a real state or tf transition.
+    bool any_change = false;
+    uint16_t new_seq = g_il_status_buffer.status_seq;
+    for (uint8_t slot = 0; slot < INTERLOCK_MAX_SLOTS; slot++) {
+        const interlock_slot_persist_t* sp = &g_interlock_persist.slots[slot];
+        uint8_t new_state = sp->state;
+        uint8_t new_id    = sp->id;
+        uint8_t new_tf    = (sp->state == INTERLOCK_SLOT_ARMED && sp->id == INTERLOCK_ID_DSL)
+                            ? g_interlock_persist.inst[slot].tf_state
+                            : (uint8_t)IL_TF_UNEVALUATED;
+        uint8_t old_state = g_il_status_buffer.slots[slot].state;
+        uint8_t old_tf    = g_il_status_buffer.slots[slot].tf;
+        if (old_state != new_state || old_tf != new_tf) {
+            any_change = true;
+            // Bump seq first so emitted event carries the new value.
+            new_seq++;
+            emit_op_event(new_seq, slot, old_state, new_state, old_tf, new_tf);
+        }
+        il_status_slot_t* s = &g_il_status_buffer.slots[slot];
+        s->state     = new_state;
+        s->id        = new_id;
+        s->tf        = new_tf;
+        s->bc        = sp->boot_counter;
+        s->veto_mask = (veto_mask >> slot) & 1u;
+        s->reserved  = 0;
+        // Copy first 8 bytes of inst.name (may not be null-terminated).
+        if (new_state == INTERLOCK_SLOT_ARMED && new_id == INTERLOCK_ID_DSL) {
+            for (uint8_t k = 0; k < IL_STATUS_SLOT_NAME_MAX; k++) {
+                s->name[k] = g_interlock_persist.inst[slot].name[k];
+            }
+        } else {
+            memset(s->name, 0, IL_STATUS_SLOT_NAME_MAX);
+        }
+    }
+    g_il_status_buffer.version          = IL_STATUS_BUFFER_VERSION;
+    g_il_status_buffer.num_slots        = INTERLOCK_MAX_SLOTS;
+    g_il_status_buffer.status_seq       = new_seq;
+    g_il_status_buffer.crash_panic_code = g_interlock_persist.crash.panic_code;
+    g_il_status_buffer.reserved0        = 0;
+    g_il_status_buffer.stack_hwm_bytes  = g_stack_hwm_bytes;
+    if (!any_change) {
+        // No transition; status_seq unchanged — host poll loop can use it
+        // as a freshness sentinel.
+    }
 }
 
 const interlock_slot_persist_t* interlock_get_slot(uint8_t slot) {
