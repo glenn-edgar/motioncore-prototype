@@ -16,6 +16,12 @@
 extern frame_ring_t g_tx_ring;
 extern volatile uint16_t g_stack_hwm_bytes;   // defined in main.c
 
+// Slice 6 — virtual input sources. board_millis() is the TinyUSB BSP wall clock
+// (also used by the chain pump). g_last_m2s_rx_ms is set in rx_drain whenever a
+// host frame finishes decoding; readers see at most ~1 tick of staleness.
+extern uint32_t          board_millis(void);
+extern volatile uint32_t g_last_m2s_rx_ms;
+
 // ---------------------------------------------------------------------------
 // Persistent state — lives in the .noinit linker section so RAM contents
 // survive WDT / software / external resets. On POR + brown-out the section
@@ -56,6 +62,52 @@ il_status_buffer_t g_il_status_buffer;
 
 const il_status_buffer_t* interlock_get_status_buffer(void) {
     return &g_il_status_buffer;
+}
+
+// ---------------------------------------------------------------------------
+// Slice 6 — runtime-only state. Kept out of .noinit because:
+//   * Shift register on warm boot would hold stale samples; clearing is safer.
+//   * Watch last-pass would falsely freeze hysteresis state across the bite.
+// Both arrays zeroed on cold boot (.bss) and on every disarm / warm-restore.
+// ---------------------------------------------------------------------------
+
+static uint16_t g_input_shift_reg[INTERLOCK_MAX_SLOTS][IL_MAX_INPUTS];
+static uint8_t  g_input_debounced[INTERLOCK_MAX_SLOTS][IL_MAX_INPUTS];
+static uint8_t  g_watch_last_pass[INTERLOCK_MAX_SLOTS][IL_MAX_WATCHES];
+
+static void clear_slot_runtime(uint8_t slot) {
+    for (uint8_t i = 0; i < IL_MAX_INPUTS; i++) {
+        g_input_shift_reg[slot][i] = 0;
+        g_input_debounced[slot][i] = 0;
+    }
+    for (uint8_t i = 0; i < IL_MAX_WATCHES; i++) {
+        g_watch_last_pass[slot][i] = 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Slice 6 — virtual input reader. Maps an IL_VIRT_* id to a u16 sample.
+// Time-based virtuals saturate at u16 max so a 65 535 s ceiling (~18 h)
+// can't roll over and look-like fresh data.
+// ---------------------------------------------------------------------------
+
+static uint16_t read_virtual_input(uint8_t virt_id) {
+    uint32_t now_ms = board_millis();
+    switch (virt_id) {
+        case IL_VIRT_T_SINCE_M2S: {
+            uint32_t dt_ms = now_ms - g_last_m2s_rx_ms;
+            uint32_t dt_s  = dt_ms / 1000u;
+            return (dt_s > 65535u) ? (uint16_t)65535u : (uint16_t)dt_s;
+        }
+        case IL_VIRT_UPTIME: {
+            uint32_t up_s = now_ms / 1000u;
+            return (up_s > 65535u) ? (uint16_t)65535u : (uint16_t)up_s;
+        }
+        case IL_VIRT_STACK_HWM:
+            return g_stack_hwm_bytes;
+        default:
+            return 0;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +265,7 @@ uint8_t interlock_disarm_slot(uint8_t slot) {
     s->boot_counter = 0;
     memset(&g_interlock_persist.inst[slot], 0, sizeof(il_inst_t));
     g_interlock_persist.dsl_len[slot] = 0;
+    clear_slot_runtime(slot);
     return SHELL_STATUS_OK;
 }
 
@@ -240,7 +293,12 @@ static hal_pin_mode_t map_input_mode(uint8_t il_mode) {
 static hal_pin_claim_status_t claim_inst_pins(uint8_t slot, const il_inst_t* inst) {
     hal_pin_claim_status_t cs = HAL_PIN_CLAIM_OK;
     for (uint8_t i = 0; i < inst->input_count; i++) {
-        if ((il_pin_mode_t)inst->inputs[i].mode == IL_PIN_MODE_ADC) {
+        il_pin_mode_t imode = (il_pin_mode_t)inst->inputs[i].mode;
+        if (imode == IL_PIN_MODE_VIRTUAL) {
+            // Virtual input: no physical pin to claim. Skip.
+            continue;
+        }
+        if (imode == IL_PIN_MODE_ADC) {
             cs = hal_pin_claim_adc(inst->inputs[i].phys_id, slot,
                                    inst->inputs[i].oversample_exp,
                                    inst->inputs[i].sh_cyc);
@@ -305,6 +363,9 @@ uint8_t interlock_set_slot_dsl(uint8_t slot,
     sp->state        = INTERLOCK_SLOT_ARMED;
     sp->id           = INTERLOCK_ID_DSL;
     sp->boot_counter = 0;
+    // Slice 6: fresh ARM starts with cleared debounce/hyst state — no false
+    // edges from prior arm-cycle samples.
+    clear_slot_runtime(slot);
     return SHELL_STATUS_OK;
 }
 
@@ -338,6 +399,10 @@ void interlock_warm_restore(void) {
         // tf_state reset to UNEVALUATED — outputs will be re-asserted on
         // first tick after restore.
         g_interlock_persist.inst[slot].tf_state = (uint8_t)IL_TF_UNEVALUATED;
+        // Slice 6: shift register + hyst memory don't survive the bite —
+        // they're in .bss so already zero on cold boot, but explicit zero
+        // here makes warm-restore identical to fresh arm (no stale samples).
+        clear_slot_runtime(slot);
     }
 }
 
@@ -345,16 +410,40 @@ void interlock_warm_restore(void) {
 // inst->tf_state in place. Does NOT touch outputs — that's the drive phase.
 // Writes captured input values into out_input_vals[IL_MAX_INPUTS] so the
 // status buffer can include them without re-reading hardware.
+//
+// Slice 6 extensions:
+//   - GPIO inputs with debounce_depth >= 2 are filtered through a shift
+//     register: the output flips only when N consecutive samples agree.
+//   - ADC inputs with hyst != 0 get a directional dead-band on gt/lt/ge/le
+//     watches: once a watch is in the pass state, the threshold is relaxed
+//     by `hyst` so noise near the boundary doesn't cause flutter.
+//   - Virtual inputs read synthesized signals (no hardware access).
 static void eval_slot(uint8_t slot, il_inst_t* inst, uint16_t* out_input_vals) {
     g_active_interlock_slot = slot;
 
     uint16_t input_vals[IL_MAX_INPUTS] = {0};
     for (uint8_t i = 0; i < inst->input_count; i++) {
-        if ((il_pin_mode_t)inst->inputs[i].mode == IL_PIN_MODE_ADC) {
-            input_vals[i] = hal_pin_read_adc(inst->inputs[i].phys_id);
+        il_pin_mode_t imode = (il_pin_mode_t)inst->inputs[i].mode;
+        uint16_t raw;
+        if (imode == IL_PIN_MODE_ADC) {
+            raw = hal_pin_read_adc(inst->inputs[i].phys_id);
+        } else if (imode == IL_PIN_MODE_VIRTUAL) {
+            raw = read_virtual_input(inst->inputs[i].phys_id);
         } else {
-            input_vals[i] = hal_pin_read(inst->inputs[i].phys_id);
+            raw = (uint16_t)(hal_pin_read(inst->inputs[i].phys_id) & 1u);
+            uint8_t depth = inst->inputs[i].debounce_depth;
+            if (depth >= 2u) {
+                // Shift in new sample, mask to N bits, then flip the debounced
+                // output only when all N bits agree (Schmitt-on-time).
+                uint16_t mask = (uint16_t)((1u << depth) - 1u);
+                uint16_t* sr = &g_input_shift_reg[slot][i];
+                *sr = (uint16_t)(((*sr << 1) | (raw & 1u)) & mask);
+                if      (*sr == mask) g_input_debounced[slot][i] = 1u;
+                else if (*sr == 0u)   g_input_debounced[slot][i] = 0u;
+                raw = g_input_debounced[slot][i];
+            }
         }
+        input_vals[i] = raw;
     }
     if (out_input_vals) {
         for (uint8_t i = 0; i < IL_MAX_INPUTS; i++) out_input_vals[i] = input_vals[i];
@@ -362,19 +451,43 @@ static void eval_slot(uint8_t slot, il_inst_t* inst, uint16_t* out_input_vals) {
 
     bool all_pass = true;
     for (uint8_t i = 0; i < inst->watch_count; i++) {
-        uint16_t v = input_vals[inst->watches[i].input_idx];
-        uint16_t t = inst->watches[i].threshold;
+        uint8_t  idx  = inst->watches[i].input_idx;
+        uint16_t v    = input_vals[idx];
+        uint16_t t    = inst->watches[i].threshold;
+        uint16_t hyst = inst->inputs[idx].hyst;
+        uint16_t teff = t;
+        // Hysteresis only adjusts directional comparisons. Parser already
+        // rejected hyst+eq/ne (IL_PARSE_HYST_ON_EQ_NE) so we don't see them
+        // here, but the switch defaults to plain compare for safety.
+        if (hyst != 0u && g_watch_last_pass[slot][i]) {
+            switch ((il_compare_op_t)inst->watches[i].op) {
+                case IL_OP_GT:
+                case IL_OP_GE:
+                    teff = (t > hyst) ? (uint16_t)(t - hyst) : 0u;
+                    break;
+                case IL_OP_LT:
+                case IL_OP_LE: {
+                    uint32_t sum = (uint32_t)t + (uint32_t)hyst;
+                    teff = (sum > 65535u) ? (uint16_t)65535u : (uint16_t)sum;
+                    break;
+                }
+                default: break;
+            }
+        }
         bool pass = false;
         switch ((il_compare_op_t)inst->watches[i].op) {
-            case IL_OP_EQ: pass = (v == t); break;
-            case IL_OP_NE: pass = (v != t); break;
-            case IL_OP_LT: pass = (v <  t); break;
-            case IL_OP_GT: pass = (v >  t); break;
-            case IL_OP_LE: pass = (v <= t); break;
-            case IL_OP_GE: pass = (v >= t); break;
-            default: pass = false; break;
+            case IL_OP_EQ: pass = (v == t);    break;
+            case IL_OP_NE: pass = (v != t);    break;
+            case IL_OP_LT: pass = (v <  teff); break;
+            case IL_OP_GT: pass = (v >  teff); break;
+            case IL_OP_LE: pass = (v <= teff); break;
+            case IL_OP_GE: pass = (v >= teff); break;
+            default:       pass = false;       break;
         }
-        if (!pass) { all_pass = false; break; }
+        g_watch_last_pass[slot][i] = pass ? 1u : 0u;
+        if (!pass) all_pass = false;
+        // Don't early-out: we want every watch's last_pass updated each tick
+        // so hysteresis is consistent across all watches in the slot.
     }
     inst->tf_state = all_pass ? (uint8_t)IL_TF_TRUE : (uint8_t)IL_TF_FALSE;
 }

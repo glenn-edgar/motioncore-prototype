@@ -39,7 +39,8 @@
 // v2 (slice 2): adds il_inst_t + dsl_text per slot.
 // v3 (slice 4): grows il_input_t with oversample_exp + sh_cyc for ADC inputs.
 // v4 (slice 5): adds self_size header + panic_code/panic_arg/panic_sp to crash record.
-#define INTERLOCK_PERSIST_VERSION    4u
+// v5 (slice 6): grows il_input_t to 8 B with debounce_depth + hyst for ADC/virtual.
+#define INTERLOCK_PERSIST_VERSION    5u
 
 // ---- Slice 2: DSL-driven interlock instance ------------------------------
 
@@ -59,7 +60,15 @@ typedef enum {
     IL_PIN_MODE_IN_PD  = 2,
     IL_PIN_MODE_OUT    = 3,
     IL_PIN_MODE_ADC    = 4,   // slice 4: 12-bit analog input
+    IL_PIN_MODE_VIRTUAL = 5,  // slice 6: synthesized input (no physical claim)
 } il_pin_mode_t;
+
+// Virtual-input IDs. When il_input_t.mode == IL_PIN_MODE_VIRTUAL, phys_id
+// names which synthesized signal feeds the watch. Values >= 0xF0 keep them
+// disjoint from real phys_ids (board_pin_phys_id() max is 0x3F = (1<<5)|31).
+#define IL_VIRT_T_SINCE_M2S  0xF0u   // seconds since last received m2s frame
+#define IL_VIRT_UPTIME       0xF1u   // seconds since boot
+#define IL_VIRT_STACK_HWM    0xF2u   // peak stack depth in bytes
 
 typedef enum {
     IL_OP_EQ = 0,
@@ -77,10 +86,13 @@ typedef enum {
 } il_tf_state_t;
 
 typedef struct {
-    uint8_t  phys_id;             // resolved board_pin_phys_id()
+    uint8_t  phys_id;             // resolved board_pin_phys_id() OR IL_VIRT_* when mode=VIRTUAL
     uint8_t  mode;                // il_pin_mode_t
-    uint8_t  oversample_exp;      // ADC mode only (0..4); ignored for GPIO
-    uint8_t  sh_cyc;              // ADC mode only (0..63); ignored for GPIO
+    uint8_t  oversample_exp;      // ADC mode only (0..4); ignored for GPIO/VIRTUAL
+    uint8_t  sh_cyc;              // ADC mode only (0..63); ignored for GPIO/VIRTUAL
+    uint8_t  debounce_depth;      // slice 6: 0 = none, 2..15 = shift-register depth; GPIO inputs only
+    uint8_t  reserved;
+    uint16_t hyst;                // slice 6: 0 = none, dead-band around gt/lt/ge/le; ADC only
 } il_input_t;
 
 typedef struct {
@@ -133,6 +145,12 @@ typedef enum {
     IL_PARSE_SH_OUT_OF_RANGE        = 20,  // sh_N: N > 63
     IL_PARSE_MODIFIER_ON_GPIO       = 21,  // oversample_N or sh_N on non-adc cfg
     IL_PARSE_THRESHOLD_OUT_OF_RANGE = 22,  // watch threshold > 65535 (defence — read_number truncates)
+    // Slice 6 — hysteresis + debounce + virtual inputs
+    IL_PARSE_HYST_NOT_ON_ADC        = 23,  // hyst_N requires :adc mode
+    IL_PARSE_DEBOUNCE_NOT_ON_GPIO   = 24,  // debounce_N requires :in/up/down mode
+    IL_PARSE_DEBOUNCE_OUT_OF_RANGE  = 25,  // debounce_N: N not in [2,15]
+    IL_PARSE_UNKNOWN_VIRTUAL        = 26,  // _name not in virtual-input table
+    IL_PARSE_HYST_ON_EQ_NE          = 27,  // watch op eq/ne against a pin with hyst configured
 } il_parse_status_t;
 
 // Parse DSL text into out. text is not required to be NUL-terminated.

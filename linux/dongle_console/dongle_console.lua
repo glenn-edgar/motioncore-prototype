@@ -1973,6 +1973,11 @@ local function decode_s2m_frame()
                     [20]="sh_out_of_range (0..63)",
                     [21]="modifier_on_gpio (oversample_N/sh_N is adc-only)",
                     [22]="threshold_out_of_range",
+                    [23]="hyst_not_on_adc (hyst_N requires :adc mode)",
+                    [24]="debounce_not_on_gpio (debounce_N requires :in/up/down)",
+                    [25]="debounce_out_of_range (must be 2..15)",
+                    [26]="unknown_virtual (no such _name)",
+                    [27]="hyst_on_eq_ne (hyst applies only to gt/lt/ge/le)",
                 }
                 local CLAIM_ERR_LABEL = {
                     [0]="ok", [1]="no_such_pin", [2]="reserved",

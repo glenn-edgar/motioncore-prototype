@@ -18,7 +18,9 @@
 //
 // Slice 2 specifically refuses keywords/modes outside this set so the
 // parser's failure modes are deterministic. Slice 4 adds ADC modifiers
-// (oversample_N, sh_N); slice 6 adds hysteresis (hyst_N) + nested {}.
+// (oversample_N, sh_N). Slice 6 adds hyst_N (ADC dead-band), debounce_N
+// (GPIO shift-register filter), and underscore-prefix virtual inputs
+// (_t_since_m2s / _uptime / _stack_hwm) auto-declared on first watch ref.
 //
 // No heap usage. Caller-supplied il_inst_t is populated in place; on parse
 // failure the caller MUST discard *out (left in undefined state).
@@ -165,7 +167,30 @@ static bool is_known_modifier(const char* s, uint8_t len) {
     if (ident_equals(s, len, "down")) return true;
     if (is_param_mod(s, len, "oversample_")) return true;
     if (is_param_mod(s, len, "sh_"))         return true;
+    if (is_param_mod(s, len, "hyst_"))       return true;
+    if (is_param_mod(s, len, "debounce_"))   return true;
     return false;
+}
+
+// ---- Virtual input table (slice 6) ---------------------------------------
+// Synthesized signals readable via the DSL. Labels begin with '_' to keep
+// them disjoint from board pin labels (D0..D10/A0..A10). Watched implicitly:
+// referencing one in watch[] auto-declares an input with mode=VIRTUAL.
+typedef struct { const char* name; uint8_t virt_id; } il_virt_pin_t;
+static const il_virt_pin_t k_virt_pins[] = {
+    { "_t_since_m2s", IL_VIRT_T_SINCE_M2S },
+    { "_uptime",      IL_VIRT_UPTIME      },
+    { "_stack_hwm",   IL_VIRT_STACK_HWM   },
+};
+static const uint8_t k_virt_pin_count = sizeof(k_virt_pins) / sizeof(k_virt_pins[0]);
+
+// Returns 0..0xEF mapped virt_id on match, or 0xFF if `s` is not a known
+// virtual name. Caller signals "this isn't a virtual" via len[0] != '_'.
+static uint8_t virt_lookup(const char* s, uint8_t len) {
+    for (uint8_t i = 0; i < k_virt_pin_count; i++) {
+        if (ident_equals(s, len, k_virt_pins[i].name)) return k_virt_pins[i].virt_id;
+    }
+    return 0xFFu;
 }
 
 // Map a SAMPLENUM count (1,2,4,8,16) to its exponent (0..4). Returns 0xFF on invalid.
@@ -259,8 +284,10 @@ static il_parse_status_t parse_cfg(parser_t* p, il_inst_t* inst) {
 
         // ADC default config: 1 sample (exp=0), 4 sample-hold cycles. Matches
         // the bench-validated values in samd21_commands.c adc_init.
-        uint8_t adc_oversample_exp = 0;
-        uint8_t adc_sh_cyc         = 4;
+        uint8_t  adc_oversample_exp = 0;
+        uint8_t  adc_sh_cyc         = 4;
+        uint16_t hyst_val           = 0;   // slice 6: ADC-only
+        uint8_t  debounce_depth     = 0;   // slice 6: GPIO-only
 
         for (uint8_t i = 1; i < mod_count; i++) {
             const char* ms = mod_strs[i];
@@ -280,17 +307,33 @@ static il_parse_status_t parse_cfg(parser_t* p, il_inst_t* inst) {
                         return IL_PARSE_SH_OUT_OF_RANGE;
                     if (n > 63u) return IL_PARSE_SH_OUT_OF_RANGE;
                     adc_sh_cyc = (uint8_t)n;
+                } else if (is_param_mod(ms, ml, "hyst_")) {
+                    if (!parse_param_mod_value(ms, ml, "hyst_", &hyst_val))
+                        return IL_PARSE_THRESHOLD_OUT_OF_RANGE;
+                } else if (is_param_mod(ms, ml, "debounce_")) {
+                    return IL_PARSE_DEBOUNCE_NOT_ON_GPIO;
                 } else {
                     return IL_PARSE_UNKNOWN_MODE;
                 }
             } else if (is_input) {
                 if      (ident_equals(ms, ml, "up"))   mode = IL_PIN_MODE_IN_PU;
                 else if (ident_equals(ms, ml, "down")) mode = IL_PIN_MODE_IN_PD;
+                else if (is_param_mod(ms, ml, "debounce_")) {
+                    uint16_t n;
+                    if (!parse_param_mod_value(ms, ml, "debounce_", &n))
+                        return IL_PARSE_DEBOUNCE_OUT_OF_RANGE;
+                    if (n < 2u || n > 15u) return IL_PARSE_DEBOUNCE_OUT_OF_RANGE;
+                    debounce_depth = (uint8_t)n;
+                }
+                else if (is_param_mod(ms, ml, "hyst_"))
+                    return IL_PARSE_HYST_NOT_ON_ADC;
                 else if (is_param_mod(ms, ml, "oversample_") || is_param_mod(ms, ml, "sh_"))
                     return IL_PARSE_MODIFIER_ON_GPIO;
                 else return IL_PARSE_UNKNOWN_MODE;
             } else {
                 // out doesn't take any modifiers
+                if (is_param_mod(ms, ml, "hyst_"))     return IL_PARSE_HYST_NOT_ON_ADC;
+                if (is_param_mod(ms, ml, "debounce_")) return IL_PARSE_DEBOUNCE_NOT_ON_GPIO;
                 if (is_param_mod(ms, ml, "oversample_") || is_param_mod(ms, ml, "sh_"))
                     return IL_PARSE_MODIFIER_ON_GPIO;
                 return IL_PARSE_UNKNOWN_MODE;
@@ -311,6 +354,9 @@ static il_parse_status_t parse_cfg(parser_t* p, il_inst_t* inst) {
                 inst->inputs[inst->input_count].mode           = (uint8_t)mode;
                 inst->inputs[inst->input_count].oversample_exp = is_adc ? adc_oversample_exp : 0;
                 inst->inputs[inst->input_count].sh_cyc         = is_adc ? adc_sh_cyc         : 0;
+                inst->inputs[inst->input_count].debounce_depth = is_adc ? 0 : debounce_depth;
+                inst->inputs[inst->input_count].reserved       = 0;
+                inst->inputs[inst->input_count].hyst           = is_adc ? hyst_val : 0;
                 inst->input_count++;
             } else {
                 if (find_input_idx(inst, phys_id)  >= 0) return IL_PARSE_DUPLICATE_PIN;
@@ -329,8 +375,9 @@ static il_parse_status_t parse_cfg(parser_t* p, il_inst_t* inst) {
     return IL_PARSE_OK;
 }
 
-// watch[D1:1,D2:1]               — slice-2 implicit-eq form (still legal)
-// watch[A1:gt:512,A1:lt:3000]    — slice-4 3-part form: pin:op:threshold
+// watch[D1:1,D2:1]                    — slice-2 implicit-eq form (still legal)
+// watch[A1:gt:512,A1:lt:3000]         — slice-4 3-part form: pin:op:threshold
+// watch[_t_since_m2s:gt:30]           — slice-6 virtual input; auto-declared
 //   op ∈ {eq, ne, lt, gt, le, ge}
 static il_parse_status_t parse_watch(parser_t* p, il_inst_t* inst) {
     while (true) {
@@ -357,11 +404,41 @@ static il_parse_status_t parse_watch(parser_t* p, il_inst_t* inst) {
         uint16_t val;
         if (!read_number(p, &val)) return IL_PARSE_BAD_NUMBER;
 
-        const board_pin_t* bp = board_pin_lookup(lbl, llen);
-        if (bp == 0) return IL_PARSE_UNKNOWN_PIN;
-        uint8_t phys_id = board_pin_phys_id(bp);
-        int idx = find_input_idx(inst, phys_id);
-        if (idx < 0) return IL_PARSE_WATCH_INPUT_UNDECL;
+        uint8_t phys_id;
+        int     idx;
+        if (lbl[0] == '_') {
+            // Virtual input — resolve to virt_id and auto-declare if first ref.
+            uint8_t virt_id = virt_lookup(lbl, llen);
+            if (virt_id == 0xFFu) return IL_PARSE_UNKNOWN_VIRTUAL;
+            phys_id = virt_id;
+            idx = find_input_idx(inst, phys_id);
+            if (idx < 0) {
+                if (inst->input_count >= IL_MAX_INPUTS) return IL_PARSE_TOO_MANY_INPUTS;
+                inst->inputs[inst->input_count].phys_id        = phys_id;
+                inst->inputs[inst->input_count].mode           = (uint8_t)IL_PIN_MODE_VIRTUAL;
+                inst->inputs[inst->input_count].oversample_exp = 0;
+                inst->inputs[inst->input_count].sh_cyc         = 0;
+                inst->inputs[inst->input_count].debounce_depth = 0;
+                inst->inputs[inst->input_count].reserved       = 0;
+                inst->inputs[inst->input_count].hyst           = 0;
+                idx = (int)inst->input_count;
+                inst->input_count++;
+            }
+        } else {
+            const board_pin_t* bp = board_pin_lookup(lbl, llen);
+            if (bp == 0) return IL_PARSE_UNKNOWN_PIN;
+            phys_id = board_pin_phys_id(bp);
+            idx = find_input_idx(inst, phys_id);
+            if (idx < 0) return IL_PARSE_WATCH_INPUT_UNDECL;
+        }
+
+        // Hysteresis is a directional dead-band — only meaningful for ordered
+        // comparisons. eq/ne lack a "side" so we reject the combination
+        // explicitly rather than silently ignoring the hyst field.
+        if (inst->inputs[idx].hyst != 0u
+            && (op == IL_OP_EQ || op == IL_OP_NE)) {
+            return IL_PARSE_HYST_ON_EQ_NE;
+        }
 
         if (inst->watch_count >= IL_MAX_WATCHES) return IL_PARSE_TOO_MANY_WATCHES;
         inst->watches[inst->watch_count].input_idx = (uint8_t)idx;

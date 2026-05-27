@@ -173,6 +173,11 @@ volatile uint16_t g_stack_hwm_bytes      = 0;     // peak observed depth (bytes)
 volatile uint16_t g_stack_size_bytes     = 0;     // total stack region size
 volatile uint8_t  g_stack_canary_tripped = 0;     // 1 = overflow detected
 
+// Slice 6 — feeds the IL_VIRT_T_SINCE_M2S virtual input. Updated every time
+// rx_drain decodes a complete host frame; reset to board_millis() at boot so
+// virtuals don't trip on the time-since-epoch right after a cold start.
+volatile uint32_t g_last_m2s_rx_ms       = 0;
+
 static void stack_paint_and_canary(void) {
     // Paint from _sstack up to (current SP - safety). Don't write above SP —
     // that would clobber our own stack frame.
@@ -331,6 +336,8 @@ static void rx_drain_to_event_queue(s_expr_tree_instance_t* tree) {
         frame_decode_result_t r =
             frame_decoder_feed(&g_rx_decoder, g_rx_buf[i], &meta, g_rx_payload);
         if (r == FRAME_DECODE_FRAME_READY) {
+            // Slice 6 — feed the IL_VIRT_T_SINCE_M2S virtual.
+            g_last_m2s_rx_ms = board_millis();
             // OP_COMMISSION_SET carries a u32 new_instance_id. Stage it into
             // a single-producer/single-consumer global so the chain handler
             // can read it; libcomm's one-in-flight rule keeps this race-free.
@@ -412,6 +419,11 @@ int main(void) {
 
     frame_ring_init(&g_tx_ring, g_tx_ring_buf, TX_RING_SIZE);
     frame_decoder_init(&g_rx_decoder, FRAME_DIR_M2S);
+
+    // Slice 6: seed the m2s timestamp at "now" so _t_since_m2s starts at 0,
+    // not at uptime. Host hasn't sent anything yet but we don't want the
+    // virtual to trip an arming-immediately watch before the first frame.
+    g_last_m2s_rx_ms = board_millis();
 
     // L0: read commissioning blob from flash before engine starts.
     // Factory-fresh dongles read nothing; defaults to UNCOMMISSIONED.
