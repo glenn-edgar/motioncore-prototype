@@ -16,29 +16,31 @@ import json, math, statistics, sys, argparse
 from pathlib import Path
 
 V_SUPPLY = 15.5
+ACS712_OFFSET = 0.0133  # physical-anchored 2026-05-26 to sat_2:4 = 35 Ω
 DISCONNECTS = {"satellite_1:1", "satellite_1:28", "satellite_1:38",
                "satellite_1:40", "satellite_3:1", "satellite_4:6"}
-WIRE_OFFSET_OHMS = {**{f"satellite_2:{p}": 19.0 for p in (13,14,15,16,17)},
+WIRE_OFFSET_OHMS = {**{f"satellite_2:{p}": 10.0 for p in (13,14,15,16,17)},
                     **{f"satellite_3:{p}":  3.0 for p in (11,12,13,14,15,16,17,18)}}
 
 
-def offset(valve_test):
+def leakage(valve_test):
+    """Drift indicator only — disconnects pass ~0.077 A leakage through high-R paths."""
     return statistics.median([valve_test[v][-1] for v in DISCONNECTS
                               if v in valve_test and valve_test[v]])
 
 
-def corr_r(valve, i_amps, off):
-    i_true = i_amps - off
+def corr_r(valve, i_amps, _off_unused=None):
+    i_true = i_amps - ACS712_OFFSET
     if i_true <= 1e-4: return None
     r = V_SUPPLY / i_true - WIRE_OFFSET_OHMS.get(valve, 0.0)
     if valve == "satellite_1:44": r *= 2.0
     return r
 
 
-def mann_kendall_r(series_amps, valve, off):
+def mann_kendall_r(series_amps, valve, _off_unused=None):
     rs = []
     for i in series_amps:
-        r = corr_r(valve, i, off)
+        r = corr_r(valve, i)
         if r is not None and 5.0 < r < 500.0:
             rs.append(r)
     n = len(rs)
@@ -68,10 +70,11 @@ def main():
 
     A = load_snapshot(args.date_a)
     B = load_snapshot(args.date_b)
-    off_a, off_b = offset(A), offset(B)
+    leak_a, leak_b = leakage(A), leakage(B)
 
     print(f"\n=== day-over-day diff: {args.date_a} → {args.date_b} ===")
-    print(f"  ACS712 offset:  {off_a:.4f} → {off_b:.4f}  (Δ={off_b-off_a:+.4f} A)")
+    print(f"  ACS712 offset:    {ACS712_OFFSET:.4f} A  (physical-anchored, fixed)")
+    print(f"  Disconnect leak:  {leak_a:.4f} → {leak_b:.4f}  (Δ={leak_b-leak_a:+.4f} A — drift indicator)")
     print()
 
     valves = sorted(set(A) & set(B))
@@ -82,10 +85,10 @@ def main():
     for v in valves:
         sa, sb = A.get(v), B.get(v)
         if not sa or not sb: continue
-        ra = corr_r(v, sa[-1], off_a)
-        rb = corr_r(v, sb[-1], off_b)
-        ta, pa = mann_kendall_r(sa, v, off_a)
-        tb, pb = mann_kendall_r(sb, v, off_b)
+        ra = corr_r(v, sa[-1])
+        rb = corr_r(v, sb[-1])
+        ta, pa = mann_kendall_r(sa, v, ACS712_OFFSET)
+        tb, pb = mann_kendall_r(sb, v, ACS712_OFFSET)
         rs = lambda x: f"{x:6.2f}" if x is not None else "   ---"
         drs = f"{rb-ra:+6.2f}" if (ra is not None and rb is not None) else "   ---"
         flag = ""

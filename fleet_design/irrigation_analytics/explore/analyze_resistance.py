@@ -27,10 +27,14 @@ from pathlib import Path
 V_SUPPLY = 15.5
 DISCONNECTS = {"satellite_1:1", "satellite_1:28", "satellite_1:38",
                "satellite_1:40", "satellite_3:1", "satellite_4:6"}
-# Trunk wire constants — calibrated 2026-05-26 against non-wire-family cohort μ ≈ 46.9 Ω.
-# sat_2:13–17 share an added 18-gauge ground-return trunk.
-# sat_3:11–18 share a shorter extra cable to the valve group.
-WIRE_OFFSET_OHMS = {**{f"satellite_2:{p}": 19.0 for p in (13, 14, 15, 16, 17)},
+# CALIBRATION (2026-05-26 anchored to physical measurements):
+#   New-install solenoid: 43 Ω
+#   Anchor A: sat_2:4 physical = 35 Ω (no wire) → ACS712 offset = 0.0133 A
+#   Anchor B: sat_2:13..17 physical = 42 Ω (with trunk wire) → wire = 10.07 Ω median
+# Disconnect valves are NOT zero-current — they are ~200 Ω high-impedance leakage
+# paths that pass ~0.077 A. Use them for daily-drift detection only, not as offset.
+ACS712_OFFSET = 0.0133
+WIRE_OFFSET_OHMS = {**{f"satellite_2:{p}": 10.0 for p in (13, 14, 15, 16, 17)},
                     **{f"satellite_3:{p}":  3.0 for p in (11, 12, 13, 14, 15, 16, 17, 18)}}
 PARALLEL_PAIRS = {"satellite_1:44"}  # apparent R × 2 = per-coil R
 MASTER_DEAD = {"satellite_1:38"}     # already in DISCONNECTS — flagged DEAD
@@ -42,8 +46,9 @@ MASTER_HEAVY = {"satellite_1:43"}    # working master, larger valve w/ filtering
 SUN_MAP = {1: "sun", 2: "sun", 3: "shade", 4: "sun", 5: "sun",
            6: "sun", 7: "sun", 8: "sun", 9: "shade", 10: "shade"}
 
-R_INOPERABLE  = 40.0
-R_IMPENDING   = 50.0
+R_NEW_SPEC    = 43.0   # new-install solenoid baseline
+R_INOPERABLE  = 34.0   # ≈ cohort μ − 3σ; below this = physically inoperable
+R_IMPENDING   = 47.0   # ≈ cohort μ + 5σ; above this = trending open
 TREND_P_THRESHOLD = 0.10  # loose for baseline characterization
 
 
@@ -72,6 +77,10 @@ def build_cohorts(valve_groups: list) -> dict[str, str]:
 
 
 def offset_from_disconnects(valve_test: dict) -> float:
+    """Return median of latest disconnect-valve I values — used for *drift detection*,
+    not as the calibration offset (the disconnects pass ~200 Ω leakage current, not
+    zero, so their median is sensor-bias + leakage, not bias alone).
+    """
     latest = []
     for v in DISCONNECTS:
         series = valve_test.get(v)
@@ -134,7 +143,8 @@ def classify(valve: str, r_corr: float | None, cohort: str,
 def main() -> None:
     valve_test, valve_groups = load()
     cohort_map = build_cohorts(valve_groups)
-    offset = offset_from_disconnects(valve_test)
+    leakage = offset_from_disconnects(valve_test)  # drift indicator, not offset
+    offset = ACS712_OFFSET  # physical-anchored calibration
 
     rows = []
     for valve, series in sorted(valve_test.items()):
@@ -180,9 +190,11 @@ def main() -> None:
 
     # ── REPORT ────────────────────────────────────────────────────────────
     print(f"\n=== IRRIGATION VALVE RESISTANCE — KB2-daily baseline ===")
-    print(f"  ACS712 offset:    {offset:.4f} A  (median of {len(DISCONNECTS)} disconnects)")
-    print(f"  V_supply:         {V_SUPPLY} V")
-    print(f"  Trend threshold:  p < {TREND_P_THRESHOLD}")
+    print(f"  ACS712 offset:        {offset:.4f} A  (physical-anchored to sat_2:4=35Ω)")
+    print(f"  Disconnect leakage:   {leakage:.4f} A  (drift-indicator only)")
+    print(f"  V_supply:             {V_SUPPLY} V")
+    print(f"  New-install spec:     {R_NEW_SPEC} Ω")
+    print(f"  Trend threshold:      p < {TREND_P_THRESHOLD}")
     for c, (mu, sd, n) in cohort_stats.items():
         print(f"  Cohort {c:<5}    μ={mu:6.2f}Ω  σ={sd:5.2f}Ω  n={n}")
 
