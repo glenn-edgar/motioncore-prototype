@@ -131,6 +131,66 @@ a threshold detector.
 
 ---
 
+## Flow-side companion track (locked 2026-05-28)
+
+Independent from R-KB. Lives in `irrigation_analytics/explore/` for now.
+
+### Short-run end-only strategy (LOCKED)
+
+For runs ≤ 5 steps, the failure signal is ONLY at the settled steady-state.
+Drop multi-feature scoring. One number per run:
+
+```
+end_mean(run) = mean(run.HUNTER_FLOW.data[-3:])     # last 3 of 5 steps
+baseline(bin) = median + MAD over historic runs (excluding newest)
+delta         = newest_end − baseline_median
+flag if |delta| > max(K_MAD * MAD, gpm_floor)
+   K_MAD     = 3.5
+   gpm_floor = 2.0
+direction: Δ > 0 → broken/missing/stuck-open head
+           Δ < 0 → clogged/partial-block head
+```
+
+Full rationale + validation: `[[end-only-short-run-strategy-2026-05-28]]`.
+
+### First validation (2026-05-28)
+
+`explore/short_run_end_score.py` against fresh time_history.json + today's
+operator labels (17 tree-bad-heads + 4:13/2:2 fail + 2:6 clean):
+
+```
+TP=3  FN=4  FP=0  TN=3
+precision=1.00   recall=0.43
+```
+
+Misses are all single-bad-head on multi-head valves (Δ at noise floor).
+
+### Six unlabeled anomalies for operator inspection
+
+These were not on today's bad-head list but the analyzer flagged them.
+Confirm next opportunity:
+
+| valve   | Δ (gpm) | likely    |
+|---------|---------|-----------|
+| 3:11    | −10.33  | major clog / shut-off |
+| 1:13    | −5.33   | partial clog |
+| 1:12    | −4.67   | partial clog |
+| 1:7     | −4.00   | partial clog |
+| 3:19    | +2.67   | broken / open head |
+| 3:4     | −2.33   | partial clog |
+
+### Tomorrow's slot
+
+R-KB build is primary. If R-KB finishes ahead of estimate, fill remaining
+time with:
+1. Add paired-bin (X+1:39) end-mean as a second-vote axis (improves single-
+   head recall)
+2. Tune K_MAD + gpm_floor with the 6 unlabeled findings once operator
+   confirms
+3. Promote `short_run_end_score.py` to a flow-KB scaffold (kb3_flow_short)
+
+---
+
 ## Status (2026-05-19)
 
 **Design phase complete + connection KB fully implemented end-to-end.**
