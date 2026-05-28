@@ -1,5 +1,136 @@
 # fleet_design — Continue From Here
 
+## Resume here (2026-05-29 — irrigation R-only KBs, full-day build)
+
+**Goal:** land two R-only knowledge bases under `irrigation_analytics/`:
+**KB1** (live R during scan, alert-only) and **KB2** (daily trend + calibration
+health). Buildable in one day with data in hand. No more measurement sessions
+needed.
+
+**Full plan in memory**: `[[r-kb-implementation-plan-2026-05-29]]`.
+**Calibration baseline in memory**: `[[r-scan-noise-floor-2026-05-27]]`.
+
+### Calibration model (locked 2026-05-28 session)
+
+```
+V_PSU            = 15.7 V                (operator-measured)
+R_master         = 33 Ω                  (sat_1:43, physical multimeter)
+I_master_true    = V_PSU / R_master      = 0.4758 A
+ACS712_OFFSET    = I_master_meas − I_master_true   (today: −0.0196 A / −3 LSB)
+I_true(any)      = I_meas − ACS712_OFFSET
+R(any)           = V_PSU / I_true
+```
+
+The ACS712 offset is the day-over-day knob: yesterday −1 LSB, today −3 LSB.
+KB2 tracks this as a system-health metric (alerts if it drifts ≥3 LSB vs
+7-day median — catches PSU/sensor aging).
+
+### Reference tables (carry into both KBs)
+
+- **Watch list** (intrinsic noise, σ ≥ 1.16 LSB — wider gates):
+  sat_4:1, sat_3:14, sat_3:11, sat_2:4, sat_2:6, sat_2:15, sat_4:8
+- **Anchor list** (1-LSB σ, common-mode cross-check):
+  sat_4:13, sat_3:18, sat_1:44, sat_4:12, sat_4:2
+- **Disconnected / skip from detection**:
+  sat_1:1, sat_1:28, sat_1:38, sat_1:40, sat_3:1, sat_4:6
+- **Multi-coil bin** (heavy load): sat_1:44 (~0.67 A, ~22 Ω)
+
+### KB1 detection gates
+
+| condition | rule | sub-reason |
+|---|---|---|
+| open coil | `I_meas < 0.15 A` ≥2 consecutive | `OPEN` |
+| shorted coil | `I_meas > 1.5 A` (R < 10 Ω) | `SHORT` |
+| out-of-band | `|I_meas − baseline| > 10 LSB` (15 for watch list) | `DEVIATION` |
+| stuck idle | last 3 samples < 0.15 A mid-scan | `STUCK_IDLE` |
+| PSU sag | master sat_1:43 newest < 0.40 A | `BUS_DEAD` |
+| scan interrupted | no master energized in last 60 s | `SCAN_INTERRUPTED` |
+
+Polling model (no controller event hook known): poll the
+`IRRIGATION_VALVE_TEST` Redis hash every 2 s during active scan, 60 s when
+idle. Detect "scan active" by master sat_1:43 slot[19] flipping from idle
+to energized. Push Discord on first open/short hit, debounce 5 min per valve.
+
+**No autonomous skip** — R changes are slow-developing, alert-only.
+
+### KB2 anomaly rules
+
+| condition | threshold | tier |
+|---|---|---|
+| ΔR vs 7-day median | > +3 Ω (non-watch) | per-valve alert |
+| ΔR vs 7-day median | > +5 Ω (watch list) | per-valve alert |
+| ΔR vs 7-day median | < −3 Ω | replacement/new-coil alert |
+| ACS712_OFFSET shift | > 3 LSB vs 7-day median | system-health alert |
+| V_PSU_implied shift | > 0.3 V vs 7-day median | system-health alert |
+| disconnected-list changed | any | wiring-event alert |
+
+Persist daily snapshots to `server/persistence/` as a stream-KB under
+`irrigation_analytics/r_scan_daily/`. Rolling-median per valve computed
+on-the-fly from the stream.
+
+Daily Discord digest at 06:00 PT (after the controller's nightly auto-scan),
+single push with anchor report + anomaly list + watch-tier informational.
+
+### File layout
+
+```
+fleet_design/irrigation_analytics/
+  kb1_r_live/
+    main.lua              # chain_tree controller
+    detector.lua          # gate evaluation
+    baseline.lua          # per-valve expected I (loaded from kb2_r_baseline.json)
+    discord_push.lua      # alert formatter
+    config.lua            # thresholds, debounce
+  kb2_r_trend/
+    main.lua              # chain_tree controller
+    calibrate.lua         # master anchor + offset derivation
+    detector.lua          # baseline comparison + anomaly rules
+    persist.lua           # stream append + 7-day pull
+    digest.lua            # Discord digest formatter
+    config.lua            # thresholds
+  data/
+    kb2_r_baseline.json   # exported nightly by KB2, consumed by KB1
+```
+
+### Build order (one full day)
+
+1. **KB2 calibrate.lua** — port master-anchor + offset derivation from
+   `explore/analyze_resistance.py` (1-2 h)
+2. **KB2 detector.lua** — rolling-median + 7-day threshold comparison (1 h)
+3. **KB2 persist.lua** — stream append using persistence library (30 min)
+4. **KB2 digest.lua** + notification_service wiring (1 h)
+5. **KB1 baseline.lua** — load per-valve expected bands from KB2 output (30 min)
+6. **KB1 detector.lua** — gate evaluation (1-2 h)
+7. **KB1 push** — Discord wire with debounce (30 min)
+8. **Bench smoke** — replay today's snapshot + synthetic open-coil mutation (1 h)
+
+### What NOT to build (decided 2026-05-28)
+
+- ❌ Mann-Kendall / change-point per valve — noise floor swallows signal
+- ❌ ARIMA / time-series forecasting — no labeled failures
+- ❌ Per-valve aging models — solenoids fail abruptly, not gracefully
+- ❌ Buffer-internal pattern mining — 20-slot rolling rotation isn't a time series
+- ❌ Autonomous skip authority for KB1 — R changes aren't real-time-actionable
+
+Heavy stats stay deferred to flow-side analysis. The R-scan is fundamentally
+a threshold detector.
+
+### Pre-build gotcha checklist
+
+- All bench files in `<repo>/var/...`, never `/tmp` on WSL (rule absolute)
+- Secrets (irrigation password, Discord webhook) → `secrets/`, 0600, gitignored
+- Persistence boot-race: KB0 needs the 5-s `wait_time` between NAMESPACE_UP
+  and SPAWN_APP_KBS (known fix)
+- `irrigation_analytics` namespace already exists — extend it, don't create new
+
+### Open thread separate from this work
+
+- Thursday operator-labeled bad-head list arrived 2026-05-28 (17 bad heads
+  across 20 tree valves) — confirms all faults are flow-side (no R signal).
+  Curves/flow analysis handles that, NOT this R track.
+
+---
+
 ## Status (2026-05-19)
 
 **Design phase complete + connection KB fully implemented end-to-end.**
