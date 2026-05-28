@@ -148,7 +148,13 @@ static uint32_t engine_get_time_ms(void* ctx) {
 // payload + 7 B s2m header + worst-case SLIP escapes).
 // ----------------------------------------------------------------------------
 
-#define TX_RING_SIZE 256u
+// 1024 B sized to hold (a) the largest possible SHELL_REPLY (128 B payload +
+// 8 B framing + SLIP-worst-case ≈ 280 B) plus (b) ~700 B of backlogged DBG_LOG
+// / heartbeat / OP_EVENT bytes that may be queued during a long shell-handler
+// run (cmd_adc_capture at 60 samples × 5 ms holds the loop for ~300 ms during
+// which nothing drains). 256 B previously was tight enough that adc_capture
+// replies were silently dropped — see samd21_adc_capture_bug_2026-05-28.
+#define TX_RING_SIZE 1024u
 static uint8_t       g_tx_ring_buf[TX_RING_SIZE];
 frame_ring_t         g_tx_ring;
 

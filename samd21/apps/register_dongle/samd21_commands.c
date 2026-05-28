@@ -647,6 +647,12 @@ static uint8_t cmd_adc_capture(shell_reader_t* args, shell_writer_t* result) {
     uint32_t min_slot_us       = min_per_sample_us * (uint32_t)num_channels;
     if (delta_time_us < min_slot_us) return SHELL_STATUS_BAD_ARGS;
 
+    // Cold-path safety: cmd_adc_capture may be the first ADC op after boot
+    // (e.g. waveform-capture-only workflows). g_adc_initialized is in zero-init
+    // .bss, so without this the ADC has no clock/enable/calibration and the
+    // inner spin loop hangs forever. No-op if already initialised.
+    adc_init();
+
     uint8_t st = adc_apply_avg_hold(oversample_exp, sample_hold);
     if (st != SHELL_STATUS_OK) return st;
 
