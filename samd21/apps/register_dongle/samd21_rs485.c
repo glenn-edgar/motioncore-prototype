@@ -5,39 +5,41 @@
 //       D7 = PB09 = SERCOM4/PAD1 = RX  (mux function D)
 // Both reserved from GPIO commands by pin_is_reserved() in samd21_commands.c.
 //
-// Wire format (Phase-1 passthrough layer — real 9-bit addressing from day 1,
-// length-prefixed payload so frames self-delimit without an idle timer):
+// Wire format (BC-2 structured transport — full spec in
+// docs/rs485-bus-protocol-bc2-bc3.md):
 //
-//     [ADDR byte: 9th bit = 1]   destination (m2s) or source (s2m) address
-//     [LEN  byte: 9th bit = 0]   N = payload length (0..RS485_PAYLOAD_MAX)
-//     [PAYLOAD: N bytes, 9th bit = 0]
+//     0xFF                       preamble (DATA, bit8=0) — RC/transceiver settle
+//     [dest byte: 9th bit = 1]   destination addr (MPCM address marker)
+//     [src   byte: 9th bit = 0]  source addr (master=0x00, slave=its addr)
+//     [type  byte]               frame class (NO_MESSAGE/POLL/DATA/ACK/NAK) + TCP
+//     [seq   byte]               sequence (TCP ack correlation; 0 on UDP)
+//     [len   byte]               payload length 0..RS485_PAYLOAD_MAX
+//     [payload: len bytes]
+//     [crc8  byte]               CRC-8/AUTOSAR over dest,src,type,seq,len,payload
 //
 // The 9th data bit is the MPCM address/data marker (1=address, 0=data). The
-// SAMD21 SERCOM has NO hardware address-recognition, so we drive bit 8 on TX
-// and software-match every received word — fine for the slow safety bus.
+// SAMD21 SERCOM has NO hardware address recognition, so we drive bit 8 on the
+// dest byte and software-match it — fine for the slow safety bus. The CRC is
+// the same crc8_autosar used by the USB-CDC framing (vendor/libcomm/frame.c).
 //
-// Every transmission after bus idle is prefixed with one sacrificial 0xFF
-// preamble byte (sent as DATA, bit 8 = 0) to let the board's 74HC04+RC
-// auto-direction circuit assert DE before the real frame starts. The receiver
-// discards it: in IDLE the assembler ignores data bytes until an address byte.
+// RX is ISR-driven into a ring of 9-bit words — mandatory on a half-duplex bus:
+// the node hears its own transmission, and the 2-deep SERCOM RX buffer would
+// overflow under a blocking multi-byte TX. The ISR keeps up at byte rate; the
+// main loop drains the ring and runs the assembler (CRC-checked), decoupled
+// exactly like the USB-CDC RX path.
 //
-// RX is ISR-driven into a ring of 9-bit words. This is mandatory, not a luxury:
-// RS-485 is half-duplex, so on a loopback (D6->D7 jumper) or a shared bus the
-// node hears its own transmission on RX. The SERCOM RX buffer is only 2 deep,
-// so a blocking multi-byte TX would overflow a polled receiver. The ISR keeps
-// up at byte rate regardless of what the main loop is doing; the main loop
-// drains the ring and runs the frame assembler — decoupled exactly like the
-// USB-CDC RX path.
-//
-// NOTE (Phase 2, deferred): once MAX485 transceivers create a shared A/B bus,
-// the node will echo its OWN TX back onto RX and must discard it. A tx-active
-// flag gating the ISR store will be added then. For Phase 1 bare-TTL
-// cross-wiring there is no self-echo, and for a loopback the echo IS the test
-// signal, so day-1 capture-everything is correct.
+// Self-echo discard (shared bus): with MAX485 transceivers tying TX/RX onto one
+// differential pair, the node receives every byte it transmits. rs485_send()
+// arms s_tx_skip with the exact count of words it is about to send; the ISR
+// decrements and discards that many incoming words. This is timing-independent
+// (no "clear after TXC" race) and exact. Gated by RS485_FLAG_SHARED_BUS so a
+// D6->D7 loopback self-test (echo IS the signal) and bare-TTL cross-wire (no
+// echo) still work — there the skip would wrongly eat a partner's reply.
 // ============================================================================
 
 #include "samd21_rs485.h"
 #include "samd21.h"
+#include "frame.h"      // crc8_autosar_update (vendor/libcomm)
 
 #define RS485_SERCOM        SERCOM4
 #define RS485_GCLK_ID_CORE  SERCOM4_GCLK_ID_CORE
@@ -46,26 +48,29 @@
 
 // RX ring of 9-bit words (low 9 bits = data, bit 8 = address marker). Power of
 // two so the mask wraps cheaply. 256 words comfortably holds one max-size frame
-// plus its loopback echo between main-loop drains.
+// plus its self-echo between main-loop drains.
 #define RS485_RX_RING_LEN   256u
 #define RS485_RX_RING_MASK  (RS485_RX_RING_LEN - 1u)
 
 static volatile uint16_t s_rx_ring[RS485_RX_RING_LEN];
-static volatile uint16_t s_rx_head;   // ISR writes
-static volatile uint16_t s_rx_tail;   // main loop reads
+static volatile uint16_t s_rx_head;    // ISR writes
+static volatile uint16_t s_rx_tail;    // main loop reads
 static volatile uint32_t s_rx_overrun; // BUFOVF / ring-full count (diagnostic)
+static volatile uint32_t s_crc_fail;   // frames dropped on CRC mismatch
+static volatile uint16_t s_tx_skip;    // self-echo words left to discard (ISR--)
 
-// Listen address. 0xFF = sniffer / listen-all (accept any address byte).
-static uint8_t  s_my_addr = 0xFFu;
-static uint32_t s_baud    = 115200u;
+// Listen address. 0xFF = sniffer / listen-all (accept any dest byte).
+static uint8_t  s_my_addr   = RS485_ADDR_SNIFFER;
+static uint32_t s_baud      = 115200u;
+static bool     s_shared_bus = false;   // RS485_FLAG_SHARED_BUS
 
 // Frame-assembler state (main-loop side; not touched by the ISR).
-typedef enum { ASM_IDLE, ASM_NEED_LEN, ASM_IN_PAYLOAD } asm_state_t;
-static asm_state_t s_asm_state = ASM_IDLE;
-static uint8_t     s_asm_addr;
-static uint8_t     s_asm_len;
-static uint8_t     s_asm_idx;
-static uint8_t     s_asm_buf[RS485_PAYLOAD_MAX];
+typedef enum {
+    ASM_IDLE, ASM_SRC, ASM_TYPE, ASM_SEQ, ASM_LEN, ASM_PAYLOAD, ASM_CRC
+} asm_state_t;
+static asm_state_t  s_asm_state = ASM_IDLE;
+static rs485_frame_t s_asm;     // accumulator (dest/src/type/seq/len/payload)
+static uint8_t      s_asm_idx;
 
 // ---------------------------------------------------------------------------
 // BAUD register for 16x-oversampled arithmetic mode:
@@ -133,6 +138,8 @@ void rs485_init(void) {
     // 8. RX-complete interrupt -> NVIC. Short ISR (read DATA, store word).
     s_rx_head = s_rx_tail = 0;
     s_rx_overrun = 0;
+    s_crc_fail   = 0;
+    s_tx_skip    = 0;
     RS485_SERCOM->USART.INTENSET.reg = SERCOM_USART_INTENSET_RXC;
     NVIC_EnableIRQ(RS485_IRQn);
 
@@ -142,8 +149,8 @@ void rs485_init(void) {
 }
 
 void rs485_config(uint32_t baud, uint8_t my_addr, uint8_t flags) {
-    (void)flags;  // bit0 = 9-bit/MPCM; always on in v1. Reserved otherwise.
-    s_my_addr = my_addr;
+    s_my_addr    = my_addr;
+    s_shared_bus = (flags & RS485_FLAG_SHARED_BUS) != 0u;
     // Reset the assembler so a reconfig never leaves a half-parsed frame.
     s_asm_state = ASM_IDLE;
     if (baud != 0u && baud != s_baud) {
@@ -152,54 +159,89 @@ void rs485_config(uint32_t baud, uint8_t my_addr, uint8_t flags) {
     }
 }
 
+// CRC-8/AUTOSAR over the header + payload (the same value computed on RX).
+static uint8_t frame_crc(uint8_t dest, uint8_t src, uint8_t type, uint8_t seq,
+                         uint8_t len, const uint8_t* payload) {
+    uint8_t c = 0xFFu;
+    c = crc8_autosar_update(c, dest);
+    c = crc8_autosar_update(c, src);
+    c = crc8_autosar_update(c, type);
+    c = crc8_autosar_update(c, seq);
+    c = crc8_autosar_update(c, len);
+    for (uint8_t i = 0; i < len; i++) c = crc8_autosar_update(c, payload[i]);
+    return (uint8_t)(c ^ 0xFFu);   // CRC-8/AUTOSAR final XOR
+}
+
 // ---------------------------------------------------------------------------
-// TX. Spin on DRE (data register empty) before each 9-bit write; spin on TXC
-// after the last byte so the line returns to idle (and DE releases) cleanly
-// before we return. No timeout — a wedged TX is caught by the layer-2 WDT,
-// same policy as the I2C driver.
+// TX. Spin on DRE before each 9-bit write; spin on TXC after the last byte so
+// the line returns to idle (and DE releases) cleanly. No timeout — a wedged TX
+// is caught by the layer-2 WDT, same policy as the I2C driver.
 // ---------------------------------------------------------------------------
 static void rs485_tx_word(uint16_t word9) {
     while (!RS485_SERCOM->USART.INTFLAG.bit.DRE) { /* spin */ }
     RS485_SERCOM->USART.DATA.reg = word9 & 0x1FFu;
 }
 
-void rs485_send_frame(uint8_t addr, const uint8_t* payload, uint8_t len) {
+void rs485_send(uint8_t dest, uint8_t src, uint8_t type, uint8_t seq,
+                const uint8_t* payload, uint8_t len) {
     if (len > RS485_PAYLOAD_MAX) len = RS485_PAYLOAD_MAX;
+    uint8_t crc = frame_crc(dest, src, type, seq, len, payload);
 
-    rs485_tx_word(0x0FFu);                 // preamble: DATA (bit8=0), garbage-OK
-    rs485_tx_word(0x100u | addr);          // address marker (bit8=1)
-    rs485_tx_word((uint16_t)len);          // length (bit8=0)
-    for (uint8_t i = 0; i < len; i++) {
-        rs485_tx_word((uint16_t)payload[i]);
+    // Arm self-echo discard BEFORE the first byte can echo back. Word count =
+    // preamble(1) + header(5) + payload(len) + crc(1).
+    if (s_shared_bus) {
+        s_tx_skip = (uint16_t)(1u + RS485_HEADER_LEN + len + 1u);
     }
 
-    // Wait for the final byte to fully shift out so the transceiver sees the
-    // stop bit (line idle) before DE releases.
+    rs485_tx_word(0x0FFu);                 // preamble: DATA (bit8=0)
+    rs485_tx_word(0x100u | dest);          // dest: address marker (bit8=1)
+    rs485_tx_word(src);
+    rs485_tx_word(type);
+    rs485_tx_word(seq);
+    rs485_tx_word((uint16_t)len);
+    for (uint8_t i = 0; i < len; i++) rs485_tx_word((uint16_t)payload[i]);
+    rs485_tx_word(crc);
+
+    // Wait for the final byte to fully shift out (stop bit) before DE releases.
     while (!RS485_SERCOM->USART.INTFLAG.bit.TXC) { /* spin */ }
     RS485_SERCOM->USART.INTFLAG.reg = SERCOM_USART_INTFLAG_TXC;  // clear
+
+    if (s_shared_bus) {
+        // The final echo word(s) may land just after TXC; let the ISR consume
+        // them, then force-clear any residue (e.g. an echo word lost to BUFOVF)
+        // so the next real frame is captured.
+        for (uint32_t g = 0; g < 50000u && s_tx_skip > 0u; g++) { __NOP(); }
+        __disable_irq();
+        s_tx_skip = 0;
+        __enable_irq();
+    }
 }
 
 // ---------------------------------------------------------------------------
-// RX ISR — read the 9-bit word, capture errors, push to the ring. Reading DATA
-// clears RXC. STATUS error bits are sticky; clear them by writing 1. We never
-// block here.
+// RX ISR — read the 9-bit word, capture errors, discard self-echo, else push to
+// the ring. Reading DATA clears RXC. STATUS error bits are sticky; clear by
+// writing 1. Never blocks.
 // ---------------------------------------------------------------------------
 void SERCOM4_Handler(void) {
     while (RS485_SERCOM->USART.INTFLAG.bit.RXC) {
         uint16_t status = RS485_SERCOM->USART.STATUS.reg;
         uint16_t word9  = (uint16_t)(RS485_SERCOM->USART.DATA.reg & 0x1FFu);
+
         if (status & (SERCOM_USART_STATUS_BUFOVF
                     | SERCOM_USART_STATUS_FERR
                     | SERCOM_USART_STATUS_PERR)) {
             RS485_SERCOM->USART.STATUS.reg = status;  // clear sticky errors
-            s_rx_overrun++;
-            // Drop this (possibly corrupt) word; the assembler re-syncs on the
-            // next address byte.
+            if (s_tx_skip) { s_tx_skip--; }  // keep echo count aligned
+            else           { s_rx_overrun++; }
+            continue;
+        }
+        if (s_tx_skip) {            // our own TX echo on a shared bus -> discard
+            s_tx_skip--;
             continue;
         }
         uint16_t next = (uint16_t)((s_rx_head + 1u) & RS485_RX_RING_MASK);
         if (next == s_rx_tail) {
-            s_rx_overrun++;   // ring full — drop oldest-preserving (drop new)
+            s_rx_overrun++;          // ring full — drop new word
         } else {
             s_rx_ring[s_rx_head] = word9;
             s_rx_head = next;
@@ -216,21 +258,21 @@ static bool rs485_ring_pop(uint16_t* out) {
 }
 
 // ---------------------------------------------------------------------------
-// Frame assembler. Drains the ring; returns true and fills *out_addr / out_buf
-// / *out_len when a complete frame is reassembled. Call repeatedly to drain
-// multiple frames. An address byte (bit8=1) always (re)starts a frame.
+// Frame assembler. Drains the ring; returns true and fills *out when a complete
+// CRC-valid frame is reassembled. An address byte (bit8=1) always (re)starts a
+// frame. Call repeatedly to drain multiple frames.
 // ---------------------------------------------------------------------------
-bool rs485_poll_frame(uint8_t* out_addr, uint8_t* out_buf, uint8_t* out_len) {
+bool rs485_recv(rs485_frame_t* out) {
     uint16_t word9;
     while (rs485_ring_pop(&word9)) {
-        bool     is_addr = (word9 & 0x100u) != 0u;
-        uint8_t  b       = (uint8_t)(word9 & 0xFFu);
+        bool    is_addr = (word9 & 0x100u) != 0u;
+        uint8_t b       = (uint8_t)(word9 & 0xFFu);
 
         if (is_addr) {
             // New frame. Accept if sniffer (0xFF) or addressed to us.
-            if (s_my_addr == 0xFFu || b == s_my_addr) {
-                s_asm_addr  = b;
-                s_asm_state = ASM_NEED_LEN;
+            if (s_my_addr == RS485_ADDR_SNIFFER || b == s_my_addr) {
+                s_asm.dest  = b;
+                s_asm_state = ASM_SRC;
             } else {
                 s_asm_state = ASM_IDLE;   // not for us; ignore its data bytes
             }
@@ -239,32 +281,36 @@ bool rs485_poll_frame(uint8_t* out_addr, uint8_t* out_buf, uint8_t* out_len) {
 
         // Data byte.
         switch (s_asm_state) {
-        case ASM_NEED_LEN:
+        case ASM_SRC:  s_asm.src  = b; s_asm_state = ASM_TYPE; break;
+        case ASM_TYPE: s_asm.type = b; s_asm_state = ASM_SEQ;  break;
+        case ASM_SEQ:  s_asm.seq  = b; s_asm_state = ASM_LEN;  break;
+
+        case ASM_LEN:
             if (b > RS485_PAYLOAD_MAX) {     // bogus length -> resync
                 s_asm_state = ASM_IDLE;
                 break;
             }
-            s_asm_len = b;
+            s_asm.len = b;
             s_asm_idx = 0;
-            if (s_asm_len == 0u) {           // zero-length frame completes now
-                s_asm_state = ASM_IDLE;
-                *out_addr = s_asm_addr;
-                *out_len  = 0;
-                return true;
-            }
-            s_asm_state = ASM_IN_PAYLOAD;
+            s_asm_state = (b == 0u) ? ASM_CRC : ASM_PAYLOAD;
             break;
 
-        case ASM_IN_PAYLOAD:
-            s_asm_buf[s_asm_idx++] = b;
-            if (s_asm_idx >= s_asm_len) {
-                s_asm_state = ASM_IDLE;
-                *out_addr = s_asm_addr;
-                *out_len  = s_asm_len;
-                for (uint8_t i = 0; i < s_asm_len; i++) out_buf[i] = s_asm_buf[i];
+        case ASM_PAYLOAD:
+            s_asm.payload[s_asm_idx++] = b;
+            if (s_asm_idx >= s_asm.len) s_asm_state = ASM_CRC;
+            break;
+
+        case ASM_CRC: {
+            uint8_t calc = frame_crc(s_asm.dest, s_asm.src, s_asm.type,
+                                     s_asm.seq, s_asm.len, s_asm.payload);
+            s_asm_state = ASM_IDLE;
+            if (calc == b) {
+                *out = s_asm;
                 return true;
             }
+            s_crc_fail++;            // mismatch -> drop; resync on next address
             break;
+        }
 
         case ASM_IDLE:
         default:
@@ -275,6 +321,5 @@ bool rs485_poll_frame(uint8_t* out_addr, uint8_t* out_buf, uint8_t* out_len) {
     return false;
 }
 
-uint32_t rs485_rx_overrun_count(void) {
-    return s_rx_overrun;
-}
+uint32_t rs485_rx_overrun_count(void) { return s_rx_overrun; }
+uint32_t rs485_crc_fail_count(void)   { return s_crc_fail; }

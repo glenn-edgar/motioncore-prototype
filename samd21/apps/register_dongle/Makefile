@@ -166,10 +166,22 @@ OBJS         := $(APP_OBJS) $(VENDOR_OBJS) $(SENGINE_OBJS) $(LIBCOMM_OBJS)
 
 DEPS := $(OBJS:.o=.d)
 
+# Force a full rebuild when ROLE changes: every object depends on a stamp file
+# whose name embeds $(ROLE). Switching ROLE makes that stamp absent, so it is
+# recreated (newer than the stale objects) and they all recompile with the new
+# -DROLE_*. Without this, `make ROLE=x` after `make ROLE=y` reuses y's objects
+# and silently links a wrong-role binary.
+ROLE_STAMP := $(BUILD)/.role-$(ROLE).stamp
+$(OBJS): $(ROLE_STAMP)
+
 # ---------------------------------------------------------------------------
 # Targets
 # ---------------------------------------------------------------------------
 .PHONY: all clean size uf2
+
+# Explicit: the `$(OBJS): $(ROLE_STAMP)` dependency above is the first rule with
+# a concrete target, which would otherwise hijack the default goal. Pin it here.
+.DEFAULT_GOAL := all
 
 all: $(BUILD)/$(TARGET).uf2 size
 
@@ -205,6 +217,11 @@ $(BUILD)/sengine/%.o: $(SENGINE_RT)/%.c
 $(BUILD)/libcomm/%.o: $(LIBCOMM)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(ROLE_STAMP):
+	@mkdir -p $(BUILD)
+	@rm -f $(BUILD)/.role-*.stamp
+	@touch $@
 
 clean:
 	rm -rf $(BUILD)

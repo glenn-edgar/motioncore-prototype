@@ -922,17 +922,22 @@ static uint8_t cmd_rs485_config(shell_reader_t* args, shell_writer_t* result) {
     return SHELL_STATUS_OK;
 }
 
-// args: addr:u8, payload:u8[0..RS485_PAYLOAD_MAX]   reply: empty
+// args: dest:u8, src:u8, type:u8, seq:u8, payload:u8[0..RS485_PAYLOAD_MAX]
+// reply: empty.  Raw frame injector for bench diagnostics — full control over
+// the structured header. The driver appends the CRC.
 static uint8_t cmd_rs485_send_frame(shell_reader_t* args, shell_writer_t* result) {
     (void)result;
-    uint8_t addr = sr_u8(args);
+    uint8_t dest = sr_u8(args);
+    uint8_t src  = sr_u8(args);
+    uint8_t type = sr_u8(args);
+    uint8_t seq  = sr_u8(args);
     if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
     uint16_t n = sr_remaining(args);
     if (n > RS485_PAYLOAD_MAX)   return SHELL_STATUS_BAD_ARGS;
     uint8_t payload[RS485_PAYLOAD_MAX];
     if (n > 0) sr_bytes(args, payload, n);
     if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
-    rs485_send_frame(addr, payload, (uint8_t)n);
+    rs485_send(dest, src, type, seq, payload, (uint8_t)n);
     return SHELL_STATUS_OK;
 }
 

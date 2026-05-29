@@ -349,21 +349,22 @@ static void handle_op_poll_inline(void) {
 static uint8_t g_rs485_rx_seq = 0;
 
 static void rs485_drain_to_host(void) {
-    uint8_t addr;
-    uint8_t payload[RS485_PAYLOAD_MAX];
-    uint8_t len;
+    rs485_frame_t f;
     for (uint8_t guard = 0; guard < 4; guard++) {
-        if (!rs485_poll_frame(&addr, payload, &len)) return;
-        uint8_t frame[1 + RS485_PAYLOAD_MAX];
-        frame[0] = addr;
-        for (uint8_t i = 0; i < len; i++) frame[1 + i] = payload[i];
+        if (!rs485_recv(&f)) return;
+        // [from_addr:u8][type:u8][seq:u8][payload bytes] — sniffer diagnostics.
+        uint8_t frame[3 + RS485_PAYLOAD_MAX];
+        frame[0] = f.src;
+        frame[1] = f.type;
+        frame[2] = f.seq;
+        for (uint8_t i = 0; i < f.len; i++) frame[3 + i] = f.payload[i];
         frame_meta_t meta = {
             .addr        = 1,
             .cmd         = OP_RS485_FRAME_RX,
             .seq         = g_rs485_rx_seq++,
             .ack_seq     = 0,
             .ack_status  = 0,
-            .payload_len = (uint8_t)(1u + len),
+            .payload_len = (uint8_t)(3u + f.len),
         };
         (void)frame_encode_s2m(&meta, frame, &g_tx_ring);
     }
@@ -391,12 +392,22 @@ static void rs485_drain_to_host(void) {
 static bool     g_bridge_pending  = false;
 static uint8_t  g_bridge_slave    = 0;
 static uint32_t g_bridge_deadline = 0;
-static uint8_t  g_bridge_seq      = 0;
+static uint8_t  g_bridge_seq      = 0;   // s2m seq toward the Pi
+static uint8_t  g_bridge_req_seq  = 0;   // RS-485 seq toward the slave
 
-// Called from rx_drain when a Pi frame addressed to a slave arrives.
-static void bridge_start(uint8_t slave, const uint8_t* payload, uint8_t len) {
+// Called from rx_drain when a Pi frame addressed to a slave arrives. `exec` is
+// the OP_SHELL_EXEC body; we wrap it as a DATA frame payload [opcode][body] and
+// send it to the slave. UDP DATA for now — the reply is the response; the TCP
+// ack-table + retransmit lands with the BC-3 poll engine.
+static void bridge_start(uint8_t slave, const uint8_t* exec, uint8_t exec_len) {
     if (g_bridge_pending) return;          // one-in-flight; drop (host will retry)
-    rs485_send_frame(slave, payload, len);
+    if (exec_len > (uint8_t)(RS485_PAYLOAD_MAX - 2u)) exec_len = RS485_PAYLOAD_MAX - 2u;
+    uint8_t buf[RS485_PAYLOAD_MAX];
+    buf[0] = (uint8_t)(OP_SHELL_EXEC & 0xFFu);
+    buf[1] = (uint8_t)(OP_SHELL_EXEC >> 8);
+    for (uint8_t i = 0; i < exec_len; i++) buf[2u + i] = exec[i];
+    rs485_send(slave, BUS_CONTROLLER_LOCAL_ADDR, RS485_FT_DATA, ++g_bridge_req_seq,
+               buf, (uint8_t)(2u + exec_len));
     g_bridge_slave    = slave;
     g_bridge_deadline = board_millis() + BRIDGE_TIMEOUT_MS;
     g_bridge_pending  = true;
@@ -405,19 +416,23 @@ static void bridge_start(uint8_t slave, const uint8_t* payload, uint8_t len) {
 // Called every main-loop iteration. Relays the slave reply, or NAKs on timeout.
 static void rs485_bridge_poll(void) {
     if (!g_bridge_pending) return;
-    uint8_t from_addr;
-    uint8_t reply[RS485_PAYLOAD_MAX];
-    uint8_t reply_len;
-    if (rs485_poll_frame(&from_addr, reply, &reply_len)) {
+    rs485_frame_t f;
+    if (rs485_recv(&f)
+        && (f.type & RS485_FT_MASK) == RS485_FT_DATA
+        && f.src == g_bridge_slave
+        && f.len >= 2u) {
+        // DATA payload = [opcode:u16-LE][body]; relay the body to the Pi tagged
+        // with the slave addr and the slave's own opcode (OP_SHELL_REPLY/EVENT/…).
+        uint16_t opcode = (uint16_t)f.payload[0] | ((uint16_t)f.payload[1] << 8);
         frame_meta_t meta = {
             .addr        = g_bridge_slave,        // tells the Pi which slave answered
-            .cmd         = OP_SHELL_REPLY,
+            .cmd         = opcode,
             .seq         = g_bridge_seq++,
             .ack_seq     = 0,
             .ack_status  = 0,
-            .payload_len = reply_len,
+            .payload_len = (uint8_t)(f.len - 2u),
         };
-        (void)frame_encode_s2m(&meta, reply, &g_tx_ring);
+        (void)frame_encode_s2m(&meta, &f.payload[2], &g_tx_ring);
         g_bridge_pending = false;
     } else if ((int32_t)(board_millis() - g_bridge_deadline) >= 0) {
         // Dead/slow slave — relay OP_NAK { reason, rejected_cmd } to the Pi.
@@ -449,21 +464,36 @@ static void rs485_bridge_poll(void) {
 // OP_SHELL_REPLY body back over RS-485, sourced from our own address. This makes
 // the full workbench/HIL command suite runnable on the slave node over the bus
 // with no new command code. Synchronous + main-loop (USB is commissioning-only
-// on a slave); the master waits for the reply. Replies > RS485_PAYLOAD_MAX are
-// clamped by rs485_send_frame (fragmentation is a later BC slice).
+// on a slave); the master waits for the reply. Replies > RS485_PAYLOAD_MAX-2 are
+// clamped (fragmentation is a later BC slice). A DATA frame's payload is
+// [opcode:u16-LE][body]; we handle OP_SHELL_EXEC and reply OP_SHELL_REPLY,
+// echoing the request seq for forward-compat with the future ack-table.
 // ----------------------------------------------------------------------------
 #define RS485_SHELL_EXEC_HEADER_LEN 4u   // request_id u16 + command_id u16
 
 static void rs485_slave_poll(void) {
-    uint8_t addr;
-    uint8_t payload[RS485_PAYLOAD_MAX];
-    uint8_t len;
+    rs485_frame_t f;
     for (uint8_t guard = 0; guard < 4; guard++) {
-        if (!rs485_poll_frame(&addr, payload, &len)) return;
-        if (len < RS485_SHELL_EXEC_HEADER_LEN) continue;  // too short to dispatch
-        uint8_t reply[COMM_PAYLOAD_MAX];
-        uint16_t reply_len = shell_dispatch_payload(payload, len, reply);
-        rs485_send_frame(register_dongle_rs485_addr(), reply, (uint8_t)reply_len);
+        if (!rs485_recv(&f)) return;
+        if ((f.type & RS485_FT_MASK) != RS485_FT_DATA) continue;  // POLL/etc: later
+        if (f.len < 2u) continue;
+        uint16_t opcode = (uint16_t)f.payload[0] | ((uint16_t)f.payload[1] << 8);
+        if (opcode != OP_SHELL_EXEC) continue;          // only shell-exec this step
+        const uint8_t* exec     = &f.payload[2];
+        uint16_t       exec_len = (uint16_t)(f.len - 2u);
+        if (exec_len < RS485_SHELL_EXEC_HEADER_LEN) continue;
+
+        uint8_t  reply_body[COMM_PAYLOAD_MAX];
+        uint16_t reply_len = shell_dispatch_payload(exec, exec_len, reply_body);
+        if (reply_len > (uint16_t)(RS485_PAYLOAD_MAX - 2u)) {
+            reply_len = RS485_PAYLOAD_MAX - 2u;         // clamp; frag is later
+        }
+        uint8_t out[RS485_PAYLOAD_MAX];
+        out[0] = (uint8_t)(OP_SHELL_REPLY & 0xFFu);
+        out[1] = (uint8_t)(OP_SHELL_REPLY >> 8);
+        for (uint16_t i = 0; i < reply_len; i++) out[2u + i] = reply_body[i];
+        rs485_send(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
+                   RS485_FT_DATA, f.seq, out, (uint8_t)(2u + reply_len));
     }
 }
 #endif
@@ -577,10 +607,19 @@ int main(void) {
     // Factory-fresh dongles read nothing; defaults to UNCOMMISSIONED.
     register_dongle_load_commissioning();
 
+    // RS-485 transport config. flags=0 (no self-echo discard) is correct on BOTH
+    // bare-TTL cross-wire AND a shared transceiver bus: address/src filtering
+    // already rejects a node's own echo, and the ISR + 256-word ring absorb it.
+    // RS485_FLAG_SHARED_BUS is an optional cleanliness optimisation for the
+    // shared bus; enable it at runtime via CMD_RS485_CONFIG once transceivers are
+    // in. It MUST stay off for a D6->D7 loopback self-test (echo IS the signal).
 #if defined(ROLE_SLAVE)
     // Slave listens only for frames addressed to its rs485_addr (= low byte of
     // instance_id). Must run after commissioning is loaded. 0 if uncommissioned.
     rs485_config(0, register_dongle_rs485_addr(), 0);
+#elif defined(ROLE_BUS_CONTROLLER)
+    // Master stays a sniffer (accept every slave reply).
+    rs485_config(0, RS485_ADDR_SNIFFER, 0);
 #endif
 
     s_expr_allocator_t alloc = {
