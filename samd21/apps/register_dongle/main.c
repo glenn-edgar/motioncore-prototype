@@ -56,6 +56,7 @@ extern uint32_t g_pending_commission_instance_id;
 extern bool     shell_pending_push(const uint8_t* payload, uint8_t len);
 extern uint8_t  register_dongle_rs485_addr(void);
 extern void     register_dongle_chip_uid(uint8_t out[16]);
+extern uint16_t shell_dispatch_payload(const uint8_t* exec, uint16_t exec_len, uint8_t* reply);
 
 // Deferred-reboot plumbing: handle_commission_set/clear sets the reboot time;
 // the main loop waits for TX to drain (~200 ms), then triggers NVIC_SystemReset
@@ -370,27 +371,28 @@ static void rs485_drain_to_host(void) {
 
 #if defined(ROLE_SLAVE)
 // ----------------------------------------------------------------------------
-// RS-485 slave responder (Phase-1 day-1 scope). Frames are accepted only when
-// addressed to our rs485_addr (set at boot via rs485_config). The one thing it
-// does: answer a "PING" request frame with [chip_uid(16)][rs485_addr(1)],
-// sourced from our own address. Runs in any engine state — the responder is
-// independent of the USB-CDC sync ladder (USB is commissioning-only on a
-// slave). Richer RS-485 opcodes layer on top later.
+// RS-485 slave shell tunnel (BC-1a, synchronous). Frames are accepted only when
+// addressed to our rs485_addr (set at boot via rs485_config). The payload of an
+// inbound frame IS an OP_SHELL_EXEC body [request_id u16][command_id u16][args];
+// we dispatch it through the SAME shell layer used over USB and send the
+// OP_SHELL_REPLY body back over RS-485, sourced from our own address. This makes
+// the full workbench/HIL command suite runnable on the slave node over the bus
+// with no new command code. Synchronous + main-loop (USB is commissioning-only
+// on a slave); the master waits for the reply. Replies > RS485_PAYLOAD_MAX are
+// clamped by rs485_send_frame (fragmentation is a later BC slice).
 // ----------------------------------------------------------------------------
+#define RS485_SHELL_EXEC_HEADER_LEN 4u   // request_id u16 + command_id u16
+
 static void rs485_slave_poll(void) {
     uint8_t addr;
     uint8_t payload[RS485_PAYLOAD_MAX];
     uint8_t len;
     for (uint8_t guard = 0; guard < 4; guard++) {
         if (!rs485_poll_frame(&addr, payload, &len)) return;
-        if (len == 4 && payload[0] == 'P' && payload[1] == 'I'
-                     && payload[2] == 'N' && payload[3] == 'G') {
-            uint8_t resp[17];
-            register_dongle_chip_uid(resp);                 // resp[0..15]
-            resp[16] = register_dongle_rs485_addr();
-            rs485_send_frame(register_dongle_rs485_addr(), resp, sizeof(resp));
-        }
-        // Other payloads: ignored in day-1 scope.
+        if (len < RS485_SHELL_EXEC_HEADER_LEN) continue;  // too short to dispatch
+        uint8_t reply[COMM_PAYLOAD_MAX];
+        uint16_t reply_len = shell_dispatch_payload(payload, len, reply);
+        rs485_send_frame(register_dongle_rs485_addr(), reply, (uint8_t)reply_len);
     }
 }
 #endif

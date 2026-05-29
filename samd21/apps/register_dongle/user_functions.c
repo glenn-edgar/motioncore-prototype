@@ -572,6 +572,55 @@ static uint32_t g_shell_reply_seq = 0;
 #define SHELL_EXEC_HEADER_LEN  4u
 #define SHELL_RESULT_MAX       (COMM_PAYLOAD_MAX - SHELL_REPLY_HEADER_LEN)
 
+// shell_dispatch_payload — transport-agnostic core of the app shell. Takes an
+// OP_SHELL_EXEC body [request_id u16][command_id u16][args...] and writes the
+// OP_SHELL_REPLY body [request_id u16][status u8][result...] into `reply`
+// (must have capacity >= COMM_PAYLOAD_MAX). Returns the reply length.
+//
+// Reused by both transports: the USB OP_SHELL_EXEC handler below and the
+// RS-485 slave tunnel in main.c (workbench HIL commands over the bus). Callers
+// guarantee exec_len >= SHELL_EXEC_HEADER_LEN.
+uint16_t shell_dispatch_payload(const uint8_t* exec, uint16_t exec_len,
+                                uint8_t* reply) {
+    const uint16_t request_id =
+        (uint16_t)exec[0] | ((uint16_t)exec[1] << 8);
+    const uint16_t command_id =
+        (uint16_t)exec[2] | ((uint16_t)exec[3] << 8);
+    const uint8_t* args     = &exec[SHELL_EXEC_HEADER_LEN];
+    const uint16_t args_len = (uint16_t)(exec_len - SHELL_EXEC_HEADER_LEN);
+
+    uint8_t  result_buf[SHELL_RESULT_MAX];
+    uint16_t result_len = 0;
+    uint8_t  status     = SHELL_STATUS_OK;
+
+    const shell_cmd_entry_t* cmd = shell_find_cmd(command_id);
+    if (cmd == NULL) {
+        status = SHELL_STATUS_UNKNOWN_CMD;
+    } else {
+        shell_reader_t r;
+        shell_writer_t w;
+        sr_init(&r, args, args_len);
+        sw_init(&w, result_buf, sizeof(result_buf));
+        status = cmd->fn(&r, &w);
+        if (status == SHELL_STATUS_OK) {
+            if (r.overflow)      status = SHELL_STATUS_BAD_ARGS;
+            else if (w.overflow) status = SHELL_STATUS_RESULT_TOO_BIG;
+        }
+        // Capture any bytes the handler wrote regardless of status — failure
+        // paths may attach a diagnostic payload (e.g., interlock-set parse-
+        // error detail). Writer-overflow already promoted to RESULT_TOO_BIG.
+        if (!w.overflow) result_len = sw_len(&w);
+    }
+
+    reply[0] = (uint8_t)(request_id & 0xFFu);
+    reply[1] = (uint8_t)(request_id >> 8);
+    reply[2] = status;
+    if (result_len > 0) {
+        memcpy(&reply[SHELL_REPLY_HEADER_LEN], result_buf, result_len);
+    }
+    return (uint16_t)(SHELL_REPLY_HEADER_LEN + result_len);
+}
+
 void handle_shell_exec(s_expr_tree_instance_t* inst,
                        const s_expr_param_t*   params,
                        uint16_t                param_count,
@@ -598,47 +647,8 @@ void handle_shell_exec(s_expr_tree_instance_t* inst,
         return;
     }
 
-    const uint16_t request_id =
-        (uint16_t)slot.payload[0] |
-        ((uint16_t)slot.payload[1] << 8);
-    const uint16_t command_id =
-        (uint16_t)slot.payload[2] |
-        ((uint16_t)slot.payload[3] << 8);
-    const uint8_t* args     = &slot.payload[SHELL_EXEC_HEADER_LEN];
-    const uint16_t args_len =
-        (uint16_t)(slot.len - SHELL_EXEC_HEADER_LEN);
-
-    uint8_t  result_buf[SHELL_RESULT_MAX];
-    uint16_t result_len = 0;
-    uint8_t  status     = SHELL_STATUS_OK;
-
-    const shell_cmd_entry_t* cmd = shell_find_cmd(command_id);
-    if (cmd == NULL) {
-        status = SHELL_STATUS_UNKNOWN_CMD;
-    } else {
-        shell_reader_t r;
-        shell_writer_t w;
-        sr_init(&r, args, args_len);
-        sw_init(&w, result_buf, sizeof(result_buf));
-        status = cmd->fn(&r, &w);
-        if (status == SHELL_STATUS_OK) {
-            if (r.overflow)      status = SHELL_STATUS_BAD_ARGS;
-            else if (w.overflow) status = SHELL_STATUS_RESULT_TOO_BIG;
-        }
-        // Capture any bytes the handler wrote regardless of status — failure
-        // paths may attach a diagnostic payload (e.g., interlock-set parse-
-        // error detail). Writer-overflow already promoted to RESULT_TOO_BIG.
-        if (!w.overflow) result_len = sw_len(&w);
-    }
-
-    // Build OP_SHELL_REPLY wrapper + result_message.
-    uint8_t reply[COMM_PAYLOAD_MAX];
-    reply[0] = (uint8_t)(request_id & 0xFFu);
-    reply[1] = (uint8_t)(request_id >> 8);
-    reply[2] = status;
-    if (result_len > 0) {
-        memcpy(&reply[SHELL_REPLY_HEADER_LEN], result_buf, result_len);
-    }
+    uint8_t  reply[COMM_PAYLOAD_MAX];
+    uint16_t reply_len = shell_dispatch_payload(slot.payload, slot.len, reply);
 
     frame_meta_t meta = {
         .addr        = 1,
@@ -646,7 +656,7 @@ void handle_shell_exec(s_expr_tree_instance_t* inst,
         .seq         = (uint8_t)(g_shell_reply_seq++ & 0xFFu),
         .ack_seq     = 0,
         .ack_status  = 0,
-        .payload_len = (uint8_t)(SHELL_REPLY_HEADER_LEN + result_len),
+        .payload_len = (uint8_t)reply_len,
     };
     (void)frame_encode_s2m(&meta, reply, &g_tx_ring);
 }
