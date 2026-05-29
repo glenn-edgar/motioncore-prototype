@@ -1046,7 +1046,15 @@ static uint8_t cmd_stack_hwm(shell_reader_t* args, shell_writer_t* result) {
 
 // ---------- chip-specific dispatch table ---------------------------------
 
+// Chip-specific command surface. The bus_controller is "nothing but a bus
+// manager" — it exposes ONLY the RS-485 transport commands + the stack-HWM
+// diagnostic. All HIL (GPIO/DAC/ADC/I2C), the interlock command set, and the
+// WDT-hang probe are stripped from the bus_controller build. (The interlock
+// *framework* in main.c still compiles for now; removing that for text savings
+// is a separate lean-build follow-up.) The slave keeps the full HIL surface so
+// the workbench runs on it over the bus.
 static const shell_cmd_entry_t g_chip_commands[] = {
+#if !defined(ROLE_BUS_CONTROLLER)
     { CMD_GPIO_CONFIG, "gpio_config", cmd_gpio_config },
     { CMD_GPIO_WRITE,  "gpio_write",  cmd_gpio_write  },
     { CMD_GPIO_READ,   "gpio_read",   cmd_gpio_read   },
@@ -1059,13 +1067,16 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_I2C_READ,            "i2c_read",           cmd_i2c_read           },
     { CMD_I2C_WRITE_READ,      "i2c_write_read",     cmd_i2c_write_read     },
     { CMD_I2C_SCAN,            "i2c_scan",           cmd_i2c_scan           },
+#endif
     { CMD_RS485_CONFIG,        "rs485_config",       cmd_rs485_config       },
     { CMD_RS485_SEND_FRAME,    "rs485_send_frame",   cmd_rs485_send_frame   },
+#if !defined(ROLE_BUS_CONTROLLER)
     { CMD_TEST_HANG,           "test_hang",          cmd_test_hang          },
     { CMD_INTERLOCK_STATUS,    "interlock_status",   cmd_interlock_status   },
     { CMD_INTERLOCK_ARM_NOOP,  "interlock_arm_noop", cmd_interlock_arm_noop },
     { CMD_INTERLOCK_DISARM,    "interlock_disarm",   cmd_interlock_disarm   },
     { CMD_INTERLOCK_SET,       "interlock_set",      cmd_interlock_set      },
+#endif
     { CMD_STACK_HWM,           "stack_hwm",          cmd_stack_hwm          },
 };
 

@@ -369,6 +369,77 @@ static void rs485_drain_to_host(void) {
     }
 }
 
+#if defined(ROLE_BUS_CONTROLLER)
+// ----------------------------------------------------------------------------
+// Bus-controller bridge (BC-1b). The bus_controller is its own libcomm node at
+// BUS_CONTROLLER_LOCAL_ADDR; frames from the Pi carrying any OTHER addr are
+// destined for that RS-485 slave. We forward the frame payload (an
+// OP_SHELL_EXEC body) over the bus, then non-blockingly wait for the slave's
+// reply and relay it back to the Pi as an OP_SHELL_REPLY tagged with the slave
+// addr. One transaction in flight (matches libcomm's one-in-flight rule). The
+// bounded deadline IS dead-slave detection — on timeout we NAK the Pi. RX
+// stays in sniffer mode (rs485_init default my_addr=0xFF) so any slave's reply
+// is accepted.
+// ----------------------------------------------------------------------------
+// The host (dongle_console) sends m2s frames with addr=0x00, so 0x00 = "for the
+// bus_controller itself" (sync ladder, its own shell). Any other addr = route to
+// that RS-485 slave. Slaves therefore must not use rs485_addr 0 (which is also
+// the RS-485 broadcast address — consistent).
+#define BUS_CONTROLLER_LOCAL_ADDR 0u
+#define BRIDGE_TIMEOUT_MS         1500u   // covers slow HIL (adc_capture ~300ms); < WDT 4s
+
+static bool     g_bridge_pending  = false;
+static uint8_t  g_bridge_slave    = 0;
+static uint32_t g_bridge_deadline = 0;
+static uint8_t  g_bridge_seq      = 0;
+
+// Called from rx_drain when a Pi frame addressed to a slave arrives.
+static void bridge_start(uint8_t slave, const uint8_t* payload, uint8_t len) {
+    if (g_bridge_pending) return;          // one-in-flight; drop (host will retry)
+    rs485_send_frame(slave, payload, len);
+    g_bridge_slave    = slave;
+    g_bridge_deadline = board_millis() + BRIDGE_TIMEOUT_MS;
+    g_bridge_pending  = true;
+}
+
+// Called every main-loop iteration. Relays the slave reply, or NAKs on timeout.
+static void rs485_bridge_poll(void) {
+    if (!g_bridge_pending) return;
+    uint8_t from_addr;
+    uint8_t reply[RS485_PAYLOAD_MAX];
+    uint8_t reply_len;
+    if (rs485_poll_frame(&from_addr, reply, &reply_len)) {
+        frame_meta_t meta = {
+            .addr        = g_bridge_slave,        // tells the Pi which slave answered
+            .cmd         = OP_SHELL_REPLY,
+            .seq         = g_bridge_seq++,
+            .ack_seq     = 0,
+            .ack_status  = 0,
+            .payload_len = reply_len,
+        };
+        (void)frame_encode_s2m(&meta, reply, &g_tx_ring);
+        g_bridge_pending = false;
+    } else if ((int32_t)(board_millis() - g_bridge_deadline) >= 0) {
+        // Dead/slow slave — relay OP_NAK { reason, rejected_cmd } to the Pi.
+        uint8_t nak[3] = {
+            (uint8_t)NAK_ERR_NO_RESOURCES,
+            (uint8_t)(OP_SHELL_EXEC & 0xFFu),
+            (uint8_t)(OP_SHELL_EXEC >> 8),
+        };
+        frame_meta_t meta = {
+            .addr        = g_bridge_slave,
+            .cmd         = OP_NAK,
+            .seq         = g_bridge_seq++,
+            .ack_seq     = 0,
+            .ack_status  = 0,
+            .payload_len = sizeof(nak),
+        };
+        (void)frame_encode_s2m(&meta, nak, &g_tx_ring);
+        g_bridge_pending = false;
+    }
+}
+#endif  // ROLE_BUS_CONTROLLER
+
 #if defined(ROLE_SLAVE)
 // ----------------------------------------------------------------------------
 // RS-485 slave shell tunnel (BC-1a, synchronous). Frames are accepted only when
@@ -407,6 +478,14 @@ static void rx_drain_to_event_queue(s_expr_tree_instance_t* tree) {
         if (r == FRAME_DECODE_FRAME_READY) {
             // Slice 6 — feed the IL_VIRT_T_SINCE_M2S virtual.
             g_last_m2s_rx_ms = board_millis();
+#if defined(ROLE_BUS_CONTROLLER)
+            // Address routing: a frame for any addr other than ours is destined
+            // for an RS-485 slave — bridge it instead of dispatching locally.
+            if (meta.addr != BUS_CONTROLLER_LOCAL_ADDR) {
+                bridge_start(meta.addr, g_rx_payload, meta.payload_len);
+                continue;
+            }
+#endif
             // OP_COMMISSION_SET carries a u32 new_instance_id. Stage it into
             // a single-producer/single-consumer global so the chain handler
             // can read it; libcomm's one-in-flight rule keeps this race-free.
@@ -590,10 +669,13 @@ int main(void) {
             rx_drain_to_event_queue(tree);
         }
 
-        // RS-485 service. On a slave build, answer addressed PING frames; on
-        // dongle/bus_controller, push received frames up to the host.
+        // RS-485 service, by role: slave answers tunneled shell-exec frames;
+        // bus_controller relays the in-flight bridge reply; dongle sniffs frames
+        // up to the host (passthrough diagnostics).
 #if defined(ROLE_SLAVE)
         rs485_slave_poll();
+#elif defined(ROLE_BUS_CONTROLLER)
+        rs485_bridge_poll();
 #else
         rs485_drain_to_host();
 #endif
