@@ -106,10 +106,12 @@ static void samd21_read_uid(uint8_t out[16]) {
 // dongle, matching every previously-flashed bench unit.
 #if defined(ROLE_BUS_CONTROLLER)
   #define REGISTER_CLASS_ID_STUB   0x5E589000U  // sequential to dongle; real FNV-1a "motioncore.bus_controller.samd21.v1" TBD
+#elif defined(ROLE_SLAVE)
+  #define REGISTER_CLASS_ID_STUB   0x5E589100U  // RS-485 slave; real FNV-1a "motioncore.slave.samd21.v1" TBD
 #elif defined(ROLE_DONGLE)
   #define REGISTER_CLASS_ID_STUB   0x5E588873U  // FNV-1a "motioncore.dongle.register.samd21.v1"
 #else
-  #error "ROLE must be defined: pass ROLE=dongle or ROLE=bus_controller to make"
+  #error "ROLE must be defined: pass ROLE=dongle, bus_controller or slave to make"
 #endif
 
 // Mutable identity — initialized at boot via register_dongle_load_commissioning(),
@@ -135,6 +137,17 @@ void register_dongle_load_commissioning(void) {
 // handle_register_ack to decide whether OP_REGISTER_ACK advances or NAKs.
 bool register_dongle_is_uncommissioned(void) {
     return g_commissioning_state == COMMISSIONING_UNCOMMISSIONED;
+}
+
+// RS-485 slave address = low byte of the commissioned instance_id (single
+// source of truth per phase plan decision #2). 0 when uncommissioned.
+uint8_t register_dongle_rs485_addr(void) {
+    return (uint8_t)(g_instance_id & 0xFFu);
+}
+
+// Public accessor for the 16-byte chip UID (used by the slave PING responder).
+void register_dongle_chip_uid(uint8_t out[16]) {
+    samd21_read_uid(out);
 }
 
 void send_register(s_expr_tree_instance_t* inst,

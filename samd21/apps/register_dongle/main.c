@@ -54,6 +54,8 @@
 extern void     register_dongle_load_commissioning(void);
 extern uint32_t g_pending_commission_instance_id;
 extern bool     shell_pending_push(const uint8_t* payload, uint8_t len);
+extern uint8_t  register_dongle_rs485_addr(void);
+extern void     register_dongle_chip_uid(uint8_t out[16]);
 
 // Deferred-reboot plumbing: handle_commission_set/clear sets the reboot time;
 // the main loop waits for TX to drain (~200 ms), then triggers NVIC_SystemReset
@@ -366,6 +368,33 @@ static void rs485_drain_to_host(void) {
     }
 }
 
+#if defined(ROLE_SLAVE)
+// ----------------------------------------------------------------------------
+// RS-485 slave responder (Phase-1 day-1 scope). Frames are accepted only when
+// addressed to our rs485_addr (set at boot via rs485_config). The one thing it
+// does: answer a "PING" request frame with [chip_uid(16)][rs485_addr(1)],
+// sourced from our own address. Runs in any engine state — the responder is
+// independent of the USB-CDC sync ladder (USB is commissioning-only on a
+// slave). Richer RS-485 opcodes layer on top later.
+// ----------------------------------------------------------------------------
+static void rs485_slave_poll(void) {
+    uint8_t addr;
+    uint8_t payload[RS485_PAYLOAD_MAX];
+    uint8_t len;
+    for (uint8_t guard = 0; guard < 4; guard++) {
+        if (!rs485_poll_frame(&addr, payload, &len)) return;
+        if (len == 4 && payload[0] == 'P' && payload[1] == 'I'
+                     && payload[2] == 'N' && payload[3] == 'G') {
+            uint8_t resp[17];
+            register_dongle_chip_uid(resp);                 // resp[0..15]
+            resp[16] = register_dongle_rs485_addr();
+            rs485_send_frame(register_dongle_rs485_addr(), resp, sizeof(resp));
+        }
+        // Other payloads: ignored in day-1 scope.
+    }
+}
+#endif
+
 static void rx_drain_to_event_queue(s_expr_tree_instance_t* tree) {
     if (!tud_cdc_connected() || !tud_cdc_available()) return;
     uint32_t n = tud_cdc_read(g_rx_buf, sizeof(g_rx_buf));
@@ -467,6 +496,12 @@ int main(void) {
     // Factory-fresh dongles read nothing; defaults to UNCOMMISSIONED.
     register_dongle_load_commissioning();
 
+#if defined(ROLE_SLAVE)
+    // Slave listens only for frames addressed to its rs485_addr (= low byte of
+    // instance_id). Must run after commissioning is loaded. 0 if uncommissioned.
+    rs485_config(0, register_dongle_rs485_addr(), 0);
+#endif
+
     s_expr_allocator_t alloc = {
         .malloc      = bump_malloc,
         .free        = bump_free,
@@ -553,8 +588,13 @@ int main(void) {
             rx_drain_to_event_queue(tree);
         }
 
-        // Drain any reassembled RS-485 frames -> OP_RS485_FRAME_RX to host.
+        // RS-485 service. On a slave build, answer addressed PING frames; on
+        // dongle/bus_controller, push received frames up to the host.
+#if defined(ROLE_SLAVE)
+        rs485_slave_poll();
+#else
         rs485_drain_to_host();
+#endif
 
         uint32_t now = board_millis();
         if (tree != NULL && (int32_t)(now - next_tick_ms) >= 0) {

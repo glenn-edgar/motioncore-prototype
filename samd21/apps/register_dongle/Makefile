@@ -40,17 +40,21 @@ SIZE    := $(CROSS)size
 # ---------------------------------------------------------------------------
 CPU_FLAGS := -mcpu=cortex-m0plus -mthumb
 
-# Build role: dongle (default — USB+RS-485 slave, class_id 0x5E588873)
+# Build role: dongle (default — USB-CDC HIL dongle, class_id 0x5E588873)
 #             bus_controller (USB+RS-485 master, class_id 0x5E589000)
+#             slave          (RS-485 slave responder, class_id 0x5E589100)
 # Same source tree; class_id and any role-specific code paths gated by
-# ROLE_DONGLE / ROLE_BUS_CONTROLLER #ifdef in user_functions.c.
+# ROLE_DONGLE / ROLE_BUS_CONTROLLER / ROLE_SLAVE #ifdef in user_functions.c
+# and main.c.
 ROLE ?= dongle
 ifeq ($(ROLE),dongle)
   ROLE_DEF := -DROLE_DONGLE=1
 else ifeq ($(ROLE),bus_controller)
   ROLE_DEF := -DROLE_BUS_CONTROLLER=1
+else ifeq ($(ROLE),slave)
+  ROLE_DEF := -DROLE_SLAVE=1
 else
-  $(error ROLE must be one of: dongle, bus_controller (got '$(ROLE)'))
+  $(error ROLE must be one of: dongle, bus_controller, slave (got '$(ROLE)'))
 endif
 
 DEFS := \
