@@ -28,6 +28,7 @@
 #define OP_SHELL_REPLY       ((uint16_t)0x0011)  // app-shell command result
 #define OP_POLL_REPLY        ((uint16_t)0x0012)  // 64 B status buffer snapshot (slice 5)
 #define OP_EVENT             ((uint16_t)0x0013)  // edge-trigger slot state/tf change (slice 5)
+#define OP_RS485_FRAME_RX    ((uint16_t)0x0014)  // RS-485 frame received: [from_addr:u8][payload bytes]
 
 // ----- m2s (host -> dongle) -----
 #define OP_REGISTER_ACK      ((uint16_t)0x0103)  // L1: host acknowledges OP_REGISTER -> BOOT → L1_DONE

@@ -139,6 +139,17 @@ const shell_cmd_entry_t* shell_find_cmd(uint16_t command_id);
 #define CMD_I2C_WRITE_READ    ((uint16_t)0x0132)  // write reg, repeated START, read N
 #define CMD_I2C_SCAN          ((uint16_t)0x0133)  // probe 0x08..0x77, return ACK list
 
+// 0x0150..0x015F: RS-485 passthrough (SERCOM4 9-bit MPCM on D6=TX / D7=RX).
+// Always compiled into the dongle build as permanent diagnostics — my_addr=0xFF
+// sniffer mode stays invaluable for bus debugging. Received frames are pushed
+// asynchronously as OP_RS485_FRAME_RX (s2m), not returned in a shell reply.
+// CMD_RS485_CONFIG     args: baud:u32, my_addr:u8, flags:u8   reply: empty
+//   my_addr=0xFF -> sniffer/listen-all; baud=0 -> leave unchanged.
+// CMD_RS485_SEND_FRAME args: addr:u8, payload:u8[0..120]      reply: empty
+//   Emits 0xFF preamble + [addr|bit8] + [len] + payload on the wire.
+#define CMD_RS485_CONFIG      ((uint16_t)0x0150)
+#define CMD_RS485_SEND_FRAME  ((uint16_t)0x0151)
+
 // GPIO mode codes for CMD_GPIO_CONFIG.
 #define GPIO_MODE_INPUT          0u
 #define GPIO_MODE_OUTPUT         1u

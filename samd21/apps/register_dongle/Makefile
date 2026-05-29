@@ -40,11 +40,25 @@ SIZE    := $(CROSS)size
 # ---------------------------------------------------------------------------
 CPU_FLAGS := -mcpu=cortex-m0plus -mthumb
 
+# Build role: dongle (default — USB+RS-485 slave, class_id 0x5E588873)
+#             bus_controller (USB+RS-485 master, class_id 0x5E589000)
+# Same source tree; class_id and any role-specific code paths gated by
+# ROLE_DONGLE / ROLE_BUS_CONTROLLER #ifdef in user_functions.c.
+ROLE ?= dongle
+ifeq ($(ROLE),dongle)
+  ROLE_DEF := -DROLE_DONGLE=1
+else ifeq ($(ROLE),bus_controller)
+  ROLE_DEF := -DROLE_BUS_CONTROLLER=1
+else
+  $(error ROLE must be one of: dongle, bus_controller (got '$(ROLE)'))
+endif
+
 DEFS := \
   -D__SAMD21G18A__ \
   -DCFG_TUSB_MCU=OPT_MCU_SAMD21 \
   -DCONF_DFLL_OVERWRITE_CALIBRATION=0 \
-  -DMODULE_IS_64BIT=0
+  -DMODULE_IS_64BIT=0 \
+  $(ROLE_DEF)
 
 WARN := -Wall -Wextra -Wno-unused-parameter -Wno-unused-function
 
@@ -99,6 +113,7 @@ APP_SRCS := \
   $(HERE)/samd21_pin_table.c \
   $(HERE)/samd21_interlocks.c \
   $(HERE)/samd21_interlock_dsl.c \
+  $(HERE)/samd21_rs485.c \
   $(HERE)/register_dongle_v2_module_rom.c
 
 LIBCOMM_SRCS := \

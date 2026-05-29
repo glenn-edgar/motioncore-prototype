@@ -101,7 +101,16 @@ static void samd21_read_uid(uint8_t out[16]) {
 #define REGISTER_FW_VERSION      0x00010000U   // v1.0.0 — matches manifest
 #define REGISTER_BUILD_DATE      20260519U     // 2026-05-19; bump on each build
 
-#define REGISTER_CLASS_ID_STUB   0x5E588873U  // FNV-1a "motioncore.dongle.register.samd21.v1"
+// Role-specific class_id. ROLE_DONGLE / ROLE_BUS_CONTROLLER is set by the
+// Makefile via -DROLE_xxx=1. Default (no ROLE on the make command line) is
+// dongle, matching every previously-flashed bench unit.
+#if defined(ROLE_BUS_CONTROLLER)
+  #define REGISTER_CLASS_ID_STUB   0x5E589000U  // sequential to dongle; real FNV-1a "motioncore.bus_controller.samd21.v1" TBD
+#elif defined(ROLE_DONGLE)
+  #define REGISTER_CLASS_ID_STUB   0x5E588873U  // FNV-1a "motioncore.dongle.register.samd21.v1"
+#else
+  #error "ROLE must be defined: pass ROLE=dongle or ROLE=bus_controller to make"
+#endif
 
 // Mutable identity — initialized at boot via register_dongle_load_commissioning(),
 // updated by handle_commission_set / handle_commission_clear (which reboot

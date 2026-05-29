@@ -23,6 +23,7 @@
 #include "samd21.h"
 #include "bsp/board_api.h"           // board_millis()
 #include "samd21_adc.h"              // samd21_adc_read_oneshot public API
+#include "samd21_rs485.h"            // SERCOM4 9-bit MPCM UART driver
 
 // ---------- pin validation -------------------------------------------------
 
@@ -904,6 +905,37 @@ static uint8_t cmd_i2c_scan(shell_reader_t* args, shell_writer_t* result) {
     return SHELL_STATUS_OK;
 }
 
+// ---------- CMD_RS485_CONFIG / CMD_RS485_SEND_FRAME -----------------------
+// RS-485 passthrough (SERCOM4 9-bit MPCM, D6=TX / D7=RX). Received frames are
+// pushed asynchronously from the main loop as OP_RS485_FRAME_RX, not returned
+// here. See samd21_rs485.c for the wire format + half-duplex RX rationale.
+
+// args: baud:u32, my_addr:u8, flags:u8   reply: empty
+static uint8_t cmd_rs485_config(shell_reader_t* args, shell_writer_t* result) {
+    (void)result;
+    uint32_t baud    = sr_u32(args);
+    uint8_t  my_addr = sr_u8(args);
+    uint8_t  flags   = sr_u8(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    rs485_config(baud, my_addr, flags);
+    return SHELL_STATUS_OK;
+}
+
+// args: addr:u8, payload:u8[0..RS485_PAYLOAD_MAX]   reply: empty
+static uint8_t cmd_rs485_send_frame(shell_reader_t* args, shell_writer_t* result) {
+    (void)result;
+    uint8_t addr = sr_u8(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    uint16_t n = sr_remaining(args);
+    if (n > RS485_PAYLOAD_MAX)   return SHELL_STATUS_BAD_ARGS;
+    uint8_t payload[RS485_PAYLOAD_MAX];
+    if (n > 0) sr_bytes(args, payload, n);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    rs485_send_frame(addr, payload, (uint8_t)n);
+    return SHELL_STATUS_OK;
+}
+
 // ---------- CMD_TEST_HANG -------------------------------------------------
 // Layer-2 WDT bench probe. Disables IRQs and spins; the layer-2 WDT bites
 // after ~4 s and the chip resets. Never returns a reply frame.
@@ -1027,6 +1059,8 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_I2C_READ,            "i2c_read",           cmd_i2c_read           },
     { CMD_I2C_WRITE_READ,      "i2c_write_read",     cmd_i2c_write_read     },
     { CMD_I2C_SCAN,            "i2c_scan",           cmd_i2c_scan           },
+    { CMD_RS485_CONFIG,        "rs485_config",       cmd_rs485_config       },
+    { CMD_RS485_SEND_FRAME,    "rs485_send_frame",   cmd_rs485_send_frame   },
     { CMD_TEST_HANG,           "test_hang",          cmd_test_hang          },
     { CMD_INTERLOCK_STATUS,    "interlock_status",   cmd_interlock_status   },
     { CMD_INTERLOCK_ARM_NOOP,  "interlock_arm_noop", cmd_interlock_arm_noop },
@@ -1053,4 +1087,5 @@ void samd21_peripherals_init(void) {
     dac_init();
     adc_init();
     i2c_init();
+    rs485_init();
 }

@@ -48,6 +48,7 @@
 #include "samd21_hal.h"      // hal_wdt_init/pet, hal_capture_reset_cause
 #include "samd21_hal_pin.h"  // hal_pin_check_consistency
 #include "samd21_interlocks.h"
+#include "samd21_rs485.h"    // RS-485 passthrough RX poll + OP_RS485_FRAME_RX
 
 // Implemented in user_functions.c.
 extern void     register_dongle_load_commissioning(void);
@@ -334,6 +335,37 @@ static void handle_op_poll_inline(void) {
     (void)frame_encode_s2m(&meta, (const uint8_t*)sb, &g_tx_ring);
 }
 
+// ----------------------------------------------------------------------------
+// Drain reassembled RS-485 frames and push each one to the host as
+// OP_RS485_FRAME_RX [from_addr:u8][payload bytes]. Called every main-loop
+// iteration alongside the CDC RX drain. Bounded per call (drain a few frames)
+// so a flooded bus can't starve the rest of the loop; remaining frames are
+// picked up next iteration.
+// ----------------------------------------------------------------------------
+
+static uint8_t g_rs485_rx_seq = 0;
+
+static void rs485_drain_to_host(void) {
+    uint8_t addr;
+    uint8_t payload[RS485_PAYLOAD_MAX];
+    uint8_t len;
+    for (uint8_t guard = 0; guard < 4; guard++) {
+        if (!rs485_poll_frame(&addr, payload, &len)) return;
+        uint8_t frame[1 + RS485_PAYLOAD_MAX];
+        frame[0] = addr;
+        for (uint8_t i = 0; i < len; i++) frame[1 + i] = payload[i];
+        frame_meta_t meta = {
+            .addr        = 1,
+            .cmd         = OP_RS485_FRAME_RX,
+            .seq         = g_rs485_rx_seq++,
+            .ack_seq     = 0,
+            .ack_status  = 0,
+            .payload_len = (uint8_t)(1u + len),
+        };
+        (void)frame_encode_s2m(&meta, frame, &g_tx_ring);
+    }
+}
+
 static void rx_drain_to_event_queue(s_expr_tree_instance_t* tree) {
     if (!tud_cdc_connected() || !tud_cdc_available()) return;
     uint32_t n = tud_cdc_read(g_rx_buf, sizeof(g_rx_buf));
@@ -520,6 +552,9 @@ int main(void) {
         if (tree != NULL) {
             rx_drain_to_event_queue(tree);
         }
+
+        // Drain any reassembled RS-485 frames -> OP_RS485_FRAME_RX to host.
+        rs485_drain_to_host();
 
         uint32_t now = board_millis();
         if (tree != NULL && (int32_t)(now - next_tick_ms) >= 0) {
