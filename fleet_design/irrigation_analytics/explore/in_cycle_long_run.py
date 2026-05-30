@@ -50,6 +50,21 @@ K_FLOW          = 3.0
 K_CURRENT       = 3.0
 GPM_SPLIT_FLOOR = 1.5
 A_SPLIT_FLOOR   = 0.20
+# Short-term-mode analysis (Glenn 2026-05-30 EOD)
+GPM_SHORT_FLOOR = 1.0       # flow gate floor for short bins (last-sample method)
+A_SHORT_FLOOR   = 0.05      # current gate floor for short bins
+MIN_HIST_SHORT  = 2         # short-term comparison possible with just 2 historic runs
+
+# ETO-managed valves (per irrigation_schedule_taxonomy_2026-05-29 memory).
+# A bin = short-term if ALL its valves are non-ETO, else long-term.
+ETO_VALVES = {
+    ("satellite_2", 13), ("satellite_2", 14), ("satellite_2", 15), ("satellite_2", 16),
+    ("satellite_3", 1),  ("satellite_3", 2),  ("satellite_3", 5),
+    ("satellite_3", 13), ("satellite_3", 14), ("satellite_3", 15), ("satellite_3", 18),
+    ("satellite_4", 1),  ("satellite_4", 3),  ("satellite_4", 4),  ("satellite_4", 6),
+    ("satellite_4", 7),  ("satellite_4", 9),  ("satellite_4", 10), ("satellite_4", 11),
+    ("satellite_4", 12),
+}
 # Cohort-level pressure-starvation detector (Glenn 2026-05-30 sat_4:1 case)
 GPM_STARVE_DROP = 1.0       # per-bin must be at least this far below baseline
 MIN_COHORT_DROP = 3         # need this many bins dropping to flag the cohort
@@ -225,6 +240,48 @@ def primary_satellite(bin_key):
     return "mixed"
 
 
+def bin_analysis_mode(bin_key):
+    """Glenn 2026-05-30 rule: bin is 'short' if ALL valves are non-ETO,
+    'long' if at least one ETO valve is in it.
+
+    Returns 'short' or 'long'.
+    """
+    parts = bin_key.split("/")
+    for p in parts:
+        try:
+            sat_str, bit_str = p.split(":")
+            bit = int(bit_str)
+        except (ValueError, AttributeError):
+            continue
+        if (sat_str, bit) in ETO_VALVES:
+            return "long"
+    return "short"
+
+
+def last_sample(samples):
+    """Short-bin steady-state reading — last sample of the run."""
+    if not samples: return None
+    return samples[-1]
+
+
+def short_baseline(runs, stream_key, exclude_last=True):
+    """Median of last 5 (or fewer) historic runs' last-samples for short bins.
+
+    Returns dict {n, med, mad} or None if insufficient history.
+    """
+    pool = runs[:-1] if (exclude_last and len(runs) > 1) else runs
+    # Rolling-5 window (or fewer if we don't have 5 yet, e.g., post-reset)
+    window = pool[-5:]
+    lasts = []
+    for r in window:
+        arr = (r.get(stream_key) or {}).get("data") or []
+        ls = last_sample(arr)
+        if ls is not None: lasts.append(ls)
+    if len(lasts) < MIN_HIST_SHORT: return None
+    m = median(lasts)
+    return {"n": len(lasts), "med": m, "mad": mad(lasts, m)}
+
+
 def is_city_fed(bin_key):
     """True if sat_1:39 (city-water valve with dwell) is in the bin —
     city pressure is supplied, so well-pressure-starvation is impossible
@@ -239,12 +296,15 @@ def cohort_key(primary_sat, city_fed):
 
 
 def compute_cohort_offsets(results, min_cohort=4):
-    """For each (satellite, feed-mode) cohort with >= min_cohort bins
-    that have valid raw current-Δ, return cohort_median(Δ_raw).
-    'mixed'/'satellite_1' bins don't get an offset (returned 0)."""
+    """For each (satellite, feed-mode) cohort of LONG-mode bins with
+    >= min_cohort bins that have valid raw current-Δ, return
+    cohort_median(Δ_raw). Short bins use last-sample current which
+    isn't directly comparable to body_med current; cohort norm
+    applies to long-mode only."""
     by_cohort = {}
     for r in results:
         if r["status"] != "ok": continue
+        if r.get("mode") != "long": continue
         cd = r.get("cur_drift_raw")
         if cd is None: continue
         if r["primary_sat"] in ("mixed", "satellite_1"): continue
@@ -268,6 +328,7 @@ def detect_cohort_starvation(results):
     by_sat = {}
     for r in results:
         if r["status"] != "ok": continue
+        if r.get("mode") != "long": continue   # pressure starvation = ETO/long concept
         if r["primary_sat"] in ("mixed", "satellite_1"): continue
         if r["city_fed"]: continue   # city-fed cannot be starved (locked rule)
         by_sat.setdefault(r["primary_sat"], []).append(r)
@@ -355,10 +416,12 @@ def main():
     results = []
     for bk in sorted(in_cycle.keys()):
         runs = th.get(bk, [])
+        mode = bin_analysis_mode(bk)
         if not runs:
             results.append({"bin": bk, "status": "no_time_history",
                             "primary_sat": primary_satellite(bk),
-                            "city_fed":    is_city_fed(bk)})
+                            "city_fed":    is_city_fed(bk),
+                            "mode":        mode})
             continue
         # Pick canonical "today" run: among last-N runs (N = # of fires in
         # this cycle), use the LONGEST. Diagnostic short tests shouldn't
@@ -369,35 +432,50 @@ def main():
                      key=lambda r: len((r.get("HUNTER_FLOW_METER") or {}).get("data") or []))
         flow_arr = (newest.get("HUNTER_FLOW_METER")  or {}).get("data") or []
         cur_arr  = (newest.get("IRRIGATION_CURRENT") or {}).get("data") or []
-        flow_today = body_med(flow_arr)
-        cur_today  = body_med(cur_arr)
 
-        flow_base  = historic_baseline(runs, "HUNTER_FLOW_METER")
-        cur_base   = historic_baseline(runs, "IRRIGATION_CURRENT")
+        # ── Mode-aware "today" summary + baseline ──
+        if mode == "short":
+            flow_today = last_sample(flow_arr)
+            cur_today  = last_sample(cur_arr)
+            flow_base  = short_baseline(runs, "HUNTER_FLOW_METER")
+            cur_base   = short_baseline(runs, "IRRIGATION_CURRENT")
+            flow_floor = GPM_SHORT_FLOOR
+            cur_floor  = A_SHORT_FLOOR
+            # Short bins: no within-run split scan (too few samples)
+            within = None
+        else:  # long
+            flow_today = body_med(flow_arr)
+            cur_today  = body_med(cur_arr)
+            flow_base  = historic_baseline(runs, "HUNTER_FLOW_METER")
+            cur_base   = historic_baseline(runs, "IRRIGATION_CURRENT")
+            flow_floor = GPM_FLOOR
+            cur_floor  = A_FLOOR
+            # Long bins: within-run split scan as before
+            f_flow_w   = split_features(flow_arr)
+            f_cur_w    = split_features(cur_arr)
+            mad_flow_w = historic_split_mad(runs, "HUNTER_FLOW_METER")
+            mad_cur_w  = historic_split_mad(runs, "IRRIGATION_CURRENT")
+            within     = classify_within(f_flow_w, f_cur_w, mad_flow_w, mad_cur_w)
 
         # Raw (cohort_offset=0) current drift — used only to compute the cohort offset
-        cur_drift_raw  = classify_drift(cur_today, cur_base, A_FLOOR, cohort_offset=0.0)
-
-        # Within-run split scan (unaffected by cohort normalization)
-        f_flow_w = split_features(flow_arr)
-        f_cur_w  = split_features(cur_arr)
-        mad_flow_w = historic_split_mad(runs, "HUNTER_FLOW_METER")
-        mad_cur_w  = historic_split_mad(runs, "IRRIGATION_CURRENT")
-        within = classify_within(f_flow_w, f_cur_w, mad_flow_w, mad_cur_w)
+        cur_drift_raw  = classify_drift(cur_today, cur_base, cur_floor, cohort_offset=0.0)
 
         results.append({
             "bin": bk,
             "status": "ok",
             "primary_sat": primary_satellite(bk),
             "city_fed":    is_city_fed(bk),
+            "mode":        mode,
             "n_samples_flow": len(flow_arr),
             "flow_today": flow_today,
             "cur_today":  cur_today,
             "flow_base":  flow_base,
             "cur_base":   cur_base,
-            "flow_drift": classify_drift(flow_today, flow_base, GPM_FLOOR),  # flow never normalized
+            "flow_drift": classify_drift(flow_today, flow_base, flow_floor),
             "cur_drift_raw":  cur_drift_raw,
             "within":     within,
+            "flow_floor": flow_floor,
+            "cur_floor":  cur_floor,
         })
 
     # ── 3b) Pass 2: compute cohort offsets, then re-classify current ──
@@ -405,19 +483,25 @@ def main():
     cohort_K_MAD_widen = 5.0 / K_MAD  # widen gate for bins without cohort coverage
     for r in results:
         if r["status"] != "ok": continue
+        cur_floor = r.get("cur_floor", A_FLOOR)
+        # Short bins: skip cohort norm (last-sample currents aren't comparable
+        # cross-bin). Use raw Δ with the short-bin floor.
+        if r.get("mode") == "short":
+            r["cur_drift"] = classify_drift(r["cur_today"], r["cur_base"],
+                                            cur_floor, cohort_offset=0.0)
+            r["cohort_used"] = None
+            continue
+        # Long bins: cohort normalization when cohort exists
         ck = cohort_key(r["primary_sat"], r["city_fed"])
         offset = cohort_offsets.get(ck, 0.0)
         if ck in cohort_offsets:
-            # Normal path: re-classify with cohort offset applied
             r["cur_drift"] = classify_drift(r["cur_today"], r["cur_base"],
-                                            A_FLOOR, cohort_offset=offset)
+                                            cur_floor, cohort_offset=offset)
             r["cohort_used"] = ck
         else:
-            # Fallback for mixed/lone bins: no offset, widened gate
-            wider_floor = A_FLOOR * cohort_K_MAD_widen
+            wider_floor = cur_floor * cohort_K_MAD_widen
             r["cur_drift"] = classify_drift(r["cur_today"], r["cur_base"],
                                             wider_floor, cohort_offset=0.0)
-            # Bump the K_MAD-derived gate as well by manually scaling
             cd = r["cur_drift"]
             if cd is not None:
                 cd["gate"] = cd["gate"] * cohort_K_MAD_widen
@@ -440,11 +524,11 @@ def main():
           f"city pressure supplies → starvation impossible)")
 
     # ── 4) Per-bin table ──
-    print(f"\n=== Per in-cycle bin (baseline drift + within-run; current cohort-normalized) ===")
-    hdr = (f"  {'bin':<48s} {'sat':<12s} {'feed':<5s} {'n_s':>4s}  "
+    print(f"\n=== Per in-cycle bin — short uses last-sample, long uses body_med ===")
+    hdr = (f"  {'bin':<42s} {'mode':<5s} {'sat':<12s} {'feed':<5s} {'n_s':>4s}  "
            f"{'F now':>5s} {'F base±mad':>10s}  {'fΔ':>5s} {'fz':>5s} {'fcls':<7s}  "
            f"{'C now':>5s} {'C base±mad':>10s}  {'cΔraw':>6s} {'cΔnorm':>6s} {'ccls':<7s}  "
-           f"{'within':<18s}")
+           f"{'within':<12s}")
     print(hdr); print("  " + "-" * (len(hdr) - 2))
 
     def sk(r):
@@ -462,9 +546,10 @@ def main():
 
     for r in results:
         if r["status"] != "ok":
-            print(f"  {r['bin']:<48s}  ** {r['status']} **")
+            print(f"  {r['bin']:<42s}  ** {r['status']} **")
             continue
-        b = r["bin"][:46]
+        b = r["bin"][:40]
+        mode_s = r["mode"]
         sat_s = r["primary_sat"] + ("" if r.get("cohort_used") else " *")
         ft = f"{r['flow_today']:.1f}" if r['flow_today'] is not None else "  —"
         ct = f"{r['cur_today']:.2f}"  if r['cur_today']  is not None else "  —"
@@ -482,10 +567,10 @@ def main():
             cd_s = f"    —      —     no_hist"
         w_s = w["label"] if w else "n/a"
         feed = "city" if r["city_fed"] else "well"
-        print(f"  {b:<48s} {sat_s:<12s} {feed:<5s} {r['n_samples_flow']:>4d}  "
+        print(f"  {b:<42s} {mode_s:<5s} {sat_s:<12s} {feed:<5s} {r['n_samples_flow']:>4d}  "
               f"{ft:>5s} {fb_s:>10s}  {fd_s}  "
-              f"{ct:>5s} {cb_s:>10s}  {cd_s}  {w_s:<18s}")
-    print(f"  ('*' next to sat = no cohort offset applied (mixed bin or thin cohort, gate widened))")
+              f"{ct:>5s} {cb_s:>10s}  {cd_s}  {w_s:<12s}")
+    print(f"  (sat '*' = no cohort offset (mixed/lone/short); within 'n/a' = short bin)")
 
     # ── 5) Flagged-only summary ──
     flagged = [r for r in results if r["status"] == "ok" and (
@@ -515,7 +600,8 @@ def main():
             marks.append(f"within {w['label']}")
         steps = ", ".join(f"{s}:{step}" for s, step, _ in in_cycle[r["bin"]])
         feed = "city-fed" if r["city_fed"] else "well-fed"
-        print(f"\n  {r['bin']}   [{feed}; {steps}]")
+        mode_s = r["mode"]
+        print(f"\n  {r['bin']}   [{mode_s}; {feed}; {steps}]")
         for m in marks: print(f"    {m}")
 
     # ── 6) Cohort-level pressure-starvation detector ──
