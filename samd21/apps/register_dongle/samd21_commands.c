@@ -1064,6 +1064,114 @@ static uint8_t cmd_stack_hwm(shell_reader_t* args, shell_writer_t* result) {
     return SHELL_STATUS_OK;
 }
 
+// ---------- bus management (bus_controller only, Stage 2) ----------------
+#if defined(ROLE_BUS_CONTROLLER)
+#include "bus_roster.h"
+
+// args: addr:u8, class_id:u32, flags:u8
+// reply OK:        reason:u8 (=BUS_REG_OK), roster_count:u8
+// reply CMD_FAILED: reason:u8 (BUS_REG_FULL/DUP/BADADDR)
+static uint8_t cmd_bus_register_slave(shell_reader_t* args, shell_writer_t* result) {
+    uint8_t  addr     = sr_u8(args);
+    uint32_t class_id = sr_u32(args);
+    uint8_t  flags    = sr_u8(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+
+    uint8_t count = 0;
+    uint8_t reason = bus_roster_register(addr, class_id, flags, &count);
+    sw_u8(result, reason);
+    if (reason != BUS_REG_OK) {
+        if (result->overflow) return SHELL_STATUS_RESULT_TOO_BIG;
+        return SHELL_STATUS_CMD_FAILED;
+    }
+    sw_u8(result, count);
+    if (result->overflow) return SHELL_STATUS_RESULT_TOO_BIG;
+    return SHELL_STATUS_OK;
+}
+
+// args: addr:u8   reply OK: roster_count:u8   (CMD_FAILED if addr absent)
+static uint8_t cmd_bus_unregister_slave(shell_reader_t* args, shell_writer_t* result) {
+    uint8_t addr = sr_u8(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+
+    uint8_t count = 0;
+    bool removed = bus_roster_unregister(addr, &count);
+    sw_u8(result, count);
+    if (result->overflow) return SHELL_STATUS_RESULT_TOO_BIG;
+    return removed ? SHELL_STATUS_OK : SHELL_STATUS_CMD_FAILED;
+}
+
+// args: none
+// reply: total:u8, shown:u8, then `shown` rows of {addr:u8, class_id:u32,
+//        flags:u8, state:u8, misses:u8, last_seen_ms_ago:u16} (10 B each).
+// A full 16-slave roster (161 B) exceeds COMM_PAYLOAD_MAX, so we emit only as
+// many rows as fit and report `total` separately. The decoder iterates `shown`.
+#define BUS_LIST_ROW_BYTES 10u
+static uint8_t cmd_bus_list_slaves(shell_reader_t* args, shell_writer_t* result) {
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    uint32_t now   = (uint32_t)board_millis();
+    uint8_t  total = bus_roster_count();
+    sw_u8(result, total);
+    // Reserve the shown-count byte, then fill rows until one more won't fit.
+    uint8_t shown = 0;
+    sw_u8(result, 0);                 // placeholder; patched after the loop
+    uint8_t* shown_slot = result->p - 1;
+    for (uint8_t i = 0; i < total; i++) {
+        if ((uint16_t)(result->end - result->p) < BUS_LIST_ROW_BYTES) break;
+        const bus_slave_t* s = bus_roster_at(i);
+        if (s == 0) break;
+        uint32_t ago32 = (s->last_seen_ms == 0) ? 0xFFFFu : (now - s->last_seen_ms);
+        uint16_t ago   = (ago32 > 0xFFFFu) ? 0xFFFFu : (uint16_t)ago32;
+        sw_u8 (result, s->addr);
+        sw_u32(result, s->class_id);
+        sw_u8 (result, s->flags);
+        sw_u8 (result, s->state);
+        sw_u8 (result, s->consecutive_misses);
+        sw_u16(result, ago);
+        shown++;
+    }
+    if (result->overflow) return SHELL_STATUS_RESULT_TOO_BIG;
+    *shown_slot = shown;              // overflow-checked: writer didn't trip
+    return SHELL_STATUS_OK;
+}
+
+// args: poll_period_ms:u16, max_misses:u8, tcp_retries:u8   reply: empty
+static uint8_t cmd_bus_set_poll(shell_reader_t* args, shell_writer_t* result) {
+    (void)result;
+    uint16_t period  = sr_u16(args);
+    uint8_t  misses  = sr_u8(args);
+    uint8_t  retries = sr_u8(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    if (period == 0 || misses == 0) return SHELL_STATUS_BAD_ARGS;
+    bus_poll_cfg_t* cfg = bus_poll_cfg();
+    cfg->poll_period_ms = period;
+    cfg->max_misses     = misses;
+    cfg->tcp_retries    = retries;
+    return SHELL_STATUS_OK;
+}
+
+// args: enable:u8   reply: empty
+static uint8_t cmd_bus_poll_enable(shell_reader_t* args, shell_writer_t* result) {
+    (void)result;
+    uint8_t enable = sr_u8(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    bus_poll_cfg()->enabled = enable ? 1u : 0u;
+    return SHELL_STATUS_OK;
+}
+
+// args: none   reply: empty
+static uint8_t cmd_bus_clear_roster(shell_reader_t* args, shell_writer_t* result) {
+    (void)result;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    bus_roster_clear();
+    return SHELL_STATUS_OK;
+}
+#endif // ROLE_BUS_CONTROLLER
+
 // ---------- chip-specific dispatch table ---------------------------------
 
 // Chip-specific command surface. The bus_controller is "nothing but a bus
@@ -1091,6 +1199,14 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_RS485_CONFIG,        "rs485_config",       cmd_rs485_config       },
     { CMD_RS485_SEND_FRAME,    "rs485_send_frame",   cmd_rs485_send_frame   },
     { CMD_RS485_STATS,         "rs485_stats",        cmd_rs485_stats        },
+#if defined(ROLE_BUS_CONTROLLER)
+    { CMD_BUS_REGISTER_SLAVE,   "bus_register_slave",   cmd_bus_register_slave   },
+    { CMD_BUS_UNREGISTER_SLAVE, "bus_unregister_slave", cmd_bus_unregister_slave },
+    { CMD_BUS_LIST_SLAVES,      "bus_list_slaves",      cmd_bus_list_slaves      },
+    { CMD_BUS_SET_POLL,         "bus_set_poll",         cmd_bus_set_poll         },
+    { CMD_BUS_POLL_ENABLE,      "bus_poll_enable",      cmd_bus_poll_enable      },
+    { CMD_BUS_CLEAR_ROSTER,     "bus_clear_roster",     cmd_bus_clear_roster     },
+#endif
 #if !defined(ROLE_BUS_CONTROLLER)
     { CMD_TEST_HANG,           "test_hang",          cmd_test_hang          },
     { CMD_INTERLOCK_STATUS,    "interlock_status",   cmd_interlock_status   },
@@ -1120,4 +1236,7 @@ void samd21_peripherals_init(void) {
     adc_init();
     i2c_init();
     rs485_init();
+#if defined(ROLE_BUS_CONTROLLER)
+    bus_roster_init();   // RAM roster starts empty; the Pi registers slaves
+#endif
 }

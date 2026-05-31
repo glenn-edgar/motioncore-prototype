@@ -153,6 +153,30 @@ const shell_cmd_entry_t* shell_find_cmd(uint16_t command_id);
 //   overrun:u32  — bus-health counters for bring-up + production diagnostics.
 #define CMD_RS485_STATS       ((uint16_t)0x0152)
 
+// 0x0160..0x016F: bus management (bus_controller only — Pi registers the slave
+// roster the BC autonomously polls). Stage 2 = roster + command surface; the
+// poll engine that consumes the roster ships in Stage 3. See bus_roster.[ch]
+// and docs/rs485-bus-protocol-bc2-bc3.md §5.
+//   CMD_BUS_REGISTER_SLAVE   args: addr:u8, class_id:u32, flags:u8
+//     reply: reason:u8 (BUS_REG_OK), roster_count:u8 on OK;
+//     CMD_FAILED + reason:u8 (BUS_REG_FULL/DUP/BADADDR) otherwise.
+//   CMD_BUS_UNREGISTER_SLAVE args: addr:u8       reply: roster_count:u8
+//     (CMD_FAILED if addr absent).
+//   CMD_BUS_LIST_SLAVES      args: none           reply: total:u8, shown:u8, then
+//     `shown` rows {addr:u8, class_id:u32, flags:u8, state:u8, misses:u8,
+//     last_seen_ms_ago:u16} (10 B/row). shown<total if the roster doesn't fit
+//     in one COMM_PAYLOAD_MAX reply.
+//   CMD_BUS_SET_POLL    args: poll_period_ms:u16, max_misses:u8, tcp_retries:u8
+//     reply: empty.  Stored now; consumed by the Stage-3 poll engine.
+//   CMD_BUS_POLL_ENABLE args: enable:u8           reply: empty.
+//   CMD_BUS_CLEAR_ROSTER args: none               reply: empty.
+#define CMD_BUS_REGISTER_SLAVE   ((uint16_t)0x0160)
+#define CMD_BUS_UNREGISTER_SLAVE ((uint16_t)0x0161)
+#define CMD_BUS_LIST_SLAVES      ((uint16_t)0x0162)
+#define CMD_BUS_SET_POLL         ((uint16_t)0x0163)
+#define CMD_BUS_POLL_ENABLE      ((uint16_t)0x0164)
+#define CMD_BUS_CLEAR_ROSTER     ((uint16_t)0x0165)
+
 // GPIO mode codes for CMD_GPIO_CONFIG.
 #define GPIO_MODE_INPUT          0u
 #define GPIO_MODE_OUTPUT         1u

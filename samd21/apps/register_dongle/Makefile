@@ -118,6 +118,7 @@ APP_SRCS := \
   $(HERE)/samd21_interlocks.c \
   $(HERE)/samd21_interlock_dsl.c \
   $(HERE)/samd21_rs485.c \
+  $(HERE)/bus_roster.c \
   $(HERE)/register_dongle_v2_module_rom.c
 
 LIBCOMM_SRCS := \
