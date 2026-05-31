@@ -37,9 +37,12 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 
 # ── analysis tuning ──
-STARTUP_SKIP    = 3
+STARTUP_SKIP    = 3        # current stream: 3-step skip
+FLOW_SKIP       = 5        # flow stream: 5-step skip (filter warm-up + valve settle)
+MA_TAPS         = 5        # matches controller's 5-tap MA on HUNTER_VALVE
 TAIL_SKIP       = 2
-MIN_BODY        = 14
+MIN_BODY        = 14       # current stream
+MIN_BODY_FLOW   = 5        # filtered flow body needs only 5 samples (was 14 raw)
 K_MAD           = 3.5
 GPM_FLOOR       = 1.0
 A_FLOOR         = 0.03
@@ -151,6 +154,31 @@ def body_med(samples):
     return median(body) if body else None
 
 
+def ma_filter(samples, taps=MA_TAPS):
+    """Causal 5-tap moving average matching controller's FILTERED_HUNTER_VALVE."""
+    out = []
+    for t, _ in enumerate(samples):
+        if t < taps - 1:
+            out.append(None)
+        else:
+            out.append(sum(samples[t - taps + 1 : t + 1]) / taps)
+    return out
+
+
+def flow_body_mean(samples):
+    """Per-run filtered flow scalar (matches controller filter, then mean).
+
+    Returns the mean of MA5(samples) over t in [FLOW_SKIP, n - TAIL_SKIP).
+    Decimal-valued — preserves sub-integer drift the raw median would hide.
+    """
+    if not samples or len(samples) < FLOW_SKIP + TAIL_SKIP + MIN_BODY_FLOW:
+        return None
+    filt = ma_filter(samples)
+    body = [v for v in filt[FLOW_SKIP: len(samples) - TAIL_SKIP] if v is not None]
+    if len(body) < MIN_BODY_FLOW: return None
+    return sum(body) / len(body)
+
+
 def split_features(samples):
     if not samples or len(samples) < STARTUP_SKIP + TAIL_SKIP + MIN_BODY:
         return None
@@ -173,10 +201,14 @@ def split_features(samples):
 
 def historic_baseline(runs, stream_key, exclude_last=True):
     pool = runs[:-1] if (exclude_last and len(runs) > 1) else runs
+    # Stream-specific per-run reduction.
+    # Flow uses filtered body_mean (matches controller filter, decimal-valued).
+    # Current keeps raw body_med (current isn't 1-unit quantized; median fine).
+    reducer = flow_body_mean if stream_key == "HUNTER_FLOW_METER" else body_med
     bms = []
     for r in pool:
         arr = (r.get(stream_key) or {}).get("data") or []
-        bm = body_med(arr)
+        bm = reducer(arr)
         if bm is not None: bms.append(bm)
     if len(bms) < MIN_HIST: return None
     m = median(bms)
@@ -444,7 +476,7 @@ def main():
             # Short bins: no within-run split scan (too few samples)
             within = None
         else:  # long
-            flow_today = body_med(flow_arr)
+            flow_today = flow_body_mean(flow_arr)   # filtered, decimal
             cur_today  = body_med(cur_arr)
             flow_base  = historic_baseline(runs, "HUNTER_FLOW_METER")
             cur_base   = historic_baseline(runs, "IRRIGATION_CURRENT")

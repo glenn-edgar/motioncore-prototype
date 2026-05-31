@@ -50,11 +50,14 @@ end
 function M.edges(prev_state, cur_state)
     local list = {}
     if prev_state == cur_state then return list end
-    -- KB2 trigger: leaving RESISTANCE for any non-suspend state
+    -- KB2 trigger: fire whenever we LEAVE RESISTANCE for any non-RESISTANCE
+    -- state. The controller chains RESISTANCE → CLEAN_FILTER routinely, and
+    -- the valve_test data is final the moment resistance ends — so we must
+    -- run KB2 even when the next state is CLEAN_FILTER. Operator-triggered
+    -- SUSPENDED_MANUAL during a resistance cycle is rare; if it happens,
+    -- firing KB2 with the data we have is still the right call.
     if prev_state == M.states.SUSPENDED_RESISTANCE
-       and cur_state ~= M.states.SUSPENDED_RESISTANCE
-       and cur_state ~= M.states.SUSPENDED_MANUAL
-       and cur_state ~= M.states.SUSPENDED_CLEAN_FILTER then
+       and cur_state ~= M.states.SUSPENDED_RESISTANCE then
         list[#list+1] = "KB2_RUN_RESISTANCE_ANALYSIS"
     end
     list[#list+1] = string.format("%s_TO_%s", prev_state or "INIT", cur_state)

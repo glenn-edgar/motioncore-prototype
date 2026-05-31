@@ -19,9 +19,13 @@ Pipeline:
   8. Tabular report to stdout
 """
 
+import argparse
+import datetime as DT
 import json
 import math
 import statistics
+import subprocess
+import sys
 from pathlib import Path
 
 V_SUPPLY = 15.5
@@ -41,6 +45,18 @@ DISCONNECTS = set()  # no real disconnected valves on this site
 # Disconnect valves are NOT zero-current — they are ~200 Ω high-impedance leakage
 # paths that pass ~0.077 A. Use them for daily-drift detection only, not as offset.
 ACS712_OFFSET = 0.0133
+# Phantom-pin offset normalization (backlog item 1 from daily-review-workflow).
+# The fixed ACS712_OFFSET above was anchored once to sat_2:4 = 35 Ω; the actual
+# null drifts cycle-to-cycle and adds ±2-3 Ω systematic bias to every valve
+# when comparing across days. The 6 NONEXISTENT phantom pins measure
+#   I_phantom = LEAKAGE_THROUGH_200OHM + ACS712_NULL ≈ 0.0775 + null
+# so their per-ordinal median is the cleanest within-buffer drift indicator.
+# REF_PHANTOM = phantom median at the calibration anchor point (0.0775 leakage
+# + 0.0133 null = 0.0908). Per-ord effective offset is
+#   ACS712_OFFSET + (phantom_at_ord − REF_PHANTOM)
+# which centres the rolling MK series on the calibration anchor and removes
+# drift. Applied in BOTH the rolling series (MK basis) and today's reading.
+REF_PHANTOM = 0.0908
 WIRE_OFFSET_OHMS = {**{f"satellite_2:{p}": 10.0 for p in (13, 14, 15, 16, 17)},
                     **{f"satellite_3:{p}":  3.0 for p in (11, 12, 13, 14, 15, 16, 17, 18)}}
 PARALLEL_PAIRS = {"satellite_1:44"}  # apparent R × 2 = per-coil R
@@ -83,12 +99,62 @@ R_INOPERABLE  = 34.0   # ≈ cohort μ − 3σ; below this = physically inoperab
 R_IMPENDING   = 47.0   # ≈ cohort μ + 5σ; above this = trending open
 TREND_P_THRESHOLD = 0.10  # loose for baseline characterization
 
+# "Today's reading" averaging window. The controller runs the resistance
+# check 1-2× per day; both go into the rolling-20 IRRIGATION_VALVE_TEST
+# history. Using only series[-1] (the very last cycle) inherits one cycle's
+# sensor null noise. Averaging the most recent N cycles cuts that within-day
+# noise — same valve, two reads within hours, the ACS712 null drift between
+# them is small. Set to 1 to revert to series[-1]-only behavior.
+RECENT_N = 2
+
+
+def recent_median(series, n=RECENT_N):
+    """Median of the last min(n, len(series)) entries. Robust to single
+    outliers; for n=2 it's just the mean. Series is the rolling-20 list
+    of latest currents from IRRIGATION_VALVE_TEST."""
+    if not series or not isinstance(series, list):
+        return None
+    tail = [x for x in series[-n:] if x is not None]
+    if not tail:
+        return None
+    return statistics.median(tail)
+
+
+def phantom_offsets(valve_test: dict, n: int) -> list[float]:
+    """Per-ordinal effective offset, length n. Median across the 6 phantom
+    pins per ordinal, recentered on REF_PHANTOM and added to ACS712_OFFSET.
+    Falls back to ACS712_OFFSET when an ordinal has no phantom samples."""
+    out: list[float] = []
+    for k in range(n):
+        vals = [valve_test[v][k] for v in NONEXISTENT
+                if valve_test.get(v) and len(valve_test[v]) > k
+                and valve_test[v][k] is not None]
+        if vals:
+            out.append(ACS712_OFFSET + (statistics.median(vals) - REF_PHANTOM))
+        else:
+            out.append(ACS712_OFFSET)
+    return out
+
 
 def load() -> tuple[dict, list]:
     here = Path(__file__).parent
     valve_test = json.loads((here / "data" / "valve_test.json").read_text())
     valve_groups = json.loads((here / "data" / "valve_groups.json").read_text())
     return valve_test, valve_groups
+
+
+def fetch_fresh(timeout_s: int = 20) -> None:
+    """Run fetch_data.sh to pull fresh valve_test + valve_groups from the Pi.
+    Used by the robot before --json analysis so each KB2 run gets current data.
+    """
+    here = Path(__file__).parent
+    script = here / "fetch_data.sh"
+    if not script.exists():
+        raise RuntimeError(f"fetch_data.sh not found at {script}")
+    p = subprocess.run(["bash", str(script)],
+                       capture_output=True, timeout=timeout_s, cwd=str(here))
+    if p.returncode != 0:
+        raise RuntimeError("fetch_data failed: " + p.stderr.decode()[:200])
 
 
 def build_cohorts(valve_groups: list) -> dict[str, str]:
@@ -124,8 +190,9 @@ def drift_from_phantoms(valve_test: dict) -> float:
     latest = []
     for v in NONEXISTENT:
         series = valve_test.get(v)
-        if series and isinstance(series, list):
-            latest.append(series[-1])
+        m = recent_median(series)
+        if m is not None:
+            latest.append(m)
     if not latest:
         raise RuntimeError("no phantom-pin values found")
     return statistics.median(latest)
@@ -140,6 +207,36 @@ def corrected_r(valve: str, i_latest: float, offset: float) -> float | None:
     if valve in PARALLEL_PAIRS:
         r *= 2.0
     return r
+
+
+def post_disruption_start(rs: list[float | None],
+                          min_gap: int = 3) -> int:
+    """Return index at which to START taking samples — drops everything
+    before the LAST contiguous run of `None` of length ≥ `min_gap`.
+
+    Controller resets / sensor-recalibration events show up as a 3-4 ord
+    contiguous block of bogus readings (R > 100 Ω → filtered to None).
+    Pre-reset and post-reset baselines often differ by 3-5 Ω, which makes
+    Mann-Kendall on the combined series report a spurious upward trend
+    (most of the 11 AGING_OPEN flags as of 2026-05-30 are this artifact).
+    Truncating to the post-reset segment removes the discontinuity.
+
+    Returns 0 if no qualifying disruption gap is found.
+    """
+    n = len(rs)
+    gap_end = 0
+    i = 0
+    while i < n:
+        if rs[i] is None:
+            j = i
+            while j < n and rs[j] is None:
+                j += 1
+            if j - i >= min_gap:
+                gap_end = j  # drop everything UP TO and INCLUDING the gap
+            i = j
+        else:
+            i += 1
+    return gap_end
 
 
 def mann_kendall(series: list[float]) -> tuple[float, float, float]:
@@ -179,20 +276,97 @@ def classify(valve: str, r_corr: float | None, cohort: str,
     return "STABLE"
 
 
+BAD_STATUSES      = {"DEAD", "OPEN_CIRCUIT", "INOPERABLE", "PRE_SHORT"}
+MARGINAL_STATUSES = {"AGING_OPEN", "IMPENDING_OPEN", "COHORT_OUTLIER"}
+
+
+def emit_json(rows, cohort_stats, offsets, offset_today, phantom_drift) -> None:
+    """JSON-mode output for robot consumer (kb2_post.lua)."""
+    def row_repr(r):
+        return {
+            "valve":   r["valve"],
+            "status":  r["status"],
+            "r_corr":  round(r["r_corr"], 3) if r["r_corr"] is not None else None,
+            "latest_A": round(r["latest_A"], 4),
+            "cohort":  r["cohort"],
+            "z":       round(r["z"], 3) if r["z"] is not None else None,
+            "mk_tau":  round(r["mk_tau"], 3),
+            "mk_p":    round(r["mk_p"], 4),
+            "mk_basis": r.get("mk_basis", "raw_R"),
+            "mk_n":    r["mk_n"],
+        }
+    bad      = sorted([row_repr(r) for r in rows if r["status"] in BAD_STATUSES],
+                      key=lambda x: x["valve"])
+    marginal = sorted([row_repr(r) for r in rows if r["status"] in MARGINAL_STATUSES],
+                      key=lambda x: x["valve"])
+    n_stable = sum(1 for r in rows
+                   if r["status"] in ("STABLE", "STABLE_UNK_COHORT", "STABLE_HEAVY"))
+    summary = {
+        "n_valves":       len(rows),
+        "n_stable":       n_stable,
+        "n_marginal":     len(marginal),
+        "n_bad":          len(bad),
+        "n_dead_master":  sum(1 for r in rows if r["status"] == "DEAD_MASTER"),
+        "n_disconnect":   sum(1 for r in rows if r["status"] == "DISCONNECTED"),
+        "offset_today":   round(offset_today, 4),
+        "phantom_drift":  round(phantom_drift, 4),
+        "ord_offset_span": round(max(offsets) - min(offsets), 4) if offsets else 0,
+    }
+    cohorts = {c: {"mu": round(mu, 3), "sd": round(sd, 3), "n": n}
+               for c, (mu, sd, n) in cohort_stats.items()}
+    payload = {
+        "schema":       "kb2_resistance.v1",
+        "generated_at": DT.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "summary":      summary,
+        "cohort_stats": cohorts,
+        "bad":          bad,
+        "marginal":     marginal,
+    }
+    sys.stdout.write(json.dumps(payload, indent=2))
+
+
 def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--json", action="store_true",
+                    help="emit structured JSON instead of human-readable text")
+    ap.add_argument("--fetch", action="store_true",
+                    help="fetch fresh valve_test+valve_groups via SSH before analyzing")
+    args = ap.parse_args()
+    if args.fetch:
+        try:
+            fetch_fresh()
+        except Exception as e:
+            if args.json:
+                sys.stdout.write(json.dumps({
+                    "schema": "kb2_resistance.v1",
+                    "error":  f"fetch_fresh: {e}",
+                }))
+                sys.exit(0)
+            else:
+                raise
+
     valve_test, valve_groups = load()
     cohort_map = build_cohorts(valve_groups)
     phantom_drift = drift_from_phantoms(valve_test)  # drift indicator (phantom-pin median)
-    offset = ACS712_OFFSET  # physical-anchored calibration
+    n_buf = max((len(s) for s in valve_test.values() if s), default=0)
+    offsets = phantom_offsets(valve_test, n_buf)  # per-ord effective offset
+    offset_today = (statistics.median(offsets[-RECENT_N:])
+                    if len(offsets) >= 1 else ACS712_OFFSET)
 
     # ── Pass 1: build per-valve R series with None for invalid points ──
+    # Each ordinal k uses offsets[k] so cross-cycle ACS712 null drift is
+    # removed from the MK trend basis.
+    # Range cap 100 Ω drops disruption-window samples (controller-reset cycles
+    # that read ~200 Ω like phantom pins). Real coil R is 30–50 Ω; anything
+    # above 100 Ω is a sensor-recalibration artifact, not a coil value.
     valve_r_full: dict[str, list[float | None]] = {}
     for valve, series in valve_test.items():
         if not series or valve in NONEXISTENT: continue
         rs = []
-        for i in series:
-            ri = corrected_r(valve, i, offset)
-            rs.append(ri if (ri is not None and 5.0 < ri < 500.0) else None)
+        for k, i in enumerate(series):
+            off_k = offsets[k] if k < len(offsets) else ACS712_OFFSET
+            ri = corrected_r(valve, i, off_k)
+            rs.append(ri if (ri is not None and 5.0 < ri < 100.0) else None)
         valve_r_full[valve] = rs
 
     # ── Family assignment: wire family first, then cohort, else None ──
@@ -222,21 +396,26 @@ def main() -> None:
     rows = []
     for valve, series in sorted(valve_test.items()):
         if not series or valve in NONEXISTENT: continue
-        latest = series[-1]
+        latest = recent_median(series)   # median of last N cycles (within-day noise cut)
+        if latest is None: continue
         cohort = cohort_map.get(valve, "unknown")
-        r = corrected_r(valve, latest, offset)
+        r = corrected_r(valve, latest, offset_today)
         rs_full = valve_r_full[valve]
+        # Drop everything before the controller-reset disruption window;
+        # MK on the combined pre/post series produces spurious trend flags.
+        k_start = post_disruption_start(rs_full)
+        rs_trim = rs_full[k_start:]
         fam = family_of(valve, cohort)
         if fam and fam in family_median:
-            meds = family_median[fam]
+            meds = family_median[fam][k_start:]
             # residual is meaningful only at ordinals where BOTH the valve and
             # the family median are valid
-            residuals = [rs_full[k] - meds[k] for k in range(min(len(rs_full), len(meds)))
-                         if rs_full[k] is not None and meds[k] is not None]
+            residuals = [rs_trim[k] - meds[k] for k in range(min(len(rs_trim), len(meds)))
+                         if rs_trim[k] is not None and meds[k] is not None]
             mk_series = residuals
             mk_basis = f"residual_vs_{fam}"
         else:
-            mk_series = [x for x in rs_full if x is not None]
+            mk_series = [x for x in rs_trim if x is not None]
             mk_basis = "raw_R"
         if len(mk_series) >= 5:
             tau, z, p = mann_kendall(mk_series)
@@ -244,7 +423,8 @@ def main() -> None:
             tau, z, p = 0.0, 0.0, 1.0
         rows.append({"valve": valve, "latest_A": latest, "r_corr": r,
                      "cohort": cohort, "mk_tau": tau, "mk_p": p,
-                     "mk_basis": mk_basis, "series": series})
+                     "mk_basis": mk_basis, "mk_n": len(mk_series),
+                     "k_start": k_start, "series": series})
 
     # cohort stats over non-disconnect, non-special valves
     skip = (DISCONNECTS | MASTER_DEAD | MASTER_HEAVY | PARALLEL_PAIRS
@@ -268,17 +448,26 @@ def main() -> None:
         r["status"] = classify(r["valve"], rv, c, r["z"], r["mk_p"], r["mk_tau"])
 
     # ── REPORT ────────────────────────────────────────────────────────────
+    if args.json:
+        emit_json(rows, cohort_stats, offsets, offset_today, phantom_drift)
+        return
     print(f"\n=== IRRIGATION VALVE RESISTANCE — KB2-daily baseline ===")
-    print(f"  ACS712 offset:        {offset:.4f} A  (physical-anchored to sat_2:4=35Ω)")
-    print(f"  Phantom-pin drift:    {phantom_drift:.4f} A  (sensor null + noise floor)")
+    print(f"  Per-day reading:      median of last {RECENT_N} cycles (within-day noise cut)")
+    print(f"  ACS712 offset:        {ACS712_OFFSET:.4f} A  (calibration anchor; sat_2:4=35Ω)")
+    print(f"  REF_PHANTOM:          {REF_PHANTOM:.4f} A  (anchor-time phantom median)")
+    print(f"  Phantom-pin today:    {phantom_drift:.4f} A  (recent {RECENT_N}-cycle median)")
+    print(f"  Effective offset      today: {offset_today:.4f}  "
+          f"(Δ vs anchor {offset_today-ACS712_OFFSET:+.4f})")
+    print(f"  Per-ord offset range: [{min(offsets):.4f}, {max(offsets):.4f}]  "
+          f"(Δ-span {max(offsets)-min(offsets):.4f})")
     print(f"  V_supply:             {V_SUPPLY} V")
     print(f"  New-install spec:     {R_NEW_SPEC} Ω")
     print(f"  Trend threshold:      p < {TREND_P_THRESHOLD}")
     for c, (mu, sd, n) in cohort_stats.items():
         print(f"  Cohort {c:<5}    μ={mu:6.2f}Ω  σ={sd:5.2f}Ω  n={n}")
 
-    print("\n  valve              I_latest   R_corr   cohort  z      MK_tau  MK_p    MK_basis              status")
-    print("  " + "─" * 110)
+    print("\n  valve              I_latest   R_corr   cohort  z      MK_tau  MK_p   MK_n MK_basis              status")
+    print("  " + "─" * 116)
     by_status = sorted(rows, key=lambda r: (
         0 if r["status"] not in ("STABLE", "STABLE_UNK_COHORT") else 1,
         r["valve"]))
@@ -288,7 +477,7 @@ def main() -> None:
         basis = r.get("mk_basis", "raw_R")
         print(f"  {r['valve']:<18} {r['latest_A']:7.4f}  {rv}    "
               f"{r['cohort']:<6} {zv}  {r['mk_tau']:+5.2f}  {r['mk_p']:5.3f}  "
-              f"{basis:<22} {r['status']}")
+              f"{r['mk_n']:>3}  {basis:<22} {r['status']}")
 
     # anomaly summary
     anomalies = [r for r in rows if r["status"] not in

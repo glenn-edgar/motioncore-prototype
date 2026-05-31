@@ -110,6 +110,62 @@ else:
 end
 
 -- ---------------------------------------------------------------------------
+-- time_history_bin(bin_key) — pull TIME_HISTORY[bin_key], return newest run.
+-- The full TIME_HISTORY hash is ~8 MB; this pulls only one bin's bytes
+-- (msgpack-decoded list of runs, we take the last one).
+-- Returns {flow_data = [GPM, ...], n = int, mean = float, sd = float}
+-- or nil, err on failure.
+-- ---------------------------------------------------------------------------
+local TIME_HISTORY_DB  = 4
+local TIME_HISTORY_KEY =
+    "[SYSTEM:main_operations][SITE:LaCima][APPLICATION_SUPPORT:APPLICATION_SUPPORT]" ..
+    "[IRRIGIGATION_SCHEDULING_CONTROL:IRRIGIGATION_SCHEDULING_CONTROL]" ..
+    "[PACKAGE:IRRIGIGATION_SCHEDULING_CONTROL_DATA][HASH:IRRIGATION_TIME_HISTORY]"
+
+function M.time_history_bin(bin_key)
+    if not bin_key or bin_key == "" then return nil, "bin_key empty" end
+    -- The bin's hash key is the bin_key string (not the master hash key).
+    -- Pull the field directly with HGET to avoid loading the entire 8 MB hash.
+    local py = string.format([[
+import redis, msgpack, json, sys
+r = redis.Redis(db=%d)
+KEY = %q
+FIELD = %q
+v = r.hget(KEY, FIELD)
+if v is None:
+    sys.stdout.write(json.dumps({"_error": "bin not found in time_history"}))
+    sys.exit(0)
+runs = msgpack.unpackb(v, raw=False)
+if not runs:
+    sys.stdout.write(json.dumps({"_error": "bin has no runs"}))
+    sys.exit(0)
+newest = runs[-1]
+hunter = newest.get("HUNTER_FLOW_METER") or {}
+out = {
+    "flow_data": hunter.get("data") or [],
+    "n":         len(hunter.get("data") or []),
+    "mean":      hunter.get("mean"),
+    "sd":        hunter.get("sd"),
+    "total":     hunter.get("total"),
+    "n_runs":    len(runs),
+}
+sys.stdout.write(json.dumps(out, default=str))
+]], TIME_HISTORY_DB, TIME_HISTORY_KEY, bin_key)
+    local raw, _ = run_remote_python(py)
+    if not raw or raw == "" then
+        return nil, "controller: time_history_bin ssh returned empty"
+    end
+    local ok, decoded = pcall(cjson.decode, raw)
+    if not ok then
+        return nil, "controller: time_history_bin decode failed: " .. raw:sub(1, 200)
+    end
+    if decoded._error then
+        return nil, "controller: " .. tostring(decoded._error)
+    end
+    return decoded
+end
+
+-- ---------------------------------------------------------------------------
 -- past_actions_xrange(last_id) — pull entries newer than last_id.
 -- Returns (entries[], newest_seen_id) on success.
 -- Each entry: { stream_id, action, level, details }.

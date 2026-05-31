@@ -9,7 +9,9 @@
 #                                       30 s lets the TIME_STAMP-gated sample
 #                                       window catch new readings promptly)
 #   MANUAL_SUSPEND=1       force SUSPENDED(MANUAL) for testing
-#   KB1_THRESHOLDS_JSON    override per-bin curve file
+#   KB1_THRESHOLDS_JSON    override per-bin KB1 (current) curve file
+#   BASELINES_JSON         override per-bin KB3/KB4 (flow) baselines file
+#                          default = ../explore/baseline_state/baselines.json
 #   DISCORD_WEBHOOK_URL    omit → log-only (no network)
 
 set -eu

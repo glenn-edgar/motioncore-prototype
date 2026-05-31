@@ -18,7 +18,8 @@
 --   POLL_INTERVAL_S       optional, default 60
 --   MANUAL_SUSPEND        optional, "1" forces SUSPENDED(MANUAL) for testing
 --   DISCORD_WEBHOOK_URL   optional, omit → log-only
---   KB1_THRESHOLDS_JSON   optional path to per-bin curves
+--   KB1_THRESHOLDS_JSON   optional path to per-bin KB1 curves (current)
+--   BASELINES_JSON        optional path to per-bin KB3/KB4 baselines (flow)
 --   VAR_DIR               optional, default ./var
 
 local ffi = require("ffi")
@@ -39,6 +40,10 @@ local Modes      = require("modes")
 local Logger     = require("logger")
 local Discord    = require("discord")
 local T          = require("thresholds")
+local Baselines  = require("baselines")
+local KB3Live    = require("kb3_live")
+local KB2Post    = require("kb2_post")
+local KB4Post    = require("kb4_post")
 
 -- ---------------------------------------------------------------------------
 -- Config
@@ -49,6 +54,8 @@ local MANUAL_SUSPEND  = os.getenv("MANUAL_SUSPEND") == "1"
 local VAR_DIR         = os.getenv("VAR_DIR") or (script_dir .. "var")
 local CURVES_PATH     = os.getenv("KB1_THRESHOLDS_JSON")
                         or (script_dir .. "../explore/kb1_thresholds.json")
+local BASELINES_PATH  = os.getenv("BASELINES_JSON")
+                        or (script_dir .. "../explore/baseline_state/baselines.json")
 
 os.execute("mkdir -p " .. VAR_DIR)
 
@@ -56,6 +63,22 @@ local poll_log, err1   = Logger.open(VAR_DIR .. "/kb1.log")
 if not poll_log then io.stderr:write("FATAL: open kb1.log: " .. err1 .. "\n"); os.exit(1) end
 local event_log, err2  = Logger.open(VAR_DIR .. "/kb1_events.log")
 if not event_log then io.stderr:write("FATAL: open kb1_events.log: " .. err2 .. "\n"); os.exit(1) end
+local kb3_log,   err3  = Logger.open(VAR_DIR .. "/kb3_live.log")
+if not kb3_log then io.stderr:write("FATAL: open kb3_live.log: " .. err3 .. "\n"); os.exit(1) end
+local kb2_log,   err4  = Logger.open(VAR_DIR .. "/kb2_events.log")
+if not kb2_log then io.stderr:write("FATAL: open kb2_events.log: " .. err4 .. "\n"); os.exit(1) end
+local kb4_log,   err5  = Logger.open(VAR_DIR .. "/kb4_events.log")
+if not kb4_log then io.stderr:write("FATAL: open kb4_events.log: " .. err5 .. "\n"); os.exit(1) end
+
+-- KB4 edge-triggered cond_state per (bin_key, direction).
+-- Direction is implicit in the KIND (KB4_SHORT_LOW or KB4_SHORT_HIGH); state
+-- is stored as cond_state[bin_key .. ":" .. kind] = "ok"|"fired".
+-- Resets on robot restart (operator gets a fresh "good morning" alert if a
+-- fault is still active after restart).
+local kb4_cond_state = {}
+
+-- repo_root: explore/ + robot/ sibling. script_dir = robot/, parent = irrigation_analytics/
+local REPO_IRRIGATION = (script_dir:gsub("/+$", "")):match("^(.+)/[^/]+$") or "."
 
 -- ---------------------------------------------------------------------------
 -- Load per-bin curves (KB2 will own this later; we read explore's file).
@@ -94,6 +117,24 @@ do
             "KB1 SHADOW: no curve file at %s — all bins uncalibrated\n",
             CURVES_PATH))
     end
+end
+
+-- ---------------------------------------------------------------------------
+-- Load per-bin baselines.json (KB3 live + KB4 post analyzers).
+-- ---------------------------------------------------------------------------
+local baselines, n_long_bl, n_short_bl, bl_err = Baselines.load(BASELINES_PATH)
+if not baselines then
+    io.stderr:write(string.format(
+        "KB1 SHADOW: baselines load FAILED (%s) — KB3 live disabled: %s\n",
+        bl_err or "?", BASELINES_PATH))
+else
+    local n_kb3_elig = 0
+    for _, v in pairs(baselines.bins) do
+        if v.mode == "long" and v.kb3_eligible then n_kb3_elig = n_kb3_elig + 1 end
+    end
+    io.stderr:write(string.format(
+        "KB1 SHADOW: loaded baselines schema=%s long=%d short=%d kb3_eligible=%d\n",
+        baselines.schema, n_long_bl, n_short_bl, n_kb3_elig))
 end
 
 -- ---------------------------------------------------------------------------
@@ -147,6 +188,7 @@ io.stderr:write(string.format(
 
 local function poll_once()
     local cycle = { t = os.date("!%Y-%m-%dT%H:%M:%SZ") }
+    local pending_kb4 = nil   -- list of bin_keys with STEP_COMPLETE this poll
 
     -- 1) popup
     local popup, perr = Controller.popup_get()
@@ -165,6 +207,8 @@ local function poll_once()
         PLC_IRRIGATION_CURRENT  = popup.PLC_IRRIGATION_CURRENT,
         PLC_EQUIPMENT_CURRENT   = popup.PLC_EQUIPMENT_CURRENT,
         TIME_STAMP              = popup.TIME_STAMP,
+        FILTERED_HUNTER_VALVE   = popup.FILTERED_HUNTER_VALVE,
+        HUNTER_VALVE            = popup.HUNTER_VALVE,
     }
 
     -- 2) past_actions delta
@@ -192,14 +236,32 @@ local function poll_once()
                 step                   = ent.details.step,
                 irr_window             = {},   -- median window for warn-tier
                 last_accepted_ts       = nil,
-                sent_kinds             = {},   -- per-session Discord cooldown
+                -- Edge-triggered Discord: per-(bin, kind) state ok|fired.
+                -- Reset on each new STATION_START. Fires on ok→event,
+                -- suppresses on fired→event, returns to ok when event stops.
+                -- No recovery alerts.
+                cond_state             = {},
+                -- KB3 live detector per-bin sample buffer + run-scoped one-shot
+                kb3                    = { samples = {}, consec = 0, fired = false },
             }
         elseif ent.action == "IRRIGATION_STEP_COMPLETE" then
-            cycle.kb2_would_enable = (cycle.kb2_would_enable or {})
-            cycle.kb2_would_enable[#cycle.kb2_would_enable+1] = {
-                chain = "kb2.update_curve",
-                bin_key = arming and arming.bin_key,
-            }
+            -- Derive bin_key from details (more robust than relying on arming,
+            -- which can be nil if robot started after STATION_START).
+            local bin_key = nil
+            if type(ent.details) == "table" then
+                bin_key = T.canonicalize_io_setup(ent.details.io_setup)
+            end
+            if (not bin_key or bin_key == "?") and arming then
+                bin_key = arming.bin_key
+            end
+            if bin_key and bin_key ~= "?" and baselines then
+                cycle.kb4_step_complete = cycle.kb4_step_complete or {}
+                cycle.kb4_step_complete[#cycle.kb4_step_complete+1] = bin_key
+                -- Defer the actual fetch+process to after the past_actions
+                -- loop so we don't slow down the delta walk. Stash for stage 5b.
+                pending_kb4 = pending_kb4 or {}
+                pending_kb4[#pending_kb4+1] = bin_key
+            end
             arming = nil
         elseif ent.action == "SKIP_OPERATION" then
             arming = nil    -- disarm but no curve update
@@ -220,7 +282,7 @@ local function poll_once()
                 armed_ts         = os.time(),
                 irr_window       = {},
                 last_accepted_ts = nil,
-                sent_kinds       = {},
+                cond_state       = {},   -- edge-triggered per (kind); reset on entering MASTER_IDLE_CHECK
             }
         end
     else
@@ -230,12 +292,86 @@ local function poll_once()
     -- 5) edges (kb2 trigger on RESISTANCE exit)
     local edges = SM.edges(prev_state, state)
     if #edges > 0 then cycle.edges = edges end
+    local kb2_events_this_poll = {}
     for _, ed in ipairs(edges) do
         if ed == "KB2_RUN_RESISTANCE_ANALYSIS" then
-            cycle.kb2_would_enable = (cycle.kb2_would_enable or {})
-            cycle.kb2_would_enable[#cycle.kb2_would_enable+1] = {
-                chain = "kb2.run_resistance_analysis",
-            }
+            io.stderr:write("KB2: RESISTANCE_CHECK exit detected — running analyzer\n")
+            local result, kerr = KB2Post.run_analysis(REPO_IRRIGATION)
+            if not result then
+                io.stderr:write("KB2: analyzer FAILED: " .. tostring(kerr) .. "\n")
+                kb2_log:write({
+                    t = cycle.t, event = "analyzer_failed", error = kerr,
+                })
+            else
+                local ev = KB2Post.event_from_result(result)
+                kb2_log:write({
+                    t            = cycle.t,
+                    event        = "analyzer_ok",
+                    summary      = result.summary,
+                    cohort_stats = result.cohort_stats,
+                    bad          = result.bad,
+                    marginal     = result.marginal,
+                })
+                kb2_events_this_poll[#kb2_events_this_poll+1] = ev
+                io.stderr:write(string.format(
+                    "KB2: analyzed %d valves: %d bad, %d marginal (level=%s)\n",
+                    result.summary and result.summary.n_valves or 0,
+                    ev.n_bad or 0, ev.n_marginal or 0, ev.level))
+            end
+        end
+    end
+
+    -- 5b) KB4 — process each STEP_COMPLETE that fired this poll.
+    -- Fetch the bin's TIME_HISTORY (newest run), reduce, update window,
+    -- score (short only), apply edge-trigger, emit Discord event if flagged.
+    local kb4_events_this_poll = {}
+    local kb4_any_baseline_update = false
+    if pending_kb4 and baselines then
+        for _, bin_key in ipairs(pending_kb4) do
+            local th, terr = Controller.time_history_bin(bin_key)
+            if not th then
+                io.stderr:write(string.format(
+                    "KB4: time_history_bin(%s) failed: %s\n", bin_key, tostring(terr)))
+                kb4_log:write({
+                    t = cycle.t, event = "fetch_failed",
+                    bin_key = bin_key, error = terr,
+                })
+            else
+                local res, kev, kerr = KB4Post.process(
+                    bin_key, baselines, th.flow_data or {}, kb4_cond_state)
+                kb4_log:write({
+                    t          = cycle.t,
+                    bin_key    = bin_key,
+                    mode       = res and res.mode,
+                    reduction  = res and res.reduction,
+                    last       = res and res.last,
+                    new_ref    = res and res.new_ref,
+                    new_ref_mad= res and res.new_ref_mad,
+                    n_runs_total = res and res.n_runs_total,
+                    updated    = res and res.updated,
+                    kind       = res and res.kind,
+                    delta      = res and res.delta,
+                    threshold  = res and res.threshold,
+                    fired_event= kev ~= nil,
+                    error      = kerr,
+                    n_samples  = th.n,
+                })
+                if res and res.updated then
+                    kb4_any_baseline_update = true
+                end
+                if kev then
+                    kb4_events_this_poll[#kb4_events_this_poll+1] = kev
+                    io.stderr:write(string.format(
+                        "KB4 FIRE: %s last=%.2f vs ref=%.2f Δ=%+.2f (%s)\n",
+                        bin_key, res.last, res.ref, res.delta, kev.kind))
+                end
+            end
+        end
+        if kb4_any_baseline_update then
+            local ok, perr = KB4Post.persist(baselines, BASELINES_PATH)
+            if not ok then
+                io.stderr:write("KB4: persist failed: " .. tostring(perr) .. "\n")
+            end
         end
     end
 
@@ -277,6 +413,37 @@ local function poll_once()
         }
     end
 
+    -- 6c) KB3 LIVE flow detector — runs only during ACTIVE_RUN, on accepted samples
+    -- (TIME_STAMP-gated, same cadence as the KB1 median window).
+    local kb3_result = nil
+    if state == SM.states.ACTIVE_RUN and arming and arming.bin_key
+       and sample_accepted and baselines then
+        local bl = Baselines.lookup(baselines, arming.bin_key)
+        local filt = tonumber(popup.FILTERED_HUNTER_VALVE)
+        if bl and filt then
+            kb3_result = KB3Live.update(bl, arming.kb3, filt)
+            if kb3_result then
+                cycle.kb3 = {
+                    bin_key   = arming.bin_key,
+                    eligible  = bl.kb3_eligible,
+                    sample    = kb3_result.sample,
+                    ref       = kb3_result.ref,
+                    err       = kb3_result.err,
+                    threshold = kb3_result.threshold,
+                    consec    = kb3_result.consec,
+                    fired     = kb3_result.fired,
+                    suppressed= kb3_result.suppressed,
+                }
+                if kb3_result.fired then
+                    io.stderr:write(string.format(
+                        "KB3 LIVE FIRE: bin=%s sample=%.2f err=%+.2f consec=%d\n",
+                        arming.bin_key, kb3_result.sample, kb3_result.err,
+                        kb3_result.consec))
+                end
+            end
+        end
+    end
+
     -- 7) evaluate modes
     local events = Modes.evaluate(state, popup, arming, last_sample, {
         now_ts = os.time(),
@@ -284,6 +451,25 @@ local function poll_once()
         irr_median           = irr_median,
         irr_window_n         = irr_window_n,
     }) or {}
+    -- 7b) append KB3 fire as an event so Discord dispatch sees it (one per run
+    -- enforced inside KB3Live; edge-trigger in section 9 is a no-op for it).
+    if kb3_result and kb3_result.fired then
+        events[#events+1] = KB3Live.event(arming.bin_key, baselines and Baselines.lookup(baselines, arming.bin_key),
+                                          arming.kb3, kb3_result)
+    end
+    -- 7c) append KB2 events (RESISTANCE_CHECK completion). One per edge.
+    -- KB2 events bypass edge-trigger cooldown — they're discrete daily-cycle
+    -- summaries, each one fires once.
+    for _, kev in ipairs(kb2_events_this_poll) do
+        events[#events+1] = kev
+    end
+    -- 7d) append KB4 short-bin events. Edge-trigger already applied inside
+    -- KB4Post.process using kb4_cond_state — they bypass the session
+    -- edge-trigger logic in section 9.
+    for _, kev in ipairs(kb4_events_this_poll) do
+        kev._kb4_already_edged = true   -- marker so section 9 skips re-cooldown
+        events[#events+1] = kev
+    end
     if #events > 0 then cycle.events = events end
     -- record warmup remaining for log visibility
     local warmup_left = nil
@@ -309,29 +495,63 @@ local function poll_once()
     } or nil
 
     poll_log:write(cycle)
+    if cycle.kb3 then
+        kb3_log:write({
+            t       = cycle.t,
+            bin_key = cycle.kb3.bin_key,
+            sample  = cycle.kb3.sample,
+            ref     = cycle.kb3.ref,
+            err     = cycle.kb3.err,
+            consec  = cycle.kb3.consec,
+            fired   = cycle.kb3.fired,
+            suppressed = cycle.kb3.suppressed,
+        })
+    end
 
-    -- 9) Discord per event (with per-session cooldown for warn-tier).
-    -- RED events bypass cooldown — hard trips fire every time.
-    -- YELLOW events fire ONCE per (session, kind); the session is
-    -- arming for ACTIVE_RUN events, master_idle for MASTER_IDLE_CHECK
-    -- events, nothing for IDLE-state EQ_WARN (the latter falls through
-    -- as un-suppressible for now).
+    -- 9) Discord per event — EDGE-TRIGGERED cooldown.
+    -- Policy: alert once on ok→fired transition. Suppress while fired.
+    -- Return to ok silently when condition clears (no recovery alert).
+    -- Re-arm on next ok→fired edge.
+    -- State resets per session: arming on STATION_START, master_idle on
+    -- entering MASTER_IDLE_CHECK. IDLE-state events still un-cooldown'd.
     local function session_for(ev)
         if state == SM.states.ACTIVE_RUN then return arming end
         if state == SM.states.MASTER_IDLE_CHECK then return master_idle end
         return nil
     end
+
+    -- (a) Build the set of kinds that fired in THIS poll (KB1/KB3 only; KB4
+    -- events manage their own cond_state inside KB4Post and use _kb4_already_edged)
+    local seen_kinds = {}
+    for _, ev in ipairs(events) do
+        if not ev._kb4_already_edged then
+            seen_kinds[ev.kind] = true
+        end
+    end
+    -- (b) Transition fired→ok for any tracked kind NOT seen this poll
+    local function clear_unseen(sess)
+        if not sess or not sess.cond_state then return end
+        for k, st in pairs(sess.cond_state) do
+            if st == "fired" and not seen_kinds[k] then
+                sess.cond_state[k] = "ok"
+            end
+        end
+    end
+    clear_unseen(arming)
+    clear_unseen(master_idle)
+
+    -- (c) Per-event fire/suppress decision against cond_state
     for _, ev in ipairs(events) do
         local sess = session_for(ev)
         local suppressed = false
-        if ev.level == "YELLOW" and sess and sess.sent_kinds then
-            if sess.sent_kinds[ev.kind] then
-                suppressed = true
+        if not ev._kb4_already_edged and sess and sess.cond_state then
+            if sess.cond_state[ev.kind] == "fired" then
+                suppressed = true   -- still in fault, no re-alert
             end
         end
         local ok, derr
         if suppressed then
-            ok, derr = false, "cooldown_suppressed"
+            ok, derr = false, "edge_suppressed"
         else
             local content = Discord.format_event(ev, {
                 state    = state,
@@ -342,14 +562,14 @@ local function poll_once()
             ok, derr = Discord.send(content, {
                 logger = function(m) io.stderr:write("[discord] " .. m .. "\n") end,
             })
-            if ok and ev.level == "YELLOW" and sess and sess.sent_kinds then
-                sess.sent_kinds[ev.kind] = true
+            if ok and not ev._kb4_already_edged and sess and sess.cond_state then
+                sess.cond_state[ev.kind] = "fired"
             end
         end
         event_log:write({
             event                 = ev,
             sent                  = ok,
-            cooldown_suppressed   = suppressed or nil,
+            edge_suppressed       = suppressed or nil,
             send_err              = (not ok and not suppressed) and derr or nil,
             state                 = state,
             bin_key               = arming and arming.bin_key,
