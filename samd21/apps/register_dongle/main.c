@@ -684,7 +684,7 @@ int main(void) {
     // The chain's only tick-counted timers (heartbeat, BOOT REGISTER retry) are
     // rate-limited to wall-clock in their handlers, so they don't scale with the
     // faster tick. Interlock eval is decoupled onto its own 1 ms gate below.
-    uint32_t next_tick_ms = 50;
+    uint32_t next_tick_ms = 25;
     uint32_t next_il_ms   = 1;
 
     // Host-reattach detection: poll tud_cdc_connected() (DTR line state).
@@ -753,7 +753,7 @@ int main(void) {
         }
 
         if (tree != NULL && (int32_t)(now - next_tick_ms) >= 0) {
-            next_tick_ms += 50;
+            next_tick_ms += 25;
             tick_and_drain(tree);
 
             // Amendment A — pre-overflow SP check. Catches a near-overflow

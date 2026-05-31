@@ -211,7 +211,8 @@ local case_fn = {}
 
 case_fn[1] = function()
     se_case(DONGLE_BOOT, function()
-        -- Phase 2f retry: re-emit OP_REGISTER every ~1 s until ACK arrives.
+        -- Phase 2f retry: re-emit OP_REGISTER until ACK arrives. Chain cycles
+        -- once per tick; send_register wall-clock-gates the emit to ~1/s.
         se_fork(
             function()
                 se_chain_flow(function()
@@ -243,7 +244,7 @@ case_fn[3] = function()
                 se_chain_flow(function()
                     local hb = o_call("send_heartbeat")
                     end_call(hb)
-                    se_tick_delay(3)                -- 1 Hz at 250 ms base
+                    se_tick_delay(3)                -- handler wall-clock-gates to 1 Hz (tick-rate-independent)
                     se_return_pipeline_reset()
                 end)
             end,

@@ -159,6 +159,15 @@ void send_register(s_expr_tree_instance_t* inst,
     (void)inst; (void)params; (void)param_count;
     (void)event_type; (void)event_id; (void)event_data;
 
+    // Wall-clock self-limit: the chain retries this once per tick via
+    // se_tick_delay(0), so at a fast (20 ms) tick it would flood OP_REGISTER.
+    // Cap the on-wire retry to ~1/s regardless of tick rate (mirrors
+    // send_heartbeat). Chain still cycles; we just skip the emit until 1 s.
+    static uint32_t s_last_reg_ms = 0;
+    uint32_t reg_now = (uint32_t)board_millis();
+    if (s_last_reg_ms != 0u && (uint32_t)(reg_now - s_last_reg_ms) < 1000u) return;
+    s_last_reg_ms = reg_now;
+
     uint8_t payload[REGISTER_PAYLOAD_LEN];
     payload[ 0] = (uint8_t)REGISTER_PAYLOAD_VERSION;
     payload[ 1] = (uint8_t)(g_class_id            >>  0);
