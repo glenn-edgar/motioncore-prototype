@@ -679,12 +679,13 @@ int main(void) {
         debug_packet_fn(NULL, il_buf);
     }
 
-    // Engine tick cadence: 250 ms (chain expects 4 ticks/sec).
-    //
-    // Cold-boot OP_REGISTER delivery: Phase 2f moved emission to a retry
-    // loop in the BOOT state's chain. Re-fires every ~1 sec until
-    // OP_REGISTER_ACK arrives, so host attach timing doesn't matter.
-    uint32_t next_tick_ms = 250;
+    // Engine tick cadence: 50 ms (20 ticks/sec) for snappy command latency — a
+    // shell-exec event waits at most one tick before the chain dispatches it.
+    // The chain's only tick-counted timers (heartbeat, BOOT REGISTER retry) are
+    // rate-limited to wall-clock in their handlers, so they don't scale with the
+    // faster tick. Interlock eval is decoupled onto its own 1 ms gate below.
+    uint32_t next_tick_ms = 50;
+    uint32_t next_il_ms   = 1;
 
     // Host-reattach detection: poll tud_cdc_connected() (DTR line state).
     // On false->true edge after a prior true->false drop, push
@@ -740,14 +741,20 @@ int main(void) {
 #endif
 
         uint32_t now = board_millis();
-        if (tree != NULL && (int32_t)(now - next_tick_ms) >= 0) {
-            next_tick_ms += 250;
-            tick_and_drain(tree);
-            // After the chain pump, run the interlock tick. Sequential with
-            // the chain (single-core M0+) means no concurrency to worry
-            // about; the chain's just-drained event queue is now empty so a
-            // freshly-arrived CMD_INTERLOCK_SET won't race with the tick.
+
+        // Interlock eval on a fast ~1 kHz cadence, decoupled from the slow chain
+        // tick — a bounded safety response instead of the chain's command
+        // cadence. Single-core: this runs sequentially with the chain pump, so a
+        // CMD_INTERLOCK_SET dispatched on a chain tick can't race the eval (no
+        // partial-config read; the SET completes fully before the next eval).
+        if (tree != NULL && (int32_t)(now - next_il_ms) >= 0) {
+            next_il_ms += 1;
             interlock_tick_all();
+        }
+
+        if (tree != NULL && (int32_t)(now - next_tick_ms) >= 0) {
+            next_tick_ms += 50;
+            tick_and_drain(tree);
 
             // Amendment A — pre-overflow SP check. Catches a near-overflow
             // BEFORE any deeper call chain can write below _sstack. 256 B

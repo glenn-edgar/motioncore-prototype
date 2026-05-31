@@ -214,6 +214,16 @@ void send_heartbeat(s_expr_tree_instance_t* inst,
     (void)inst; (void)params; (void)param_count;
     (void)event_type; (void)event_id; (void)event_data;
 
+    // Wall-clock rate-limit to ~1 Hz. The chain calls this every chain_flow
+    // cycle, which now scales with the 50 ms engine tick (~5x/sec). The Pi only
+    // needs a 1/sec keepalive, so gate the emit on wall-clock here rather than
+    // retuning the chain's tick_delay (which would need a DSL regen). seq
+    // increments per *emitted* beat, so the Pi sees no gaps.
+    static uint32_t s_last_hb_ms = 0;
+    uint32_t hb_now = (uint32_t)board_millis();
+    if (s_last_hb_ms != 0u && (uint32_t)(hb_now - s_last_hb_ms) < 1000u) return;
+    s_last_hb_ms = hb_now;
+
     uint32_t uptime_ms = (uint32_t)board_millis();
     uint32_t seq       = g_heartbeat_seq++;
 
