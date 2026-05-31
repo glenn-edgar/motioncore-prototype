@@ -56,6 +56,71 @@ manager; the portable brain stays clean and just sees link down→up.
 
 ---
 
+## Client connectivity (how the console — and other clients — reach the bus)
+
+**The bus controller owns the USB device exclusively.** A USB-CDC device admits
+exactly one opener; two processes opening `/dev/ttyACMx` corrupt each other
+(the "stale reply" garbage seen 2026-05-31). So under Plan 1 the console may
+**no longer open the dongle directly** — that is how it works today and it does
+not survive. Clients connect to the **bus controller**, never to the device.
+
+```
+  console ─┐
+  AI       ─┼─►  bus controller  ──in-proc link mgr──►  dongle ──RS-485──► slaves
+  Pi svc   ─┘    (owns the device)
+```
+
+### Two distinct internal boundaries — do not conflate
+- **controller ↔ device** = the USB **link manager**, an *in-process module*
+  (decided above; USB chaos quarantined, one-in-flight sync stays in one loop).
+- **controller ↔ clients** = the **command-source interface**, a real IPC/network
+  boundary. This one *should* be out-of-process and multi-client — it has no
+  one-in-flight-sync problem (just submit/subscribe), and it is what lets plural
+  command sources (console, AI, Pi service, monitor) all use one bus at once. The
+  controller serializes their commands onto the bus (one in flight) and fans async
+  events out to all subscribers.
+
+### Transport for the command-source interface: a local Zenoh container
+Clients connect over **Zenoh** (full zenoh-c, not zenoh-pico — the container has
+the resources; the pico multi-KB-drop limit is a chip constraint, not this).
+Rationale:
+- **Same mechanism local and remote.** A console on the same Pi and an AI several
+  hops away connect identically (Zenoh pub/sub) — no "local socket vs. network"
+  fork in client code. The command-source seam is distance-agnostic.
+- **Fits fleet_design.** The fleet is already Zenoh-internal-only and
+  containerized; the bus controller becomes just another Zenoh citizen, so the
+  existing console/AI/persistence/dashboard get bus access with no new protocol.
+
+### Packaging: a container hosting 1+ dongle interfaces
+One container = one Zenoh session hosting **N bus controllers, one per
+dongle/USB device**, each owning its device exclusively, each namespaced by a
+Zenoh key prefix (e.g. `bus/<dongle_id>/cmd`, `bus/<dongle_id>/event`). Add a
+dongle → add a controller instance in the same container; clients address a
+specific bus by key. Natural horizontal scaling, no new infrastructure. Zenoh is
+the command-source layer ONLY — it does **not** reach down to the device; each
+controller's in-process link manager still owns its dongle.
+
+```
+   clients ──Zenoh──► [ container: bus-ctrl(dongle A), bus-ctrl(dongle B), ... ]
+                              each ──in-proc link mgr──► its dongle ──RS-485──► slaves
+```
+
+### Answers
+- *How does the console connect?* → to the **bus controller** over Zenoh
+  (`bus/<dongle_id>/...`), never to the dongle directly.
+- *Can multiple consoles connect?* → **yes** — many clients to one controller;
+  that multi-client capability is the whole reason command-source is split from
+  controller.
+
+### Caveat / sequencing
+The LuaJIT console must be **refactored** from "opens the device" to "Zenoh client
+of the controller." It is kept as a passive sniffer during early bring-up
+(Phases A–B), and the real console-as-Zenoh-client work lands once the
+command-source interface exists (~Steps 5–6, when there is a controller to be a
+client of).
+
+---
+
 ## Phase A — Pi-side Layer-2 C foundation (against existing firmware)
 
 **Step 0a — Link-endpoint interface + USB link manager.**
