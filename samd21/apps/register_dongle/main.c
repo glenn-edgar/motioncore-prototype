@@ -389,11 +389,13 @@ static void rs485_drain_to_host(void) {
 #define BUS_CONTROLLER_LOCAL_ADDR 0u
 #define BRIDGE_TIMEOUT_MS         1500u   // covers slow HIL (adc_capture ~300ms); < WDT 4s
 
-static bool     g_bridge_pending  = false;
-static uint8_t  g_bridge_slave    = 0;
-static uint32_t g_bridge_deadline = 0;
-static uint8_t  g_bridge_seq      = 0;   // s2m seq toward the Pi
-static uint8_t  g_bridge_req_seq  = 0;   // RS-485 seq toward the slave
+static bool          g_bridge_pending    = false;
+static uint8_t       g_bridge_slave      = 0;
+static uint32_t      g_bridge_deadline   = 0;
+static uint8_t       g_bridge_seq        = 0;   // s2m seq toward the Pi
+static uint8_t       g_bridge_req_seq    = 0;   // RS-485 seq toward the slave
+static rs485_frame_t g_bridge_reply;            // buffered slave reply awaiting USB
+static bool          g_bridge_have_reply = false;
 
 // Called from rx_drain when a Pi frame addressed to a slave arrives. `exec` is
 // the OP_SHELL_EXEC body; we wrap it as a DATA frame payload [opcode][body] and
@@ -416,24 +418,42 @@ static void bridge_start(uint8_t slave, const uint8_t* exec, uint8_t exec_len) {
 // Called every main-loop iteration. Relays the slave reply, or NAKs on timeout.
 static void rs485_bridge_poll(void) {
     if (!g_bridge_pending) return;
+
+    // A reply is received but its USB frame didn't fit the TX ring yet — retry
+    // until the ring drains. frame_encode_s2m rolls back fully on a full ring,
+    // so a large relay frame is otherwise silently dropped (small ones fit, the
+    // ~70 B interlock_status reply doesn't when chain logs partly fill the ring).
+    if (g_bridge_have_reply) {
+        uint16_t opcode = (uint16_t)g_bridge_reply.payload[0]
+                        | ((uint16_t)g_bridge_reply.payload[1] << 8);
+        frame_meta_t meta = {
+            .addr        = g_bridge_slave,
+            .cmd         = opcode,
+            .seq         = g_bridge_seq,
+            .ack_seq     = 0,
+            .ack_status  = 0,
+            .payload_len = (uint8_t)(g_bridge_reply.len - 2u),
+        };
+        if (frame_encode_s2m(&meta, &g_bridge_reply.payload[2], &g_tx_ring) == 0) {
+            g_bridge_seq++;
+            g_bridge_have_reply = false;
+            g_bridge_pending    = false;
+        } else if ((int32_t)(board_millis() - g_bridge_deadline) >= 0) {
+            g_bridge_have_reply = false;   // ring stuck full past deadline — drop
+            g_bridge_pending    = false;
+        }
+        return;
+    }
+
     rs485_frame_t f;
     if (rs485_recv(&f)
         && (f.type & RS485_FT_MASK) == RS485_FT_DATA
         && f.src == g_bridge_slave
         && f.len >= 2u) {
-        // DATA payload = [opcode:u16-LE][body]; relay the body to the Pi tagged
-        // with the slave addr and the slave's own opcode (OP_SHELL_REPLY/EVENT/…).
-        uint16_t opcode = (uint16_t)f.payload[0] | ((uint16_t)f.payload[1] << 8);
-        frame_meta_t meta = {
-            .addr        = g_bridge_slave,        // tells the Pi which slave answered
-            .cmd         = opcode,
-            .seq         = g_bridge_seq++,
-            .ack_seq     = 0,
-            .ack_status  = 0,
-            .payload_len = (uint8_t)(f.len - 2u),
-        };
-        (void)frame_encode_s2m(&meta, &f.payload[2], &g_tx_ring);
-        g_bridge_pending = false;
+        // DATA payload = [opcode:u16-LE][body]; buffer it; the block above relays
+        // it to the Pi, retrying while the USB ring is momentarily full.
+        g_bridge_reply      = f;
+        g_bridge_have_reply = true;
     } else if ((int32_t)(board_millis() - g_bridge_deadline) >= 0) {
         // Dead/slow slave — relay OP_NAK { reason, rejected_cmd } to the Pi.
         uint8_t nak[3] = {
@@ -761,14 +781,22 @@ int main(void) {
             }
         }
 
-        // Drain a chunk of the TX ring to CDC every loop. CFG_TUD_CDC_TX_BUFSIZE
-        // is 64 B; sizing buf to 64 B keeps each drain within one write.
+        // Drain the TX ring to CDC every loop, but ONLY as many bytes as the CDC
+        // FIFO will accept this instant. Draining a fixed 64 B and ignoring
+        // tud_cdc_write()'s return silently drops the overflow (the bytes are
+        // already gone from g_tx_ring) — which shreds a large frame that spans a
+        // partly-full FIFO while small frames fit. Pulling exactly write_available
+        // bytes keeps every frame intact; the rest stays queued for next loop.
         if (tud_cdc_connected()) {
-            uint8_t buf[64];
-            uint32_t n = frame_ring_read_drain(&g_tx_ring, buf, sizeof(buf));
-            if (n > 0) {
-                tud_cdc_write(buf, n);
-                tud_cdc_write_flush();
+            uint32_t avail = tud_cdc_write_available();
+            if (avail > 0) {
+                uint8_t buf[64];
+                if (avail > sizeof(buf)) avail = sizeof(buf);
+                uint32_t n = frame_ring_read_drain(&g_tx_ring, buf, avail);
+                if (n > 0) {
+                    tud_cdc_write(buf, n);   // n <= avail, fully accepted
+                    tud_cdc_write_flush();
+                }
             }
         }
 

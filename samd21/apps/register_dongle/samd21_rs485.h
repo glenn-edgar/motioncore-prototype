@@ -75,6 +75,14 @@ void rs485_send(uint8_t dest, uint8_t src, uint8_t type, uint8_t seq,
 // repeatedly until false.
 bool rs485_recv(rs485_frame_t* out);
 
+// Discard all buffered RX (ring + half-assembled frame). Call before listening
+// for a reply so stale/idle ring contents can't complete a transaction early.
+void rs485_rx_flush(void);
+
 // Diagnostics.
 uint32_t rs485_rx_overrun_count(void);  // BUFOVF/FERR/PERR or ring-full drops
 uint32_t rs485_crc_fail_count(void);    // frames dropped on CRC mismatch
+uint32_t rs485_rx_word_count(void);     // good words stored to ring (traffic heard)
+uint32_t rs485_frames_ok_count(void);   // CRC-valid frames addressed to us
+uint32_t rs485_tx_frame_count(void);    // frames passed to rs485_send
+uint8_t  rs485_last_tx_len(void);       // payload len of the most recent TX frame

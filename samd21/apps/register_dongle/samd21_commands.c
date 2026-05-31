@@ -941,6 +941,21 @@ static uint8_t cmd_rs485_send_frame(shell_reader_t* args, shell_writer_t* result
     return SHELL_STATUS_OK;
 }
 
+// args: none
+// reply: rx_words:u32, frames_ok:u32, crc_fail:u32, overrun:u32, tx_frames:u32,
+//        last_tx_len:u8
+static uint8_t cmd_rs485_stats(shell_reader_t* args, shell_writer_t* result) {
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    sw_u32(result, rs485_rx_word_count());
+    sw_u32(result, rs485_frames_ok_count());
+    sw_u32(result, rs485_crc_fail_count());
+    sw_u32(result, rs485_rx_overrun_count());
+    sw_u32(result, rs485_tx_frame_count());
+    sw_u8(result, rs485_last_tx_len());
+    if (result->overflow) return SHELL_STATUS_RESULT_TOO_BIG;
+    return SHELL_STATUS_OK;
+}
+
 // ---------- CMD_TEST_HANG -------------------------------------------------
 // Layer-2 WDT bench probe. Disables IRQs and spins; the layer-2 WDT bites
 // after ~4 s and the chip resets. Never returns a reply frame.
@@ -1075,6 +1090,7 @@ static const shell_cmd_entry_t g_chip_commands[] = {
 #endif
     { CMD_RS485_CONFIG,        "rs485_config",       cmd_rs485_config       },
     { CMD_RS485_SEND_FRAME,    "rs485_send_frame",   cmd_rs485_send_frame   },
+    { CMD_RS485_STATS,         "rs485_stats",        cmd_rs485_stats        },
 #if !defined(ROLE_BUS_CONTROLLER)
     { CMD_TEST_HANG,           "test_hang",          cmd_test_hang          },
     { CMD_INTERLOCK_STATUS,    "interlock_status",   cmd_interlock_status   },

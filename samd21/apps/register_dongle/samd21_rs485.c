@@ -57,6 +57,10 @@ static volatile uint16_t s_rx_head;    // ISR writes
 static volatile uint16_t s_rx_tail;    // main loop reads
 static volatile uint32_t s_rx_overrun; // BUFOVF / ring-full count (diagnostic)
 static volatile uint32_t s_crc_fail;   // frames dropped on CRC mismatch
+static volatile uint32_t s_rx_words;   // good words stored to ring (any traffic heard)
+static uint32_t          s_frames_ok;  // CRC-valid frames returned by rs485_recv
+static uint32_t          s_tx_frames;  // frames passed to rs485_send
+static uint8_t           s_last_tx_len; // payload len of the most recent TX frame
 static volatile uint16_t s_tx_skip;    // self-echo words left to discard (ISR--)
 
 // Listen address. 0xFF = sniffer / listen-all (accept any dest byte).
@@ -185,6 +189,8 @@ static void rs485_tx_word(uint16_t word9) {
 void rs485_send(uint8_t dest, uint8_t src, uint8_t type, uint8_t seq,
                 const uint8_t* payload, uint8_t len) {
     if (len > RS485_PAYLOAD_MAX) len = RS485_PAYLOAD_MAX;
+    s_tx_frames++;
+    s_last_tx_len = len;
     uint8_t crc = frame_crc(dest, src, type, seq, len, payload);
 
     // Arm self-echo discard BEFORE the first byte can echo back. Word count =
@@ -245,8 +251,20 @@ void SERCOM4_Handler(void) {
         } else {
             s_rx_ring[s_rx_head] = word9;
             s_rx_head = next;
+            s_rx_words++;            // a clean word reached the ring
         }
     }
+}
+
+// Discard all buffered RX (ring + half-assembled frame). The master calls this
+// at the start of a bridge transaction so it listens for the slave's reply with
+// a clean ring, never completing on stale frames that accumulated while idle
+// (the master only drains during a transaction, so the ring fills between them).
+void rs485_rx_flush(void) {
+    __disable_irq();
+    s_rx_tail = s_rx_head;
+    __enable_irq();
+    s_asm_state = ASM_IDLE;
 }
 
 // Pop one 9-bit word from the ring. Returns false if empty.
@@ -306,6 +324,7 @@ bool rs485_recv(rs485_frame_t* out) {
             s_asm_state = ASM_IDLE;
             if (calc == b) {
                 *out = s_asm;
+                s_frames_ok++;
                 return true;
             }
             s_crc_fail++;            // mismatch -> drop; resync on next address
@@ -323,3 +342,7 @@ bool rs485_recv(rs485_frame_t* out) {
 
 uint32_t rs485_rx_overrun_count(void) { return s_rx_overrun; }
 uint32_t rs485_crc_fail_count(void)   { return s_crc_fail; }
+uint32_t rs485_rx_word_count(void)    { return s_rx_words; }
+uint32_t rs485_frames_ok_count(void)  { return s_frames_ok; }
+uint32_t rs485_tx_frame_count(void)   { return s_tx_frames; }
+uint8_t  rs485_last_tx_len(void)      { return s_last_tx_len; }

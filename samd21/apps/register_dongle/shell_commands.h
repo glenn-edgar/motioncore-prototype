@@ -149,6 +149,9 @@ const shell_cmd_entry_t* shell_find_cmd(uint16_t command_id);
 //   Emits 0xFF preamble + [addr|bit8] + [len] + payload on the wire.
 #define CMD_RS485_CONFIG      ((uint16_t)0x0150)
 #define CMD_RS485_SEND_FRAME  ((uint16_t)0x0151)
+// CMD_RS485_STATS  args: none  reply: rx_words:u32, frames_ok:u32, crc_fail:u32,
+//   overrun:u32  — bus-health counters for bring-up + production diagnostics.
+#define CMD_RS485_STATS       ((uint16_t)0x0152)
 
 // GPIO mode codes for CMD_GPIO_CONFIG.
 #define GPIO_MODE_INPUT          0u
