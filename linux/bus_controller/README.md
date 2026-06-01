@@ -64,4 +64,16 @@ same controller object.
   controller captured REGISTER in BOOT and decoded full identity (role from
   class_id, instance, commissioning, fw version, UID). Reusable `controller`/
   `identity` core established.
-- Next: Step 2 (sync ladder ported into the controller + auto-resync on link-up).
+- **Step 2 — sync ladder + auto-resync: DONE.** Hardware-verified on both roles
+  (slave inst 1, bus_controller inst 42): controller drives
+  BOOT→L1_ACKED→MANIFEST_OK→OPERATIONAL itself, captures the manifest
+  (schema_hash 0x80AEB146), and on a dongle reset re-runs the ladder back to
+  OPERATIONAL with no program restart — riding the USB re-enumeration via the
+  link manager's scan mode. Self-healing: every REGISTER re-triggers the ACK.
+- Next: Step 3 (roster load/recall + push sweep list to the BC via CMD_BUS_*).
+
+## Known follow-ups
+- **Device pinning:** with multiple dongles, scan-grabs-first-`/dev/ttyACM*` is
+  ambiguous after a re-enumeration swap. Pin each controller to a stable
+  `/dev/serial/by-id/...` path keyed by dongle id / chip serial when packaging the
+  per-dongle procedure shell (see docs/plan-1-pi-bus-controller.md).
