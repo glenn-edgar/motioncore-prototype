@@ -651,9 +651,13 @@ static void bus_poll_engine(void) {
         if (g_cmd_state == CMD_QUEUED) {
             // Inject the queued command into this slot instead of a routine POLL.
             // Its reply (a DATA frame) is captured in POLL_WAIT and relayed.
+            // Non-blocking TX (4b-ii step 1): the BC transmits via the interrupt
+            // driver. If the engine is still draining a prior frame, retry next
+            // pass (shouldn't happen at the poll cadence). rx_flush already ran.
+            if (!rs485_tx_async_start(g_cmd_slave, BUS_CONTROLLER_LOCAL_ADDR,
+                                      RS485_FT_DATA, ++g_poll_seq, g_cmd_buf, g_cmd_len))
+                return;
             g_poll_cur_addr = g_cmd_slave;
-            rs485_send(g_cmd_slave, BUS_CONTROLLER_LOCAL_ADDR, RS485_FT_DATA,
-                       ++g_poll_seq, g_cmd_buf, g_cmd_len);
             g_cmd_state     = CMD_SENT;
             g_poll_deadline = now + CMD_WINDOW_TIMEOUT_MS;
             g_poll_state    = POLL_WAIT;
@@ -661,8 +665,10 @@ static void bus_poll_engine(void) {
         }
         const bus_slave_t* s = bus_roster_next_enabled(&g_poll_cursor);
         if (s == NULL) { g_poll_next_ms = now + cfg->poll_period_ms; return; }
+        if (!rs485_tx_async_start(s->addr, BUS_CONTROLLER_LOCAL_ADDR,
+                                  RS485_FT_POLL, ++g_poll_seq, NULL, 0))
+            return;
         g_poll_cur_addr = s->addr;
-        rs485_send(s->addr, BUS_CONTROLLER_LOCAL_ADDR, RS485_FT_POLL, ++g_poll_seq, NULL, 0);
         g_poll_deadline = now + POLL_SLOT_TIMEOUT_MS;
         g_poll_state    = POLL_WAIT;
         return;
