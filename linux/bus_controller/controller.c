@@ -239,8 +239,10 @@ static void on_event(void *user, const frame_meta_t *meta, const uint8_t *payloa
         break;
 
     case OP_BUS_SLAVE_FLAGGED_:  // [addr:u8][flags:u8]
-        if (meta->payload_len >= 2 && c->flagged_cb)
-            c->flagged_cb(c->flagged_user, payload[0], payload[1]);
+        if (meta->payload_len >= 2) {
+            cmd_tracker_on_flagged(c->tracker, payload[0], payload[1]);  // 7a: cache + gate
+            if (c->flagged_cb) c->flagged_cb(c->flagged_user, payload[0], payload[1]);
+        }
         break;
 
     case OP_BUS_CMD_ACK_:        // [addr:u8][req_id:u16] — slave ACK'd; bus freed
@@ -424,4 +426,10 @@ uint8_t controller_slave_qdepth(const controller_t *c, uint8_t addr) {
 
 uint32_t controller_total_acks(const controller_t *c) {
     return cmd_tracker_total_acks(c->tracker);
+}
+
+int controller_interlock_state(const controller_t *c, uint8_t addr, uint8_t *flags) {
+    int tripped = 0;
+    if (!cmd_tracker_interlock(c->tracker, addr, &tripped, flags)) return -1;  // unknown
+    return tripped ? 1 : 0;
 }

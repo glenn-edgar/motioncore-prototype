@@ -137,6 +137,12 @@ uint8_t          controller_slave_qdepth(const controller_t *c, uint8_t addr);
 // 6b: total command-ACKs seen (each = a slave freed the bus before executing).
 uint32_t         controller_total_acks(const controller_t *c);
 
+// 7a: read the L2 interlock buffer for a slave. Returns 1 tripped / 0 ok / -1
+// unknown (no flagged update seen yet); *flags (if non-NULL) gets the raw summary
+// flags. While tripped, the slave's command queue is held (state -> FAULTED); a
+// clear/safety command can still be sent via controller_send_shell_to (ungated).
+int              controller_interlock_state(const controller_t *c, uint8_t addr, uint8_t *flags);
+
 // 1 once a REGISTER has been parsed since the last link-up; 0 otherwise
 // (identity is cleared on link-down and re-learned on reconnect).
 int                      controller_has_identity(const controller_t *c);

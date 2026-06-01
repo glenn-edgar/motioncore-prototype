@@ -14,7 +14,13 @@
 //           WIRE so the slave self-aborts too.)
 //       NAK (slave busy) -> bounded resend. ACK/NAK are fed in from the BC's
 //       OP_BUS_CMD_ACK / OP_BUS_CMD_NAK events.
-//   7a: CMD_SLOT_FAULTED gates the queue when a slave's interlock trips.
+//   7a (now): the tracker caches each slave's interlock summary (from the BC's
+//       OP_BUS_SLAVE_FLAGGED edges) — a readable L2 buffer — and CMD_SLOT_FAULTED
+//       GATES the per-slave queue while an interlock is tripped: queued commands
+//       hold (an already-in-flight one finishes), and resume when the trip clears.
+//       A "clear/safety" command can still reach the slave via the non-tracker
+//       path (controller_send_shell_to), which is not gated — the supervisor/
+//       policy layer above L2 decides what bypasses the gate.
 //
 // Pure portable C: depends only on demux.h, so it lifts to an M33/M7 unchanged.
 
@@ -72,6 +78,16 @@ uint32_t cmd_tracker_submit(cmd_tracker_t *t, uint8_t addr, uint16_t command_id,
 // ACK: SENT -> INFLIGHT (bus freed, exec clock starts). NAK: bounded resend.
 void cmd_tracker_on_ack(cmd_tracker_t *t, uint8_t addr, uint16_t req_id);
 void cmd_tracker_on_nak(cmd_tracker_t *t, uint8_t addr, uint16_t req_id);
+
+// 7a: feed the BC's interlock summary edge (OP_BUS_SLAVE_FLAGGED [addr][flags]).
+// Caches flags; faults the slot (gates the queue) while bit0 (tripped) is set, and
+// resumes (re-pumps) when it clears.
+void cmd_tracker_on_flagged(cmd_tracker_t *t, uint8_t addr, uint8_t flags);
+
+// 7a: read the cached interlock summary. Returns 1 if a flagged update has been
+// seen for addr (then *tripped = bit0, *flags = raw); 0 if unknown. NULL outs ok.
+int  cmd_tracker_interlock(const cmd_tracker_t *t, uint8_t addr,
+                           int *tripped, uint8_t *flags);
 
 // Pump every slot: send queued work on idle slots, and sweep the ACK-timeout /
 // exec-deadline timers. `now_ms` is a monotonic millisecond clock. Call often.

@@ -35,6 +35,11 @@ typedef struct {
     uint64_t         sent_ms;              // when (re)SENT — ACK-timeout clock
     uint64_t         ack_ms;               // when ACK seen — exec-deadline clock
     int              retries;              // ACK-timeout / NAK resends used
+
+    // 7a: interlock summary cache + queue gate.
+    int              il_known;             // a flagged update has been seen
+    uint8_t          il_flags;             // raw summary flags (bit0 = tripped)
+    int              faulted;              // hold the queue while tripped
 } slot_t;
 
 struct cmd_tracker {
@@ -94,6 +99,7 @@ static int send_inflight(cmd_tracker_t *t, slot_t *s) {
 
 // Idle slot with queued work -> dequeue the front into inflight and send it.
 static void pump_slot(cmd_tracker_t *t, slot_t *s) {
+    if (s->faulted) return;              // 7a: interlock tripped -> hold the queue
     if (s->state != CMD_SLOT_IDLE || s->qn == 0) return;
     s->inflight     = s->q[s->qh];       // peek+copy front
     s->has_inflight = 1;
@@ -198,6 +204,30 @@ void cmd_tracker_on_nak(cmd_tracker_t *t, uint8_t addr, uint16_t req_id) {
     else { complete_inflight(s, CMD_STATUS_BUSY, NULL, 0); pump_slot(t, s); }
 }
 
+void cmd_tracker_on_flagged(cmd_tracker_t *t, uint8_t addr, uint8_t flags) {
+    slot_t *s = slot_for(t, addr);
+    if (!s) return;
+    s->il_known = 1;
+    s->il_flags = flags;
+    int tripped = (flags & 0x01u) ? 1 : 0;
+    int was     = s->faulted;
+    s->faulted  = tripped;
+    if (was && !tripped) pump_slot(t, s);   // trip cleared -> resume the held queue
+}
+
+int cmd_tracker_interlock(const cmd_tracker_t *t, uint8_t addr,
+                          int *tripped, uint8_t *flags) {
+    for (int i = 0; i < SLOT_MAX; i++) {
+        if (t->slots[i].in_use && t->slots[i].addr == addr) {
+            if (!t->slots[i].il_known) return 0;
+            if (tripped) *tripped = (t->slots[i].il_flags & 0x01u) ? 1 : 0;
+            if (flags)   *flags   = t->slots[i].il_flags;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void cmd_tracker_poll(cmd_tracker_t *t, uint64_t now_ms) {
     t->now = now_ms;
     for (int i = 0; i < SLOT_MAX; i++) {
@@ -222,7 +252,9 @@ void cmd_tracker_poll(cmd_tracker_t *t, uint64_t now_ms) {
 
 cmd_slot_state_t cmd_tracker_state(const cmd_tracker_t *t, uint8_t addr) {
     for (int i = 0; i < SLOT_MAX; i++)
-        if (t->slots[i].in_use && t->slots[i].addr == addr) return t->slots[i].state;
+        if (t->slots[i].in_use && t->slots[i].addr == addr)
+            // 7a: a tripped interlock is the dominant client-visible condition.
+            return t->slots[i].faulted ? CMD_SLOT_FAULTED : t->slots[i].state;
     return CMD_SLOT_IDLE;
 }
 
