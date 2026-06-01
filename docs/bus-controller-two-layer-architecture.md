@@ -83,6 +83,34 @@ command source among many local processes** (M33/M7) → **remote command source
 over Zenoh** (thread device). The bus controller is a **role, not a location** —
 the same insight as the four-chip dongle pivot, applied to the controller brain.
 
+**The host is not necessarily a Pi.** Both the Arduino Giga and the Teensy expose
+a **host USB 2 port**, so either can enumerate a downstream SAMD21 dongle over
+USB-CDC and run the controller itself. The "Pi C process" row above is really
+"any host-USB-capable device running the procedure shell" — Pi, Giga-as-host, or
+Teensy-as-host all play the same part. Tier 1 (slow SAMD21 bus, hosted over USB)
+and tier 2 (heavy M33/M7 dongle) therefore overlap: a heavy dongle can *be* the
+USB host of a SAMD21 bus rather than only being a bus peripheral itself.
+
+### Layer 2 = a C routine + a per-platform "procedure shell"
+
+Layer 2 splits cleanly into a portable **core C routine** (roster · scheduler ·
+demux · retry · command-source interface) and a thin **procedure shell** that
+wraps it for the platform. The shell does the platform-specific lifecycle: open
+the link endpoint, bind the command-source transport, load config, run the event
+loop. The *routine* never changes across tiers; only the *shell* does.
+
+- **On Linux: one procedure (OS process) per dongle, configurable by dongle id.**
+  Each process owns exactly one device, runs one controller routine, and is
+  parameterized by its dongle id (which device, which roster, which Zenoh
+  namespace). Add a dongle → launch another procedure. (This supersedes the
+  earlier "one process hosting N controllers" packaging: one process *per*
+  dongle, not N controllers in one process — cleaner isolation, independent
+  restart, and the dongle id is the single config key.)
+- **On a heavy dongle (Giga/Teensy): the shell is the firmware task** hosting the
+  same routine; the link endpoint is a function call instead of USB.
+- **On a thread/Zenoh device: the shell is the node** hosting the routine; the
+  link endpoint is the network shim.
+
 ## 5. The portability keystone — the escalation queue
 
 The contract by which the ISR sweep hands content up to Layer 2:

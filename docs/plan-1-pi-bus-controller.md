@@ -91,19 +91,31 @@ Rationale:
   containerized; the bus controller becomes just another Zenoh citizen, so the
   existing console/AI/persistence/dashboard get bus access with no new protocol.
 
-### Packaging: a container hosting 1+ dongle interfaces
-One container = one Zenoh session hosting **N bus controllers, one per
-dongle/USB device**, each owning its device exclusively, each namespaced by a
-Zenoh key prefix (e.g. `bus/<dongle_id>/cmd`, `bus/<dongle_id>/event`). Add a
-dongle → add a controller instance in the same container; clients address a
-specific bus by key. Natural horizontal scaling, no new infrastructure. Zenoh is
-the command-source layer ONLY — it does **not** reach down to the device; each
-controller's in-process link manager still owns its dongle.
+### Packaging: a C routine wrapped in a per-platform procedure shell
+The portable Layer-2 brain is a **core C routine** (roster · scheduler · demux ·
+retry · command-source interface). What wraps it is a thin **procedure shell**
+that does platform lifecycle (open link, bind command source, load config, run
+the loop). The routine is identical on every tier; only the shell changes.
+
+**On Linux: one procedure (OS process) per dongle, configurable by dongle id.**
+Each process owns exactly one device, runs one controller routine, and is
+parameterized by its dongle id — which device to open, which roster to recall,
+which Zenoh namespace (`bus/<dongle_id>/cmd|event`) to bind. Add a dongle →
+launch another procedure. This is **one process per dongle**, not N controllers
+in one process: independent restart/crash isolation, and the dongle id is the
+single config key. Its in-process link manager owns its device; Zenoh is the
+command-source layer only and never reaches the device.
 
 ```
-   clients ──Zenoh──► [ container: bus-ctrl(dongle A), bus-ctrl(dongle B), ... ]
-                              each ──in-proc link mgr──► its dongle ──RS-485──► slaves
+   clients ──Zenoh──► [ proc: bus-ctrl(dongle A) ]  ──in-proc link mgr──► dongle A ──► slaves
+                   └─► [ proc: bus-ctrl(dongle B) ]  ──in-proc link mgr──► dongle B ──► slaves
 ```
+
+A container can group these per-dongle procedures (sharing one Zenoh session),
+but the unit of configuration and lifecycle is **the procedure, keyed by dongle
+id**. The host need not be a Pi: the Arduino Giga and Teensy both have a **host
+USB 2 port**, so either can run the same procedure shell and host a downstream
+SAMD21 dongle over USB-CDC.
 
 ### Answers
 - *How does the console connect?* → to the **bus controller** over Zenoh
