@@ -5,13 +5,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SLOT_MAX  16   // == ROSTER_MAX_SLAVES
+#define SLOT_MAX         16     // == ROSTER_MAX_SLAVES
+#define ACK_TIMEOUT_MS   1500u  // submit -> ACK (covers a poll period + USB relay)
+#define MAX_ACK_RETRIES  2      // ACK-timeout / NAK resends before giving up
+#define EXEC_MARGIN_MS   1000u  // L2 exec deadline = exec_timeout_ms + this (after ACK)
 
 typedef struct {
     uint32_t    handle;
     uint16_t    command_id;
     uint16_t    args_len;
-    uint32_t    exec_timeout_ms;   // stored; 6b puts it on the wire + enforces it
+    uint32_t    exec_timeout_ms;
     cmd_done_cb on_done;
     void       *user;
     uint8_t     args[CMD_ARG_MAX];
@@ -24,19 +27,22 @@ typedef struct {
     cmd_slot_state_t state;
 
     cmd_entry_t      q[CMD_QUEUE_DEPTH];   // bounded FIFO ring
-    int              qh;                   // head index
-    int              qn;                   // count
+    int              qh, qn;
 
-    uint32_t         inflight_handle;
-    uint16_t         inflight_rid;         // demux request_id (stale-reply guard)
-    cmd_done_cb      inflight_done;
-    void            *inflight_user;
+    int              has_inflight;         // the command currently SENT/INFLIGHT
+    cmd_entry_t      inflight;
+    uint16_t         inflight_rid;         // current demux request_id (stale guard)
+    uint64_t         sent_ms;              // when (re)SENT — ACK-timeout clock
+    uint64_t         ack_ms;               // when ACK seen — exec-deadline clock
+    int              retries;              // ACK-timeout / NAK resends used
 } slot_t;
 
 struct cmd_tracker {
     demux_t  *dx;
     slot_t    slots[SLOT_MAX];
     uint32_t  next_handle;
+    uint64_t  now;                 // last clock from cmd_tracker_poll (used by sends)
+    uint32_t  total_acks;
 };
 
 static slot_t *slot_for(cmd_tracker_t *t, uint8_t addr) {
@@ -48,50 +54,62 @@ static slot_t *slot_for(cmd_tracker_t *t, uint8_t addr) {
 static void clear_slot(slot_t *s) {
     cmd_tracker_t *owner = s->owner;
     memset(s, 0, sizeof *s);
-    s->owner = owner;            // preserve the back-pointer across a wipe
+    s->owner = owner;
     s->state = CMD_SLOT_IDLE;
 }
 
-// Try to send the head-of-queue command if the slot is idle. On a transient send
-// failure (link down / pending table full) the command stays queued and is retried
-// on the next pump — never silently dropped.
+static void complete_inflight(slot_t *s, uint8_t status,
+                              const uint8_t *result, uint16_t len) {
+    if (!s->has_inflight) return;
+    cmd_done_cb cb = s->inflight.on_done;
+    void    *u     = s->inflight.user;
+    uint32_t h     = s->inflight.handle;
+    uint8_t  addr  = s->addr;
+    s->has_inflight = 0;
+    s->inflight_rid = 0;
+    s->state        = CMD_SLOT_IDLE;
+    if (cb) cb(u, h, addr, status, result, len);
+}
+
 static void on_tracker_reply(void *user, uint16_t rid, uint8_t status,
                              const uint8_t *result, uint16_t len);
 
-static void pump_slot(cmd_tracker_t *t, slot_t *s) {
-    if (s->state != CMD_SLOT_IDLE || s->qn == 0) return;
-    cmd_entry_t *e = &s->q[s->qh];                 // peek front (don't pop until sent)
+// (Re)transmit s->inflight; -> SENT, restart the ACK clock. Used for both the
+// first send (from pump) and ACK-timeout / NAK resends.
+static int send_inflight(cmd_tracker_t *t, slot_t *s) {
+    cmd_entry_t *e = &s->inflight;
     uint16_t rid = demux_send_shell_to(t->dx, s->addr, e->command_id,
                                        e->args, e->args_len, on_tracker_reply, s);
-    if (rid == 0xFFFF) return;                     // keep queued; retry next pump
-    s->inflight_handle = e->handle;
-    s->inflight_rid    = rid;
-    s->inflight_done   = e->on_done;
-    s->inflight_user   = e->user;
-    s->state           = CMD_SLOT_INFLIGHT;
-    s->qh = (s->qh + 1) % CMD_QUEUE_DEPTH;         // pop
+    s->sent_ms = t->now;                 // restart the ACK clock either way
+    if (rid == 0xFFFF) return -1;        // link down / table full: poll retries
+    s->inflight_rid = rid;
+    s->state        = CMD_SLOT_SENT;
+    s->ack_ms       = 0;
+    return 0;
+}
+
+// Idle slot with queued work -> dequeue the front into inflight and send it.
+static void pump_slot(cmd_tracker_t *t, slot_t *s) {
+    if (s->state != CMD_SLOT_IDLE || s->qn == 0) return;
+    s->inflight     = s->q[s->qh];       // peek+copy front
+    s->has_inflight = 1;
+    s->retries      = 0;
+    if (send_inflight(t, s) != 0) {      // transient failure: keep it queued
+        s->has_inflight = 0;
+        return;
+    }
+    s->qh = (s->qh + 1) % CMD_QUEUE_DEPTH;
     s->qn--;
 }
 
 static void on_tracker_reply(void *user, uint16_t rid, uint8_t status,
                              const uint8_t *result, uint16_t len) {
     slot_t *s = (slot_t *)user;
-    // Stale/duplicate guard: only resolve the command this slot currently awaits.
-    if (s->state != CMD_SLOT_INFLIGHT || rid != s->inflight_rid) return;
-
-    uint32_t handle = s->inflight_handle;
-    cmd_done_cb cb  = s->inflight_done;
-    void       *u   = s->inflight_user;
-    uint8_t     addr = s->addr;
-
-    s->state           = CMD_SLOT_IDLE;
-    s->inflight_handle = 0;
-    s->inflight_rid    = 0;
-    s->inflight_done   = NULL;
-    s->inflight_user   = NULL;
-
-    if (cb) cb(u, handle, addr, status, result, len);   // caller may submit more here
-    pump_slot(s->owner, s);                              // then advance the queue
+    // Stale guard: a reply (or a demux timeout/link-down) for a command this slot
+    // no longer awaits — e.g. one the tracker already resent or timed out.
+    if (!s->has_inflight || rid != s->inflight_rid) return;
+    complete_inflight(s, status, result, len);   // -> IDLE; caller may submit more
+    pump_slot(s->owner, s);                       // advance the queue
 }
 
 cmd_tracker_t *cmd_tracker_create(demux_t *dx) {
@@ -109,10 +127,7 @@ void cmd_tracker_reset(cmd_tracker_t *t, uint8_t abort_status) {
     for (int i = 0; i < SLOT_MAX; i++) {
         slot_t *s = &t->slots[i];
         if (!s->in_use) continue;
-        // Complete the in-flight command, then everything still queued, so no
-        // caller is left waiting on a handle that will never resolve.
-        if (s->state == CMD_SLOT_INFLIGHT && s->inflight_done)
-            s->inflight_done(s->inflight_user, s->inflight_handle, s->addr, abort_status, NULL, 0);
+        if (s->has_inflight) complete_inflight(s, abort_status, NULL, 0);
         while (s->qn > 0) {
             cmd_entry_t *e = &s->q[s->qh];
             if (e->on_done) e->on_done(e->user, e->handle, s->addr, abort_status, NULL, 0);
@@ -124,7 +139,7 @@ void cmd_tracker_reset(cmd_tracker_t *t, uint8_t abort_status) {
 }
 
 int cmd_tracker_add_slave(cmd_tracker_t *t, uint8_t addr) {
-    if (slot_for(t, addr)) return 0;               // idempotent
+    if (slot_for(t, addr)) return 0;
     for (int i = 0; i < SLOT_MAX; i++) {
         if (!t->slots[i].in_use) {
             clear_slot(&t->slots[i]);
@@ -133,7 +148,7 @@ int cmd_tracker_add_slave(cmd_tracker_t *t, uint8_t addr) {
             return 0;
         }
     }
-    return -1;                                     // table full
+    return -1;
 }
 
 uint32_t cmd_tracker_submit(cmd_tracker_t *t, uint8_t addr, uint16_t command_id,
@@ -143,7 +158,7 @@ uint32_t cmd_tracker_submit(cmd_tracker_t *t, uint8_t addr, uint16_t command_id,
     if (args_len > CMD_ARG_MAX) return 0;
     slot_t *s = slot_for(t, addr);
     if (!s) return 0;
-    if (s->qn >= CMD_QUEUE_DEPTH) return 0;        // backpressure: queue full
+    if (s->qn >= CMD_QUEUE_DEPTH) return 0;        // backpressure
 
     uint32_t handle = t->next_handle++;
     int tail = (s->qh + s->qn) % CMD_QUEUE_DEPTH;
@@ -157,13 +172,48 @@ uint32_t cmd_tracker_submit(cmd_tracker_t *t, uint8_t addr, uint16_t command_id,
     if (args_len && args) memcpy(e->args, args, args_len);
     s->qn++;
 
-    pump_slot(t, s);                               // send immediately if slot idle
+    pump_slot(t, s);                               // send now if the slot is idle
     return handle;
 }
 
-void cmd_tracker_poll(cmd_tracker_t *t) {
-    for (int i = 0; i < SLOT_MAX; i++)
-        if (t->slots[i].in_use) pump_slot(t, &t->slots[i]);
+void cmd_tracker_on_ack(cmd_tracker_t *t, uint8_t addr, uint16_t req_id) {
+    slot_t *s = slot_for(t, addr);
+    if (!s || s->state != CMD_SLOT_SENT || s->inflight_rid != req_id) return;
+    s->state   = CMD_SLOT_INFLIGHT;   // bus is free; slave executing
+    s->ack_ms  = t->now;
+    s->retries = 0;
+    t->total_acks++;
+}
+
+void cmd_tracker_on_nak(cmd_tracker_t *t, uint8_t addr, uint16_t req_id) {
+    slot_t *s = slot_for(t, addr);
+    if (!s || s->state != CMD_SLOT_SENT || s->inflight_rid != req_id) return;
+    // Slave busy. Resend (the poll cadence is the implicit backoff) up to the cap;
+    // otherwise fail so the caller isn't stuck behind a chronically-busy slave.
+    if (s->retries < MAX_ACK_RETRIES) { s->retries++; send_inflight(t, s); }
+    else { complete_inflight(s, CMD_STATUS_BUSY, NULL, 0); pump_slot(t, s); }
+}
+
+void cmd_tracker_poll(cmd_tracker_t *t, uint64_t now_ms) {
+    t->now = now_ms;
+    for (int i = 0; i < SLOT_MAX; i++) {
+        slot_t *s = &t->slots[i];
+        if (!s->in_use) continue;
+
+        if (s->state == CMD_SLOT_SENT && (now_ms - s->sent_ms) >= ACK_TIMEOUT_MS) {
+            // No ACK in time: resend (bounded) or declare the slave unreachable.
+            if (s->retries < MAX_ACK_RETRIES) { s->retries++; send_inflight(t, s); }
+            else { complete_inflight(s, DEMUX_STATUS_TIMEOUT, NULL, 0); pump_slot(t, s); }
+        } else if (s->state == CMD_SLOT_INFLIGHT) {
+            uint64_t deadline = (uint64_t)s->inflight.exec_timeout_ms + EXEC_MARGIN_MS;
+            if ((now_ms - s->ack_ms) >= deadline) {  // ACK'd but never finished -> stuck
+                complete_inflight(s, DEMUX_STATUS_TIMEOUT, NULL, 0);
+                pump_slot(t, s);
+            }
+        } else if (s->state == CMD_SLOT_IDLE) {
+            pump_slot(t, s);                          // retry a transiently-failed send
+        }
+    }
 }
 
 cmd_slot_state_t cmd_tracker_state(const cmd_tracker_t *t, uint8_t addr) {
@@ -177,3 +227,5 @@ uint8_t cmd_tracker_qdepth(const cmd_tracker_t *t, uint8_t addr) {
         if (t->slots[i].in_use && t->slots[i].addr == addr) return (uint8_t)t->slots[i].qn;
     return 0;
 }
+
+uint32_t cmd_tracker_total_acks(const cmd_tracker_t *t) { return t->total_acks; }

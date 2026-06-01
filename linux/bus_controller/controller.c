@@ -30,6 +30,8 @@
 #define OP_BUS_SLAVE_DOWN_       0x0015
 #define OP_BUS_SLAVE_UP_         0x0016
 #define OP_BUS_SLAVE_FLAGGED_    0x0017
+#define OP_BUS_CMD_ACK_          0x0018
+#define OP_BUS_CMD_NAK_          0x0019
 
 struct controller {
     link_endpoint_t  *ep;
@@ -241,6 +243,18 @@ static void on_event(void *user, const frame_meta_t *meta, const uint8_t *payloa
             c->flagged_cb(c->flagged_user, payload[0], payload[1]);
         break;
 
+    case OP_BUS_CMD_ACK_:        // [addr:u8][req_id:u16] — slave ACK'd; bus freed
+        if (meta->payload_len >= 3)
+            cmd_tracker_on_ack(c->tracker, payload[0],
+                               (uint16_t)payload[1] | ((uint16_t)payload[2] << 8));
+        break;
+
+    case OP_BUS_CMD_NAK_:        // [addr:u8][req_id:u16] — slave busy; resend
+        if (meta->payload_len >= 3)
+            cmd_tracker_on_nak(c->tracker, payload[0],
+                               (uint16_t)payload[1] | ((uint16_t)payload[2] << 8));
+        break;
+
     default:
         break;  // DBG_LOG / EVENT / NAK / etc. — later steps own these.
     }
@@ -300,9 +314,9 @@ void controller_poll(controller_t *c) {
         else                                           c->prov = PROV_FAIL;
     }
 
-    // Step 6a: advance per-slave command queues (sends freed by completions, plus
-    // retries of any transiently-failed send).
-    cmd_tracker_poll(c->tracker);
+    // Step 6a/6b: advance per-slave command queues (sends freed by completions,
+    // retries of transient sends) + sweep the ACK-timeout / exec-deadline timers.
+    cmd_tracker_poll(c->tracker, mono_ms());
 }
 
 link_state_t controller_link_state(const controller_t *c) { return c->link; }
@@ -406,4 +420,8 @@ cmd_slot_state_t controller_slave_state(const controller_t *c, uint8_t addr) {
 
 uint8_t controller_slave_qdepth(const controller_t *c, uint8_t addr) {
     return cmd_tracker_qdepth(c->tracker, addr);
+}
+
+uint32_t controller_total_acks(const controller_t *c) {
+    return cmd_tracker_total_acks(c->tracker);
 }

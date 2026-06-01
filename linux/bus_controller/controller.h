@@ -134,6 +134,8 @@ uint32_t controller_submit_command(controller_t *c, uint8_t addr, uint16_t comma
 // Per-slave availability + pending-queue depth (0 if addr is not a roster slave).
 cmd_slot_state_t controller_slave_state(const controller_t *c, uint8_t addr);
 uint8_t          controller_slave_qdepth(const controller_t *c, uint8_t addr);
+// 6b: total command-ACKs seen (each = a slave freed the bus before executing).
+uint32_t         controller_total_acks(const controller_t *c);
 
 // 1 once a REGISTER has been parsed since the last link-up; 0 otherwise
 // (identity is cleared on link-down and re-learned on reconnect).

@@ -11,8 +11,8 @@ LDFLAGS ?=
 LIBCOMM := vendor/libcomm/frame.c
 
 # ---- targets ---------------------------------------------------------------
-.PHONY: all clean step0a step0b step1 step2 step3 step4 step5 step6a capstone
-all: step0a step0b step1 step2 step3 step4 step5 step6a capstone
+.PHONY: all clean step0a step0b step1 step2 step3 step4 step5 step6a step6b capstone
+all: step0a step0b step1 step2 step3 step4 step5 step6a step6b capstone
 
 # Step 0a — link-endpoint seam + USB link manager bring-up driver.
 step0a: step0a_main.c usb_link.c $(LIBCOMM)
@@ -44,6 +44,10 @@ step5: step5_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_l
 
 # Step 6a — L2 command tracker: per-slave queue + availability + one-in-flight.
 step6a: step6a_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+# Step 6b — ACK-frees-the-bus + async reply on a later poll + L2 two-timeout.
+step6b: step6b_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 # Capstone — fake console: full API suite + (Step 7) interlock arm/trigger.

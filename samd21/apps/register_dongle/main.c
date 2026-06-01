@@ -507,19 +507,31 @@ static uint8_t      g_poll_seq      = 0;   // POLL frame seq
 static uint32_t     g_poll_next_ms  = 0;   // next slot start (cadence gate)
 static uint32_t     g_poll_deadline = 0;   // current window deadline
 
-// --- Stage 3c: one command injected into the sweep (single in flight) -------
+// --- Stage 3c / 6b: one command injected into the sweep (single in flight) --
 // While polling owns the bus, a Pi frame addressed to a slave is queued here and
-// sent on the next slot as DATA (instead of a routine POLL). The slave's reply
-// rides that same window back and is relayed to the Pi (defer-never-drop). One
-// transaction in flight; Step 6 adds a real queue + scheduler + retry.
-#define CMD_WINDOW_TIMEOUT_MS  BRIDGE_TIMEOUT_MS   // commands may run slow HIL; >> 20ms poll window
+// sent on the next slot as DATA (instead of a routine POLL).
+//
+// 6b — ACK-frees-the-bus: the command slot now waits only for the slave's ISR
+// ACK/NAK (µs), NOT the execution reply. On ACK the bus is freed immediately and
+// the slot returns to routine polling; the slave executes off the bus and its
+// reply arrives as a DATA frame on a LATER routine poll (collected below). ACK /
+// NAK and the async reply are all relayed to the Pi defer-never-drop. (The L2
+// command tracker owns the real per-slave queue + retry now.)
+#define CMD_ACK_TIMEOUT_MS  40u   // wait for the slave's ACK/NAK (a couple poll slots)
 
-typedef enum { CMD_IDLE = 0, CMD_QUEUED, CMD_SENT, CMD_REPLY } cmd_state_t;
+typedef enum { CMD_IDLE = 0, CMD_QUEUED, CMD_SENT } cmd_state_t;
 static cmd_state_t   g_cmd_state = CMD_IDLE;
 static uint8_t       g_cmd_slave = 0;
 static uint8_t       g_cmd_buf[RS485_PAYLOAD_MAX];   // [opcode:u16][exec body]
 static uint8_t       g_cmd_len   = 0;
-static rs485_frame_t g_cmd_reply;                    // buffered slave reply awaiting USB relay
+
+static rs485_frame_t g_cmd_reply;                    // async slave reply awaiting USB relay
+static bool          g_async_reply_fresh = false;    // a reply (from a poll) awaits relay
+
+static bool          g_cmd_ack_fresh   = false;      // an ACK/NAK awaits relay
+static bool          g_cmd_ack_is_nak  = false;
+static uint8_t       g_cmd_ack_addr    = 0;
+static uint16_t      g_cmd_ack_reqid   = 0;
 
 // Pi -> slave command enqueue (from rx_drain while polling is enabled). Drops a
 // second enqueue while one is in flight (the Pi retries; Step 6 queues properly).
@@ -534,21 +546,42 @@ static void bus_cmd_enqueue(uint8_t slave, const uint8_t* exec, uint8_t exec_len
     g_cmd_state = CMD_QUEUED;
 }
 
-// Relay a captured command reply to the Pi, retrying while the TX ring is full
-// (defer-never-drop, same discipline as bus_drain_events). Reply DATA payload =
-// [opcode:u16][body] -> s2m frame addr=slave, cmd=opcode. Called every main loop.
+// Relay an async command reply (a DATA frame the slave returned on a routine poll
+// once it finished executing) to the Pi, retrying while the TX ring is full
+// (defer-never-drop). Reply DATA payload = [opcode:u16][body] -> s2m frame
+// addr=replying-slave, cmd=opcode. The Pi demux correlates by request_id (inside
+// the body), so the slave that answered is the authoritative addr. Called every
+// main loop.
 static void bus_drain_cmd_reply(void) {
-    if (g_cmd_state != CMD_REPLY) return;
+    if (!g_async_reply_fresh) return;
     uint16_t opcode = (uint16_t)g_cmd_reply.payload[0]
                     | ((uint16_t)g_cmd_reply.payload[1] << 8);
-    frame_meta_t meta = { .addr = g_cmd_slave, .cmd = opcode, .seq = g_bridge_seq,
+    frame_meta_t meta = { .addr = g_cmd_reply.src, .cmd = opcode, .seq = g_bridge_seq,
                           .ack_seq = 0, .ack_status = 0,
                           .payload_len = (uint8_t)(g_cmd_reply.len - 2u) };
     if (frame_encode_s2m(&meta, &g_cmd_reply.payload[2], &g_tx_ring) == 0) {
         g_bridge_seq++;
-        g_cmd_state = CMD_IDLE;   // transaction complete
+        g_async_reply_fresh = false;
     }
     // else: ring full, retry next loop.
+}
+
+// Relay a command ACK/NAK to the Pi (defer-never-drop). OP_BUS_CMD_ACK/NAK body =
+// [addr:u8][req_id:u16] -> the L2 tracker advances SENT->INFLIGHT (ACK) or resends
+// (NAK). Called every main loop.
+static void bus_drain_cmd_ack(void) {
+    if (!g_cmd_ack_fresh) return;
+    uint8_t body[3] = { g_cmd_ack_addr,
+                        (uint8_t)(g_cmd_ack_reqid & 0xFFu),
+                        (uint8_t)(g_cmd_ack_reqid >> 8) };
+    frame_meta_t meta = { .addr = g_cmd_ack_addr,
+                          .cmd = g_cmd_ack_is_nak ? OP_BUS_CMD_NAK : OP_BUS_CMD_ACK,
+                          .seq = g_bridge_seq, .ack_seq = 0, .ack_status = 0,
+                          .payload_len = sizeof(body) };
+    if (frame_encode_s2m(&meta, body, &g_tx_ring) == 0) {
+        g_bridge_seq++;
+        g_cmd_ack_fresh = false;
+    }
 }
 
 // Emit one pending summary-bit edge (OP_BUS_SLAVE_FLAGGED [addr][flags]) per
@@ -659,7 +692,7 @@ static void bus_poll_engine(void) {
                 return;
             g_poll_cur_addr = g_cmd_slave;
             g_cmd_state     = CMD_SENT;
-            g_poll_deadline = now + CMD_WINDOW_TIMEOUT_MS;
+            g_poll_deadline = now + CMD_ACK_TIMEOUT_MS;   // 6b: wait for the ACK, not the reply
             g_poll_state    = POLL_WAIT;
             return;
         }
@@ -675,22 +708,36 @@ static void bus_poll_engine(void) {
     }
 
     // POLL_WAIT: any valid frame from the polled slave = alive; else timeout = miss.
-    // For a command slot (CMD_SENT) the slave's DATA reply is buffered for relay;
-    // bus_drain_cmd_reply() (main loop) forwards it defer-never-drop. POLL_WAIT
-    // only updates roster state; bus_drain_events() emits the DOWN/UP edge.
+    // 6b dispatch by frame class:
+    //   * CMD_SENT slot: expect ACK/NAK (bus freed on either) — relay it.
+    //   * DATA on a routine poll: an async command reply the slave finished — relay.
+    //   * NO_MESSAGE: capture the interlock summary-bit.
+    // POLL_WAIT only stages relays + roster state; the bus_drain_* helpers emit.
     rs485_frame_t f;
     if (rs485_recv(&f) && f.src == g_poll_cur_addr) {
         bus_mark_alive(g_poll_cur_addr, now);
+        uint8_t cls = (uint8_t)(f.type & RS485_FT_MASK);
+        uint16_t rid = (f.len >= 2u)
+                     ? (uint16_t)((uint16_t)f.payload[0] | ((uint16_t)f.payload[1] << 8))
+                     : (uint16_t)0;
         if (g_cmd_state == CMD_SENT) {
-            if ((f.type & RS485_FT_MASK) == RS485_FT_DATA && f.len >= 2u) {
-                g_cmd_reply = f;
-                g_cmd_state = CMD_REPLY;        // hand off to bus_drain_cmd_reply()
-            } else {
-                g_cmd_state = CMD_IDLE;         // non-DATA answer: nothing to relay
+            // The just-injected command is ACK'd (claimed) or NAK'd (slave busy).
+            if (cls == RS485_FT_ACK || cls == RS485_FT_NAK) {
+                if (!g_cmd_ack_fresh) {           // stage the relay (defer-never-drop)
+                    g_cmd_ack_addr   = g_cmd_slave;
+                    g_cmd_ack_reqid  = rid;       // ACK/NAK payload = [req_id:u16]
+                    g_cmd_ack_is_nak = (cls == RS485_FT_NAK);
+                    g_cmd_ack_fresh  = true;
+                }
             }
+            g_cmd_state = CMD_IDLE;               // bus freed; reply (if any) comes later
+        } else if (cls == RS485_FT_DATA && f.len >= 2u) {
+            // Async command reply on a routine poll -> relay defer-never-drop.
+            if (!g_async_reply_fresh) { g_cmd_reply = f; g_async_reply_fresh = true; }
+            // else: a prior reply is still draining; the slave re-offers on its next
+            // poll (one-in-flight per slave makes a pile-up impossible at cadence).
         } else {
-            // Routine poll reply (NO_MESSAGE [summary]): capture the summary-bit.
-            // bus_drain_flagged() emits the edge so a full ring defers, not drops.
+            // NO_MESSAGE [summary]: capture the interlock summary-bit.
             bus_slave_t* s = bus_roster_find(g_poll_cur_addr);
             if (s != NULL) s->summary = (f.len >= 1u) ? f.payload[0] : 0u;
         }
@@ -698,7 +745,7 @@ static void bus_poll_engine(void) {
         g_poll_next_ms = now + cfg->poll_period_ms;
     } else if ((int32_t)(now - g_poll_deadline) >= 0) {
         bus_mark_miss(g_poll_cur_addr, cfg->max_misses);
-        if (g_cmd_state == CMD_SENT) g_cmd_state = CMD_IDLE;   // give up; Pi demux times out
+        if (g_cmd_state == CMD_SENT) g_cmd_state = CMD_IDLE;   // no ACK; L2 ack-timeout resends
         g_poll_state   = POLL_IDLE;
         g_poll_next_ms = now + cfg->poll_period_ms;
     }
@@ -726,55 +773,73 @@ static void bus_poll_engine(void) {
 // ----------------------------------------------------------------------------
 #define RS485_SHELL_EXEC_HEADER_LEN 4u   // request_id u16 + command_id u16
 
-static volatile uint8_t g_slave_summary;       // primed interlock summary (ISR reads)
-static volatile bool    g_slave_in_fresh;      // a DATA frame awaits the main loop
-static rs485_frame_t    g_slave_in;            // ISR -> main loop (owned while fresh)
+static volatile uint8_t g_slave_summary;        // primed interlock summary (ISR reads)
 
-static uint8_t g_slave_reply[RS485_PAYLOAD_MAX];  // pending reply ([opcode][body])
+// 6b — ACK-frees-the-bus, single-in-flight. The RX ISR ACKs a SHELL_EXEC on
+// receipt (claim -> BUSY) or NAKs if already busy; the main loop executes it and
+// arms the reply, which the ISR emits on the NEXT poll (reply-ready). The bus is
+// freed the instant the ACK shifts out — a slow command runs entirely off the bus.
+static volatile bool g_slave_busy;        // claimed a command; held until its reply ships
+static volatile bool g_slave_work_fresh;  // a claimed command awaits main-loop execution
+static rs485_frame_t g_slave_in;          // ISR -> main loop (the claimed command)
+static volatile bool g_slave_reply_ready; // main loop armed a reply; ISR emits it on a poll
+
+static uint8_t g_slave_reply[RS485_PAYLOAD_MAX];  // [OP_SHELL_REPLY:u16][req_id][status][result]
 static uint8_t g_slave_reply_len;
-static uint8_t g_slave_reply_seq;
-static bool    g_slave_reply_pending;
 
-// ISR context: answer POLL from the interrupt; defer DATA to the main loop.
+// ISR context:
+//   POLL -> if a reply is armed, ship it on this window (frees BUSY); else
+//           NO_MESSAGE + the primed interlock summary byte.
+//   DATA(SHELL_EXEC) -> ACK + claim (IDLE), or NAK (already BUSY). The ACK/NAK
+//           echoes the command's request_id so the BC/L2 correlate it.
 static void slave_rx_isr(const rs485_frame_t* f) {
     uint8_t cls = (uint8_t)(f->type & RS485_FT_MASK);
     if (cls == RS485_FT_POLL) {
-        // Primed summary is a single byte -> atomic read; frame built in-call.
-        rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
-                             RS485_FT_NO_MESSAGE, f->seq,
-                             (const uint8_t*)&g_slave_summary, 1);
-        // If TX is busy this round, the BC simply re-polls — best-effort.
-    } else if (cls == RS485_FT_DATA) {
-        if (!g_slave_in_fresh) {       // one in flight; else drop (BC retries)
-            g_slave_in = *f;
-            g_slave_in_fresh = true;
+        if (g_slave_reply_ready) {
+            // Deliver the finished command's reply on this poll (req_id is inside it).
+            if (rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
+                                     RS485_FT_DATA, f->seq,
+                                     g_slave_reply, g_slave_reply_len)) {
+                g_slave_reply_ready = false;
+                g_slave_busy        = false;   // done; ready for the next command
+            }
+            // TX busy this round -> retry on the next poll (reply stays armed).
+        } else {
+            rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
+                                 RS485_FT_NO_MESSAGE, f->seq,
+                                 (const uint8_t*)&g_slave_summary, 1);
+        }
+    } else if (cls == RS485_FT_DATA && f->len >= 6u) {
+        // [opcode:u16][req_id:u16][cmd_id:u16]... — only SHELL_EXEC is a command.
+        uint16_t opcode = (uint16_t)f->payload[0] | ((uint16_t)f->payload[1] << 8);
+        if (opcode != OP_SHELL_EXEC) return;
+        uint8_t rid[2] = { f->payload[2], f->payload[3] };   // request_id (echoed in ACK/NAK)
+        if (!g_slave_busy) {
+            g_slave_in         = *f;
+            g_slave_busy       = true;
+            g_slave_work_fresh = true;
+            rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
+                                 RS485_FT_ACK, f->seq, rid, 2);
+        } else {
+            rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
+                                 RS485_FT_NAK, f->seq, rid, 2);
         }
     }
 }
 
+// Main loop: keep the summary primed, then execute a claimed command and arm its
+// reply for the ISR to ship on the next poll. Does NOT transmit (the ISR owns the
+// wire), so execution never holds the bus.
 static void rs485_slave_poll(void) {
-    // Keep the ISR's POLL-response summary current (1 byte = atomic on M0+).
-    g_slave_summary = interlock_summary_flags();
+    g_slave_summary = interlock_summary_flags();   // 1 byte = atomic on M0+
 
-    // Retry a reply the TX engine couldn't take last time (defer-never-drop).
-    if (g_slave_reply_pending) {
-        if (rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
-                                 RS485_FT_DATA, g_slave_reply_seq,
-                                 g_slave_reply, g_slave_reply_len))
-            g_slave_reply_pending = false;
-        return;
-    }
+    if (!g_slave_work_fresh) return;
+    g_slave_work_fresh = false;
+    rs485_frame_t f = g_slave_in;      // stable while BUSY (ISR won't reclaim until reply ships)
 
-    if (!g_slave_in_fresh) return;
-    rs485_frame_t f = g_slave_in;      // own the buffer while fresh...
-    g_slave_in_fresh = false;          // ...then release it to the ISR
-
-    if ((f.type & RS485_FT_MASK) != RS485_FT_DATA || f.len < 2u) return;
-    uint16_t opcode = (uint16_t)f.payload[0] | ((uint16_t)f.payload[1] << 8);
-    if (opcode != OP_SHELL_EXEC) return;
     const uint8_t* exec     = &f.payload[2];
     uint16_t       exec_len = (uint16_t)(f.len - 2u);
-    if (exec_len < RS485_SHELL_EXEC_HEADER_LEN) return;
+    if (exec_len < RS485_SHELL_EXEC_HEADER_LEN) { g_slave_busy = false; return; }
 
     uint8_t  reply_body[COMM_PAYLOAD_MAX];
     uint16_t reply_len = shell_dispatch_payload(exec, exec_len, reply_body);
@@ -782,13 +847,8 @@ static void rs485_slave_poll(void) {
     g_slave_reply[0] = (uint8_t)(OP_SHELL_REPLY & 0xFFu);
     g_slave_reply[1] = (uint8_t)(OP_SHELL_REPLY >> 8);
     for (uint16_t i = 0; i < reply_len; i++) g_slave_reply[2u + i] = reply_body[i];
-    g_slave_reply_len = (uint8_t)(2u + reply_len);
-    g_slave_reply_seq = f.seq;
-    g_slave_reply_pending = true;
-    if (rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
-                             RS485_FT_DATA, g_slave_reply_seq,
-                             g_slave_reply, g_slave_reply_len))
-        g_slave_reply_pending = false;
+    g_slave_reply_len   = (uint8_t)(2u + reply_len);
+    g_slave_reply_ready = true;        // ISR ships it on the next poll
 }
 #endif
 
@@ -1022,7 +1082,8 @@ int main(void) {
             bus_poll_engine();
             bus_drain_events();      // emit pending DOWN/UP; full ring defers, never drops
             bus_drain_flagged();     // emit pending summary-bit edges (interlock tripped)
-            bus_drain_cmd_reply();   // relay a captured command reply; same discipline
+            bus_drain_cmd_ack();     // relay a command ACK/NAK (6b); same discipline
+            bus_drain_cmd_reply();   // relay an async command reply; same discipline
         } else {
             rs485_bridge_poll();
         }
