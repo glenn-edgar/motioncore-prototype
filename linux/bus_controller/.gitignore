@@ -1,4 +1,9 @@
-# build artifacts
+# build artifacts (step driver executables; sources are step*_main.c)
 step0a
+step0b
+step1
+step2
+step3
+step4
 *.o
 *.log

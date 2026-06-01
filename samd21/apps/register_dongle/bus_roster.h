@@ -27,6 +27,7 @@ typedef struct {
     uint8_t  state;                // BUS_STATE_*
     uint8_t  consecutive_misses;
     uint32_t last_seen_ms;         // board_millis() of last good frame (0 = never)
+    uint8_t  announced_state;      // last state pushed to the Pi (event reconciler)
 } bus_slave_t;
 
 // Poll config — stored in Stage 2, consumed by the Stage-3 poll engine.
@@ -57,5 +58,11 @@ void               bus_roster_clear(void);
 uint8_t            bus_roster_count(void);
 const bus_slave_t* bus_roster_at(uint8_t index);   // 0..count-1 over occupied slots
 bus_slave_t*       bus_roster_find(uint8_t addr);   // NULL if absent
+
+// Round-robin iterator over ENABLED slaves. *raw_cursor is an opaque slot index
+// (0..BUS_ROSTER_MAX-1) the caller persists between calls; this returns the next
+// enabled slave at-or-after it and advances the cursor past it (wrapping).
+// Returns NULL if no slave is enabled.
+const bus_slave_t* bus_roster_next_enabled(uint8_t* raw_cursor);
 
 bus_poll_cfg_t*    bus_poll_cfg(void);

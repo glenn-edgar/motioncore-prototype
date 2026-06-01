@@ -81,6 +81,7 @@ uint8_t bus_roster_register(uint8_t addr, uint32_t class_id, uint8_t flags,
         g_roster[i].state              = BUS_STATE_UNKNOWN;
         g_roster[i].consecutive_misses = 0;
         g_roster[i].last_seen_ms       = 0;
+        g_roster[i].announced_state    = BUS_STATE_UNKNOWN;
         if (out_count) *out_count = bus_roster_count();
         return BUS_REG_OK;
     }
@@ -103,6 +104,19 @@ void bus_roster_clear(void) {
     for (uint8_t i = 0; i < BUS_ROSTER_MAX; i++) {
         g_roster[i].addr = 0;
     }
+}
+
+const bus_slave_t* bus_roster_next_enabled(uint8_t* raw_cursor) {
+    uint8_t start = (*raw_cursor) % BUS_ROSTER_MAX;
+    for (uint8_t k = 0; k < BUS_ROSTER_MAX; k++) {
+        uint8_t i = (uint8_t)((start + k) % BUS_ROSTER_MAX);
+        const bus_slave_t* s = &g_roster[i];
+        if (s->addr != 0 && (s->flags & BUS_FLAG_ENABLED)) {
+            *raw_cursor = (uint8_t)((i + 1u) % BUS_ROSTER_MAX);   // resume past this one
+            return s;
+        }
+    }
+    return 0;   // no enabled slave
 }
 
 bus_poll_cfg_t* bus_poll_cfg(void) {

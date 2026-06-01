@@ -89,6 +89,17 @@ const char   *controller_prov_name(prov_state_t s);
 // BC reports in its sweep roster (0 until PROV_DONE).
 uint8_t       controller_bc_roster_total(const controller_t *c);
 
+// --- Step 4: liveness from the BC sweep ------------------------------------
+// The BC's autonomous poll sweep escalates per-slave liveness edges to L2 as
+// OP_BUS_SLAVE_DOWN (slave missed max_misses) / OP_BUS_SLAVE_UP (recovered).
+// is_up = 1 for UP (class_id valid), 0 for DOWN (class_id 0).
+typedef void (*controller_liveness_cb)(void *user, uint8_t addr, int is_up, uint32_t class_id);
+void controller_set_liveness_cb(controller_t *c, controller_liveness_cb cb, void *user);
+
+// Start/stop the BC autonomous poll sweep (CMD_BUS_POLL_ENABLE). Reply ignored.
+// Returns the request_id (0xFFFF on error).
+uint16_t controller_set_poll_enable(controller_t *c, int on);
+
 // --- raw shell command path (Step 5 building block) ------------------------
 // Send an OP_SHELL_EXEC to the dongle and resolve the reply via on_reply.
 // Returns the request_id (0xFFFF on error). Thin wrapper over the demux.

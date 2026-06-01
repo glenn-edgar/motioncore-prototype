@@ -23,8 +23,12 @@
 #define CMD_BUS_REGISTER_SLAVE   0x0160
 #define CMD_BUS_LIST_SLAVES      0x0162
 #define CMD_BUS_SET_POLL         0x0163
+#define CMD_BUS_POLL_ENABLE      0x0164
 #define CMD_BUS_CLEAR_ROSTER     0x0165
 #define BUS_REG_OK               0u
+
+#define OP_BUS_SLAVE_DOWN_       0x0015
+#define OP_BUS_SLAVE_UP_         0x0016
 
 struct controller {
     link_endpoint_t  *ep;
@@ -43,6 +47,9 @@ struct controller {
 
     controller_proto_cb proto_cb;
     void               *proto_user;
+
+    controller_liveness_cb liveness_cb;
+    void                  *liveness_user;
 
     // Step 3: roster recall + push.
     int               have_roster;
@@ -212,6 +219,16 @@ static void on_event(void *user, const frame_meta_t *meta, const uint8_t *payloa
         }
         break;
 
+    case OP_BUS_SLAVE_DOWN_:   // [addr:u8]
+        if (meta->payload_len >= 1 && c->liveness_cb)
+            c->liveness_cb(c->liveness_user, payload[0], 0, 0);
+        break;
+
+    case OP_BUS_SLAVE_UP_:     // [addr:u8][class_id:u32 LE]
+        if (meta->payload_len >= 5 && c->liveness_cb)
+            c->liveness_cb(c->liveness_user, payload[0], 1, rd_u32(&payload[1]));
+        break;
+
     default:
         break;  // DBG_LOG / EVENT / NAK / etc. — later steps own these.
     }
@@ -258,7 +275,12 @@ void controller_poll(controller_t *c) {
 
     // Step 3: once OPERATIONAL on a bus_controller, push the roster down. Only
     // the BC role implements CMD_BUS_*, so a non-BC dongle is marked N/A (FAIL).
-    if (c->have_roster && c->prov == PROV_IDLE && c->proto == PROTO_OPERATIONAL) {
+    // Gate on identity being known: attaching to an already-OPERATIONAL dongle
+    // delivers a heartbeat (=> OPERATIONAL) BEFORE any REGISTER, so role is still
+    // UNKNOWN — provisioning then would spuriously FAIL. Wait for the REGISTER
+    // (the DTR-reattach reset guarantees one shortly after open).
+    if (c->have_roster && c->prov == PROV_IDLE && c->proto == PROTO_OPERATIONAL
+        && c->have_identity) {
         if (controller_role(c) == ROLE_BUS_CONTROLLER) prov_start(c);
         else                                           c->prov = PROV_FAIL;
     }
@@ -322,4 +344,13 @@ uint16_t controller_send_shell(controller_t *c, uint16_t command_id,
                                const uint8_t *args, uint16_t args_len,
                                demux_reply_cb on_reply, void *reply_user) {
     return demux_send_shell(c->dx, command_id, args, args_len, on_reply, reply_user);
+}
+
+void controller_set_liveness_cb(controller_t *c, controller_liveness_cb cb, void *user) {
+    c->liveness_cb = cb; c->liveness_user = user;
+}
+
+uint16_t controller_set_poll_enable(controller_t *c, int on) {
+    uint8_t arg = on ? 1u : 0u;
+    return demux_send_shell(c->dx, CMD_BUS_POLL_ENABLE, &arg, 1, NULL, NULL);
 }

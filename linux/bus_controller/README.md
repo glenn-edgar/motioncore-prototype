@@ -82,8 +82,16 @@ down via `CMD_BUS_*` (CLEAR → REGISTER×N → SET_POLL → LIST), then reads i
   via chained CMD_BUS_* replies, and read it back (all 3 present, state=UNKNOWN —
   polling not yet enabled). Role-gated to bus_controller. Reprovision-on-reset
   rides the Step-2 resync path. End of Phase A.
-- Next: Step 4 (Phase B — Layer-1 ISR empty-poll sweep in firmware; the parked
-  Stage-3a logic splits here, sweep on-chip + DOWN/UP/retry already in L2).
+- **Step 4 — autonomous sweep + liveness escalation: DONE (point-to-point TTL).**
+  Hardware-verified BC↔slave over a bare-TTL cross-wire (D6↔D7, no transceivers):
+  controller enables the BC's main-loop poll sweep, slave answers POLL→NO_MESSAGE,
+  and the full liveness cycle escalated to L2 in one run — ALIVE (seen≈20ms) →
+  unplug → DEAD at max_misses → `OP_BUS_SLAVE_DOWN` → replug → ALIVE →
+  `OP_BUS_SLAVE_UP`. (The parked Stage-3a firmware is the main-loop sweep; the ISR
+  migration is the deferred Step 4b.) Provisioning now gated on identity so an
+  already-OPERATIONAL attach can't spuriously FAIL.
+- Next: Step 5 (content path — single command→reply to the slave through the
+  sweep), completing the one-slave run before RS-485 transceivers are added.
 
 ## Known follow-ups
 - **Device pinning:** with multiple dongles, scan-grabs-first-`/dev/ttyACM*` is

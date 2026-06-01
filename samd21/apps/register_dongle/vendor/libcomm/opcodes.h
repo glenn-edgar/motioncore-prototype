@@ -29,6 +29,8 @@
 #define OP_POLL_REPLY        ((uint16_t)0x0012)  // 64 B status buffer snapshot (slice 5)
 #define OP_EVENT             ((uint16_t)0x0013)  // edge-trigger slot state/tf change (slice 5)
 #define OP_RS485_FRAME_RX    ((uint16_t)0x0014)  // RS-485 frame received: [from_addr:u8][payload bytes]
+#define OP_BUS_SLAVE_DOWN    ((uint16_t)0x0015)  // BC poll engine: slave missed max_misses — [addr:u8]
+#define OP_BUS_SLAVE_UP      ((uint16_t)0x0016)  // BC poll engine: slave recovered — [addr:u8][class_id:u32]
 
 // ----- m2s (host -> dongle) -----
 #define OP_REGISTER_ACK      ((uint16_t)0x0103)  // L1: host acknowledges OP_REGISTER -> BOOT → L1_DONE

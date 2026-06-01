@@ -49,6 +49,9 @@
 #include "samd21_hal_pin.h"  // hal_pin_check_consistency
 #include "samd21_interlocks.h"
 #include "samd21_rs485.h"    // RS-485 passthrough RX poll + OP_RS485_FRAME_RX
+#if defined(ROLE_BUS_CONTROLLER)
+#include "bus_roster.h"      // BC slave roster + poll config (Stage 2/3)
+#endif
 
 // Implemented in user_functions.c.
 extern void     register_dongle_load_commissioning(void);
@@ -402,6 +405,9 @@ static bool          g_bridge_have_reply = false;
 // send it to the slave. UDP DATA for now — the reply is the response; the TCP
 // ack-table + retransmit lands with the BC-3 poll engine.
 static void bridge_start(uint8_t slave, const uint8_t* exec, uint8_t exec_len) {
+    // Mutually exclusive with autonomous polling (Stage 3a): while polling owns
+    // the bus, refuse the reactive --target bridge. 3c queues it onto a poll slot.
+    if (bus_poll_cfg()->enabled) return;
     if (g_bridge_pending) return;          // one-in-flight; drop (host will retry)
     if (exec_len > (uint8_t)(RS485_PAYLOAD_MAX - 2u)) exec_len = RS485_PAYLOAD_MAX - 2u;
     uint8_t buf[RS485_PAYLOAD_MAX];
@@ -473,6 +479,134 @@ static void rs485_bridge_poll(void) {
         g_bridge_pending = false;
     }
 }
+
+// ----------------------------------------------------------------------------
+// Bus-controller autonomous poll engine (BC-3 / Stage 3a-i). When the Pi has
+// enabled polling (CMD_BUS_POLL_ENABLE), the BC round-robins the ENABLED roster
+// at the configured cadence: send POLL(UDP) to one slave, open a bounded window
+// for its reply, and update liveness. A slave that misses `max_misses` polls in
+// a row is marked DEAD and OP_BUS_SLAVE_DOWN pushed to the Pi; its first good
+// frame after that marks it ALIVE and pushes OP_BUS_SLAVE_UP.
+//
+// 3a-i: the slave's window is just NO_MESSAGE (any valid frame from it = alive).
+// Slave->Pi DATA forwarding (events) is 3b; TCP ack-table + queued Pi->slave
+// commands are 3c. While polling is enabled the --target bridge is refused
+// (bridge_start no-ops) — the two own the bus mutually exclusively until 3c.
+//
+// Non-blocking state machine: one POLL per (re)entry, every wait deadline-
+// guarded, so the loop can never wedge the engine. The bus-progress WDT that
+// would catch a *logic* wedge (engine ticks but no bus bytes) is 3a-ii.
+// ----------------------------------------------------------------------------
+#define POLL_SLOT_TIMEOUT_MS 20u   // per-slave reply window (> a slave's worst RX->TX turnaround)
+
+typedef enum { POLL_IDLE = 0, POLL_WAIT = 1 } poll_state_t;
+static poll_state_t g_poll_state    = POLL_IDLE;
+static uint8_t      g_poll_cursor   = 0;   // round-robin slot cursor (opaque)
+static uint8_t      g_poll_cur_addr = 0;   // addr currently polled
+static uint8_t      g_poll_seq      = 0;   // POLL frame seq
+static uint32_t     g_poll_next_ms  = 0;   // next slot start (cadence gate)
+static uint32_t     g_poll_deadline = 0;   // current window deadline
+
+// Slave answered: clear misses, stamp last_seen, set ALIVE. (Event push is
+// handled by bus_reconcile_events so a momentarily-full TX ring can't drop it.)
+static void bus_mark_alive(uint8_t addr, uint32_t now) {
+    bus_slave_t* s = bus_roster_find(addr);
+    if (s == NULL) return;
+    s->consecutive_misses = 0;
+    s->last_seen_ms       = now;
+    s->state              = BUS_STATE_ALIVE;
+}
+
+// Slave missed its window: bump misses; cross max_misses once -> DEAD.
+static void bus_mark_miss(uint8_t addr, uint8_t max_misses) {
+    bus_slave_t* s = bus_roster_find(addr);
+    if (s == NULL) return;
+    if (s->consecutive_misses < 0xFFu) s->consecutive_misses++;
+    if (s->state != BUS_STATE_DEAD && s->consecutive_misses >= max_misses) {
+        s->state = BUS_STATE_DEAD;
+    }
+}
+
+// Reconcile the WHOLE roster's announced state with real state, emitting one
+// pending edge event (DOWN / UP) per call. Called every main-loop iteration
+// (not from the poll engine) so a momentarily-full TX ring just defers the emit
+// to the next loop — the same drain discipline as the bridge reply. The roster's
+// (state != announced_state) IS the pending-event flag: an event can never be
+// lost, only delayed until the ring drains. One emit per call keeps each loop
+// cheap; multiple pending events drain over successive loops (sub-ms apart).
+// UNKNOWN->ALIVE is silent (only a recovery from DEAD pushes UP, per the spec).
+static void bus_drain_events(void) {
+    uint8_t n = bus_roster_count();
+    for (uint8_t i = 0; i < n; i++) {
+        const bus_slave_t* cs = bus_roster_at(i);
+        if (cs == NULL || cs->state == cs->announced_state) continue;
+        bus_slave_t* s = bus_roster_find(cs->addr);   // mutable handle
+        if (s == NULL) continue;
+
+        if (s->state == BUS_STATE_DEAD) {
+            uint8_t body[1] = { s->addr };
+            frame_meta_t meta = { .addr = s->addr, .cmd = OP_BUS_SLAVE_DOWN, .seq = g_bridge_seq,
+                                  .ack_seq = 0, .ack_status = 0, .payload_len = sizeof(body) };
+            if (frame_encode_s2m(&meta, body, &g_tx_ring) == 0) {
+                g_bridge_seq++;
+                s->announced_state = BUS_STATE_DEAD;
+            }
+            return;   // one emit per call; ring may be full — retry next loop
+        } else if (s->state == BUS_STATE_ALIVE) {
+            if (s->announced_state == BUS_STATE_DEAD) {
+                uint8_t body[5];
+                body[0] = s->addr;
+                body[1] = (uint8_t)(s->class_id      );
+                body[2] = (uint8_t)(s->class_id >>  8);
+                body[3] = (uint8_t)(s->class_id >> 16);
+                body[4] = (uint8_t)(s->class_id >> 24);
+                frame_meta_t meta = { .addr = s->addr, .cmd = OP_BUS_SLAVE_UP, .seq = g_bridge_seq,
+                                      .ack_seq = 0, .ack_status = 0, .payload_len = sizeof(body) };
+                if (frame_encode_s2m(&meta, body, &g_tx_ring) == 0) {
+                    g_bridge_seq++;
+                    s->announced_state = BUS_STATE_ALIVE;
+                }
+                return;   // one emit per call
+            } else {
+                s->announced_state = BUS_STATE_ALIVE;   // UNKNOWN->ALIVE: no event, no frame
+            }
+        }
+    }
+}
+
+static void bus_poll_engine(void) {
+    bus_poll_cfg_t* cfg = bus_poll_cfg();
+    if (!cfg->enabled) { g_poll_state = POLL_IDLE; return; }
+    uint32_t now = board_millis();
+
+    if (g_poll_state == POLL_IDLE) {
+        if ((int32_t)(now - g_poll_next_ms) < 0) return;     // hold cadence
+        const bus_slave_t* s = bus_roster_next_enabled(&g_poll_cursor);
+        if (s == NULL) { g_poll_next_ms = now + cfg->poll_period_ms; return; }
+        g_poll_cur_addr = s->addr;
+        rs485_rx_flush();                                    // drop stale before listening
+        rs485_send(s->addr, BUS_CONTROLLER_LOCAL_ADDR, RS485_FT_POLL, ++g_poll_seq, NULL, 0);
+        g_poll_deadline = now + POLL_SLOT_TIMEOUT_MS;
+        g_poll_state    = POLL_WAIT;
+        return;
+    }
+
+    // POLL_WAIT: any valid frame from the polled slave = alive; else timeout = miss.
+    // Reconcile after resolving so the DOWN/UP edge event is (re)tried; a drop on
+    // a full ring is retried on this slave's next round-robin visit.
+    // POLL_WAIT only updates roster state; bus_drain_events() (main loop) emits
+    // the DOWN/UP edge so a full ring defers rather than drops the event.
+    rs485_frame_t f;
+    if (rs485_recv(&f) && f.src == g_poll_cur_addr) {
+        bus_mark_alive(g_poll_cur_addr, now);
+        g_poll_state   = POLL_IDLE;
+        g_poll_next_ms = now + cfg->poll_period_ms;
+    } else if ((int32_t)(now - g_poll_deadline) >= 0) {
+        bus_mark_miss(g_poll_cur_addr, cfg->max_misses);
+        g_poll_state   = POLL_IDLE;
+        g_poll_next_ms = now + cfg->poll_period_ms;
+    }
+}
 #endif  // ROLE_BUS_CONTROLLER
 
 #if defined(ROLE_SLAVE)
@@ -495,7 +629,16 @@ static void rs485_slave_poll(void) {
     rs485_frame_t f;
     for (uint8_t guard = 0; guard < 4; guard++) {
         if (!rs485_recv(&f)) return;
-        if ((f.type & RS485_FT_MASK) != RS485_FT_DATA) continue;  // POLL/etc: later
+        // POLL (BC-3 / Stage 3a): "your window is open." We have no outbound queue
+        // yet (events = 3b), so terminate the window immediately with NO_MESSAGE.
+        // Sourced from our own addr so the BC's liveness check (f.src == polled)
+        // passes. NO_MESSAGE carries no payload.
+        if ((f.type & RS485_FT_MASK) == RS485_FT_POLL) {
+            rs485_send(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
+                       RS485_FT_NO_MESSAGE, f.seq, NULL, 0);
+            continue;
+        }
+        if ((f.type & RS485_FT_MASK) != RS485_FT_DATA) continue;  // ACK/NAK: later
         if (f.len < 2u) continue;
         uint16_t opcode = (uint16_t)f.payload[0] | ((uint16_t)f.payload[1] << 8);
         if (opcode != OP_SHELL_EXEC) continue;          // only shell-exec this step
@@ -735,7 +878,14 @@ int main(void) {
 #if defined(ROLE_SLAVE)
         rs485_slave_poll();
 #elif defined(ROLE_BUS_CONTROLLER)
-        rs485_bridge_poll();
+        // Polling enabled -> autonomous master owns the bus; else the reactive
+        // --target bridge stays available for bench HIL on a single slave.
+        if (bus_poll_cfg()->enabled) {
+            bus_poll_engine();
+            bus_drain_events();   // emit pending DOWN/UP; full ring defers, never drops
+        } else {
+            rs485_bridge_poll();
+        }
 #else
         rs485_drain_to_host();
 #endif
