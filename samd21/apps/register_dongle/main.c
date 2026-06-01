@@ -701,54 +701,88 @@ static void bus_poll_engine(void) {
 
 #if defined(ROLE_SLAVE)
 // ----------------------------------------------------------------------------
-// RS-485 slave shell tunnel (BC-1a, synchronous). Frames are accepted only when
-// addressed to our rs485_addr (set at boot via rs485_config). The payload of an
-// inbound frame IS an OP_SHELL_EXEC body [request_id u16][command_id u16][args];
-// we dispatch it through the SAME shell layer used over USB and send the
-// OP_SHELL_REPLY body back over RS-485, sourced from our own address. This makes
-// the full workbench/HIL command suite runnable on the slave node over the bus
-// with no new command code. Synchronous + main-loop (USB is commissioning-only
-// on a slave); the master waits for the reply. Replies > RS485_PAYLOAD_MAX-2 are
-// clamped (fragmentation is a later BC slice). A DATA frame's payload is
-// [opcode:u16-LE][body]; we handle OP_SHELL_EXEC and reply OP_SHELL_REPLY,
-// echoing the request seq for forward-compat with the future ack-table.
+// RS-485 slave, ISR-driven response (Layer-1 / 4b-i). The RX-complete ISR
+// assembles each frame addressed to us and dispatches it via slave_rx_isr (IN
+// ISR CONTEXT):
+//   * POLL -> answer immediately with NO_MESSAGE carrying the PRIMED interlock
+//             summary byte (bit0 = an armed interlock tripped). Served straight
+//             from the interrupt, zero main-loop involvement.
+//   * DATA -> stash into the one-in-flight input buffer for the main loop.
+// The main loop (rs485_slave_poll) keeps the summary primed, then processes a
+// stashed DATA (an OP_SHELL_EXEC body) through the SAME shell layer used over USB
+// and queues the OP_SHELL_REPLY via the non-blocking TX engine. Replies >
+// RS485_PAYLOAD_MAX-2 are clamped (fragmentation is later).
+//
+// NOTE (4b-ii boundary): today the BC waits for the command reply inside its poll
+// window, so the slave sends it from the main loop here. When the BC sweep moves
+// into its own ISR, the reply becomes a second "fresh" buffer the slave ISR emits
+// on a poll alongside the interlock buffer (the full two-buffer model).
 // ----------------------------------------------------------------------------
 #define RS485_SHELL_EXEC_HEADER_LEN 4u   // request_id u16 + command_id u16
 
-static void rs485_slave_poll(void) {
-    rs485_frame_t f;
-    for (uint8_t guard = 0; guard < 4; guard++) {
-        if (!rs485_recv(&f)) return;
-        // POLL (BC-3 / Stage 3a): "your window is open." Terminate the window with
-        // NO_MESSAGE carrying a 1-byte summary (Step 7): bit0 = an armed interlock
-        // is tripped. Sourced from our own addr so the BC liveness check passes.
-        // (Old BCs that ignore the payload still see a valid frame = alive.)
-        if ((f.type & RS485_FT_MASK) == RS485_FT_POLL) {
-            uint8_t summary = interlock_summary_flags();
-            rs485_send(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
-                       RS485_FT_NO_MESSAGE, f.seq, &summary, 1);
-            continue;
-        }
-        if ((f.type & RS485_FT_MASK) != RS485_FT_DATA) continue;  // ACK/NAK: later
-        if (f.len < 2u) continue;
-        uint16_t opcode = (uint16_t)f.payload[0] | ((uint16_t)f.payload[1] << 8);
-        if (opcode != OP_SHELL_EXEC) continue;          // only shell-exec this step
-        const uint8_t* exec     = &f.payload[2];
-        uint16_t       exec_len = (uint16_t)(f.len - 2u);
-        if (exec_len < RS485_SHELL_EXEC_HEADER_LEN) continue;
+static volatile uint8_t g_slave_summary;       // primed interlock summary (ISR reads)
+static volatile bool    g_slave_in_fresh;      // a DATA frame awaits the main loop
+static rs485_frame_t    g_slave_in;            // ISR -> main loop (owned while fresh)
 
-        uint8_t  reply_body[COMM_PAYLOAD_MAX];
-        uint16_t reply_len = shell_dispatch_payload(exec, exec_len, reply_body);
-        if (reply_len > (uint16_t)(RS485_PAYLOAD_MAX - 2u)) {
-            reply_len = RS485_PAYLOAD_MAX - 2u;         // clamp; frag is later
+static uint8_t g_slave_reply[RS485_PAYLOAD_MAX];  // pending reply ([opcode][body])
+static uint8_t g_slave_reply_len;
+static uint8_t g_slave_reply_seq;
+static bool    g_slave_reply_pending;
+
+// ISR context: answer POLL from the interrupt; defer DATA to the main loop.
+static void slave_rx_isr(const rs485_frame_t* f) {
+    uint8_t cls = (uint8_t)(f->type & RS485_FT_MASK);
+    if (cls == RS485_FT_POLL) {
+        // Primed summary is a single byte -> atomic read; frame built in-call.
+        rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
+                             RS485_FT_NO_MESSAGE, f->seq,
+                             (const uint8_t*)&g_slave_summary, 1);
+        // If TX is busy this round, the BC simply re-polls — best-effort.
+    } else if (cls == RS485_FT_DATA) {
+        if (!g_slave_in_fresh) {       // one in flight; else drop (BC retries)
+            g_slave_in = *f;
+            g_slave_in_fresh = true;
         }
-        uint8_t out[RS485_PAYLOAD_MAX];
-        out[0] = (uint8_t)(OP_SHELL_REPLY & 0xFFu);
-        out[1] = (uint8_t)(OP_SHELL_REPLY >> 8);
-        for (uint16_t i = 0; i < reply_len; i++) out[2u + i] = reply_body[i];
-        rs485_send(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
-                   RS485_FT_DATA, f.seq, out, (uint8_t)(2u + reply_len));
     }
+}
+
+static void rs485_slave_poll(void) {
+    // Keep the ISR's POLL-response summary current (1 byte = atomic on M0+).
+    g_slave_summary = interlock_summary_flags();
+
+    // Retry a reply the TX engine couldn't take last time (defer-never-drop).
+    if (g_slave_reply_pending) {
+        if (rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
+                                 RS485_FT_DATA, g_slave_reply_seq,
+                                 g_slave_reply, g_slave_reply_len))
+            g_slave_reply_pending = false;
+        return;
+    }
+
+    if (!g_slave_in_fresh) return;
+    rs485_frame_t f = g_slave_in;      // own the buffer while fresh...
+    g_slave_in_fresh = false;          // ...then release it to the ISR
+
+    if ((f.type & RS485_FT_MASK) != RS485_FT_DATA || f.len < 2u) return;
+    uint16_t opcode = (uint16_t)f.payload[0] | ((uint16_t)f.payload[1] << 8);
+    if (opcode != OP_SHELL_EXEC) return;
+    const uint8_t* exec     = &f.payload[2];
+    uint16_t       exec_len = (uint16_t)(f.len - 2u);
+    if (exec_len < RS485_SHELL_EXEC_HEADER_LEN) return;
+
+    uint8_t  reply_body[COMM_PAYLOAD_MAX];
+    uint16_t reply_len = shell_dispatch_payload(exec, exec_len, reply_body);
+    if (reply_len > (uint16_t)(RS485_PAYLOAD_MAX - 2u)) reply_len = RS485_PAYLOAD_MAX - 2u;
+    g_slave_reply[0] = (uint8_t)(OP_SHELL_REPLY & 0xFFu);
+    g_slave_reply[1] = (uint8_t)(OP_SHELL_REPLY >> 8);
+    for (uint16_t i = 0; i < reply_len; i++) g_slave_reply[2u + i] = reply_body[i];
+    g_slave_reply_len = (uint8_t)(2u + reply_len);
+    g_slave_reply_seq = f.seq;
+    g_slave_reply_pending = true;
+    if (rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
+                             RS485_FT_DATA, g_slave_reply_seq,
+                             g_slave_reply, g_slave_reply_len))
+        g_slave_reply_pending = false;
 }
 #endif
 
@@ -875,6 +909,9 @@ int main(void) {
     // Slave listens only for frames addressed to its rs485_addr (= low byte of
     // instance_id). Must run after commissioning is loaded. 0 if uncommissioned.
     rs485_config(0, register_dongle_rs485_addr(), 0);
+    // Layer-1 / 4b-i: answer POLLs straight from the RX-complete ISR; DATA is
+    // deferred to the main loop via the one-in-flight input buffer.
+    rs485_set_isr_dispatch(slave_rx_isr);
 #elif defined(ROLE_BUS_CONTROLLER)
     // Master stays a sniffer (accept every slave reply).
     rs485_config(0, RS485_ADDR_SNIFFER, 0);

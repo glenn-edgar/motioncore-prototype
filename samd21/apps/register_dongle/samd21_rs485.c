@@ -68,13 +68,28 @@ static uint8_t  s_my_addr   = RS485_ADDR_SNIFFER;
 static uint32_t s_baud      = 115200u;
 static bool     s_shared_bus = false;   // RS485_FLAG_SHARED_BUS
 
-// Frame-assembler state (main-loop side; not touched by the ISR).
+// Frame-assembler state. Used by ONE consumer at a time: the main loop
+// (rs485_recv, ring-drain) OR the RX ISR (dispatch mode) — never both, since a
+// given role picks one. So no cross-context locking on s_asm is needed.
 typedef enum {
     ASM_IDLE, ASM_SRC, ASM_TYPE, ASM_SEQ, ASM_LEN, ASM_PAYLOAD, ASM_CRC
 } asm_state_t;
 static asm_state_t  s_asm_state = ASM_IDLE;
 static rs485_frame_t s_asm;     // accumulator (dest/src/type/seq/len/payload)
 static uint8_t      s_asm_idx;
+
+// ISR-dispatch mode: when set, the RX ISR assembles + dispatches frames itself.
+static volatile bool       s_isr_dispatch = false;
+static rs485_rx_frame_cb   s_rx_cb        = 0;
+
+void rs485_set_isr_dispatch(rs485_rx_frame_cb cb) {
+    s_rx_cb = cb;
+    s_asm_state = ASM_IDLE;
+    s_isr_dispatch = (cb != 0);
+}
+
+// Forward decl: the RX ISR (below) calls this; the definition is further down.
+static bool asm_feed(uint16_t word9, rs485_frame_t* out);
 
 // ---------------------------------------------------------------------------
 // BAUD register for 16x-oversampled arithmetic mode:
@@ -224,11 +239,87 @@ void rs485_send(uint8_t dest, uint8_t src, uint8_t type, uint8_t seq,
 }
 
 // ---------------------------------------------------------------------------
-// RX ISR — read the 9-bit word, capture errors, discard self-echo, else push to
-// the ring. Reading DATA clears RXC. STATUS error bits are sticky; clear by
-// writing 1. Never blocks.
+// Non-blocking interrupt-driven TX (Layer-1 / 4b-i).
+//   rs485_tx_async_start() frames into a 9-bit word shift buffer and enables the
+//   DRE interrupt. The DRE handler feeds one word per data-register-empty event;
+//   when the last word is queued it switches to the TXC interrupt, which marks
+//   the transmit complete. One frame in flight (s_tx_active).
+// Self-echo discard (shared bus) is NOT handled here yet — bare-TTL / 4-wire has
+// no echo. SHARED_BUS support for the async path lands with the MAX485 work.
+// ---------------------------------------------------------------------------
+#define RS485_TX_SHIFT_MAX (1u + RS485_HEADER_LEN + RS485_PAYLOAD_MAX + 1u)
+static volatile uint16_t s_tx_shift[RS485_TX_SHIFT_MAX];
+static volatile uint16_t s_tx_shift_len;
+static volatile uint16_t s_tx_shift_idx;
+static volatile bool     s_tx_active;
+
+static uint16_t rs485_frame_words(uint16_t* buf, uint8_t dest, uint8_t src,
+                                  uint8_t type, uint8_t seq,
+                                  const uint8_t* payload, uint8_t len) {
+    uint16_t n = 0;
+    uint8_t crc = frame_crc(dest, src, type, seq, len, payload);
+    buf[n++] = 0x0FFu;             // preamble: DATA (bit8=0)
+    buf[n++] = (uint16_t)(0x100u | dest);   // dest: address marker (bit8=1)
+    buf[n++] = src;
+    buf[n++] = type;
+    buf[n++] = seq;
+    buf[n++] = (uint16_t)len;
+    for (uint8_t i = 0; i < len; i++) buf[n++] = (uint16_t)payload[i];
+    buf[n++] = crc;
+    return n;
+}
+
+bool rs485_tx_async_start(uint8_t dest, uint8_t src, uint8_t type, uint8_t seq,
+                          const uint8_t* payload, uint8_t len) {
+    // Atomic claim: called from both the main loop and the RX ISR, so guard the
+    // check-and-set of s_tx_active against an ISR preempting mid-claim.
+    uint32_t pm = __get_PRIMASK();
+    __disable_irq();
+    if (s_tx_active) { __set_PRIMASK(pm); return false; }
+    s_tx_active = true;
+    __set_PRIMASK(pm);
+
+    if (len > RS485_PAYLOAD_MAX) len = RS485_PAYLOAD_MAX;
+    s_tx_shift_len = rs485_frame_words((uint16_t*)s_tx_shift, dest, src, type, seq, payload, len);
+    s_tx_shift_idx = 0;            // s_tx_active already claimed above
+    s_tx_frames++;
+    s_last_tx_len  = len;
+    // Enable DRE — fires immediately since the data register is empty.
+    RS485_SERCOM->USART.INTENSET.reg = SERCOM_USART_INTENSET_DRE;
+    return true;
+}
+
+bool rs485_tx_async_busy(void) { return s_tx_active; }
+
+// ---------------------------------------------------------------------------
+// SERCOM4 ISR — handles TX (DRE feed / TXC complete) and RX (word ring).
+// Reading DATA clears RXC. STATUS error bits are sticky; clear by writing 1.
+// Never blocks.
 // ---------------------------------------------------------------------------
 void SERCOM4_Handler(void) {
+    uint32_t flags = RS485_SERCOM->USART.INTFLAG.reg;
+
+    // --- TX: data register empty -> feed the next framed word ---
+    if (s_tx_active && (flags & SERCOM_USART_INTFLAG_DRE)) {
+        if (s_tx_shift_idx < s_tx_shift_len) {
+            RS485_SERCOM->USART.DATA.reg = s_tx_shift[s_tx_shift_idx++] & 0x1FFu;
+        }
+        if (s_tx_shift_idx >= s_tx_shift_len) {
+            // All words handed to the shifter; wait for the line to drain via TXC.
+            RS485_SERCOM->USART.INTENCLR.reg = SERCOM_USART_INTENCLR_DRE;
+            RS485_SERCOM->USART.INTENSET.reg = SERCOM_USART_INTENSET_TXC;
+        }
+    }
+    // --- TX complete: line idle, frame fully shifted out ---
+    if (s_tx_active && (flags & SERCOM_USART_INTFLAG_TXC)) {
+        RS485_SERCOM->USART.INTFLAG.reg  = SERCOM_USART_INTFLAG_TXC;   // clear
+        RS485_SERCOM->USART.INTENCLR.reg = SERCOM_USART_INTENCLR_TXC;
+        s_tx_active = false;
+        // (4b-i next: clear the just-sent buffer's fresh flag + start the next
+        //  fresh buffer here, so a poll that found both fresh chains the sends.)
+    }
+
+    // --- RX: read 9-bit words into the ring (existing path) ---
     while (RS485_SERCOM->USART.INTFLAG.bit.RXC) {
         uint16_t status = RS485_SERCOM->USART.STATUS.reg;
         uint16_t word9  = (uint16_t)(RS485_SERCOM->USART.DATA.reg & 0x1FFu);
@@ -245,13 +336,20 @@ void SERCOM4_Handler(void) {
             s_tx_skip--;
             continue;
         }
-        uint16_t next = (uint16_t)((s_rx_head + 1u) & RS485_RX_RING_MASK);
-        if (next == s_rx_tail) {
-            s_rx_overrun++;          // ring full — drop new word
+        s_rx_words++;               // a clean word was heard
+        if (s_isr_dispatch) {
+            // Assemble + dispatch in-ISR: the callback answers a POLL straight
+            // from here (rs485_tx_async_start) or stashes the frame for main.
+            rs485_frame_t f;
+            if (asm_feed(word9, &f) && s_rx_cb) s_rx_cb(&f);
         } else {
-            s_rx_ring[s_rx_head] = word9;
-            s_rx_head = next;
-            s_rx_words++;            // a clean word reached the ring
+            uint16_t next = (uint16_t)((s_rx_head + 1u) & RS485_RX_RING_MASK);
+            if (next == s_rx_tail) {
+                s_rx_overrun++;      // ring full — drop new word
+            } else {
+                s_rx_ring[s_rx_head] = word9;
+                s_rx_head = next;
+            }
         }
     }
 }
@@ -276,66 +374,59 @@ static bool rs485_ring_pop(uint16_t* out) {
 }
 
 // ---------------------------------------------------------------------------
-// Frame assembler. Drains the ring; returns true and fills *out when a complete
-// CRC-valid frame is reassembled. An address byte (bit8=1) always (re)starts a
-// frame. Call repeatedly to drain multiple frames.
+// Per-word assembler step. Feeds one 9-bit word into s_asm; returns true and
+// fills *out when a complete CRC-valid frame is reassembled. An address byte
+// (bit8=1) always (re)starts a frame. Shared by rs485_recv (ring drain, main
+// loop) and the RX ISR (dispatch mode) — only one consumer per role.
 // ---------------------------------------------------------------------------
+static bool asm_feed(uint16_t word9, rs485_frame_t* out) {
+    bool    is_addr = (word9 & 0x100u) != 0u;
+    uint8_t b       = (uint8_t)(word9 & 0xFFu);
+
+    if (is_addr) {
+        if (s_my_addr == RS485_ADDR_SNIFFER || b == s_my_addr) {
+            s_asm.dest  = b;
+            s_asm_state = ASM_SRC;
+        } else {
+            s_asm_state = ASM_IDLE;   // not for us; ignore its data bytes
+        }
+        return false;
+    }
+
+    switch (s_asm_state) {
+    case ASM_SRC:  s_asm.src  = b; s_asm_state = ASM_TYPE; break;
+    case ASM_TYPE: s_asm.type = b; s_asm_state = ASM_SEQ;  break;
+    case ASM_SEQ:  s_asm.seq  = b; s_asm_state = ASM_LEN;  break;
+    case ASM_LEN:
+        if (b > RS485_PAYLOAD_MAX) { s_asm_state = ASM_IDLE; break; }
+        s_asm.len = b;
+        s_asm_idx = 0;
+        s_asm_state = (b == 0u) ? ASM_CRC : ASM_PAYLOAD;
+        break;
+    case ASM_PAYLOAD:
+        s_asm.payload[s_asm_idx++] = b;
+        if (s_asm_idx >= s_asm.len) s_asm_state = ASM_CRC;
+        break;
+    case ASM_CRC: {
+        uint8_t calc = frame_crc(s_asm.dest, s_asm.src, s_asm.type,
+                                 s_asm.seq, s_asm.len, s_asm.payload);
+        s_asm_state = ASM_IDLE;
+        if (calc == b) { *out = s_asm; s_frames_ok++; return true; }
+        s_crc_fail++;             // mismatch -> drop; resync on next address
+        break;
+    }
+    case ASM_IDLE:
+    default:
+        break;                    // preamble / inter-frame noise
+    }
+    return false;
+}
+
+// Main-loop frame drain (ring path). Not used while ISR-dispatch is on.
 bool rs485_recv(rs485_frame_t* out) {
     uint16_t word9;
     while (rs485_ring_pop(&word9)) {
-        bool    is_addr = (word9 & 0x100u) != 0u;
-        uint8_t b       = (uint8_t)(word9 & 0xFFu);
-
-        if (is_addr) {
-            // New frame. Accept if sniffer (0xFF) or addressed to us.
-            if (s_my_addr == RS485_ADDR_SNIFFER || b == s_my_addr) {
-                s_asm.dest  = b;
-                s_asm_state = ASM_SRC;
-            } else {
-                s_asm_state = ASM_IDLE;   // not for us; ignore its data bytes
-            }
-            continue;
-        }
-
-        // Data byte.
-        switch (s_asm_state) {
-        case ASM_SRC:  s_asm.src  = b; s_asm_state = ASM_TYPE; break;
-        case ASM_TYPE: s_asm.type = b; s_asm_state = ASM_SEQ;  break;
-        case ASM_SEQ:  s_asm.seq  = b; s_asm_state = ASM_LEN;  break;
-
-        case ASM_LEN:
-            if (b > RS485_PAYLOAD_MAX) {     // bogus length -> resync
-                s_asm_state = ASM_IDLE;
-                break;
-            }
-            s_asm.len = b;
-            s_asm_idx = 0;
-            s_asm_state = (b == 0u) ? ASM_CRC : ASM_PAYLOAD;
-            break;
-
-        case ASM_PAYLOAD:
-            s_asm.payload[s_asm_idx++] = b;
-            if (s_asm_idx >= s_asm.len) s_asm_state = ASM_CRC;
-            break;
-
-        case ASM_CRC: {
-            uint8_t calc = frame_crc(s_asm.dest, s_asm.src, s_asm.type,
-                                     s_asm.seq, s_asm.len, s_asm.payload);
-            s_asm_state = ASM_IDLE;
-            if (calc == b) {
-                *out = s_asm;
-                s_frames_ok++;
-                return true;
-            }
-            s_crc_fail++;            // mismatch -> drop; resync on next address
-            break;
-        }
-
-        case ASM_IDLE:
-        default:
-            // Preamble / inter-frame noise — ignore until next address byte.
-            break;
-        }
+        if (asm_feed(word9, out)) return true;
     }
     return false;
 }

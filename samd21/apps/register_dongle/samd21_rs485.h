@@ -69,6 +69,27 @@ void rs485_config(uint32_t baud, uint8_t my_addr, uint8_t flags);
 void rs485_send(uint8_t dest, uint8_t src, uint8_t type, uint8_t seq,
                 const uint8_t* payload, uint8_t len);
 
+// ---- Non-blocking interrupt-driven TX (Layer-1 / 4b-i) --------------------
+// Frames (preamble/header/CRC) and transmits without blocking: the DRE
+// interrupt shifts the 9-bit words out, the TXC interrupt finalizes. One frame
+// in flight. Returns false if a transmit is already active (caller retries).
+// Safe to call from an ISR — this is how the slave answers a POLL from the
+// RX-complete ISR. Do NOT mix with rs485_send() on the same chip: the blocking
+// path spins on the DRE flag while this path drives it from the interrupt.
+bool rs485_tx_async_start(uint8_t dest, uint8_t src, uint8_t type, uint8_t seq,
+                          const uint8_t* payload, uint8_t len);
+bool rs485_tx_async_busy(void);
+
+// ---- ISR-dispatch mode (Layer-1 / 4b-i) -----------------------------------
+// When enabled, the RX-complete ISR assembles frames itself (instead of ringing
+// raw words for the main loop) and invokes `cb` IN ISR CONTEXT for each complete
+// CRC-valid frame addressed to us. This is how the slave answers a POLL straight
+// from the interrupt. The callback must be short and non-blocking — it may call
+// rs485_tx_async_start() to respond, or stash the frame for the main loop. While
+// dispatch mode is on, rs485_recv() is not used (the ISR consumes the words).
+typedef void (*rs485_rx_frame_cb)(const rs485_frame_t* f);
+void rs485_set_isr_dispatch(rs485_rx_frame_cb cb);
+
 // Drain the RX ring through the assembler. Returns true once per complete,
 // CRC-valid frame addressed to us (or any frame in sniffer mode), filling *out.
 // Frames failing CRC are dropped (counted in rs485_crc_fail_count). Call
