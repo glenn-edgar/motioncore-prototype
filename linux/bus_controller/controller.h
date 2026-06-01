@@ -14,6 +14,8 @@
 
 #include "link_endpoint.h"
 #include "identity.h"
+#include "demux.h"
+#include "roster.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -64,6 +66,35 @@ const manifest_t *controller_manifest(const controller_t *c);
 // Optional: invoked on every proto-state transition (may be NULL).
 typedef void (*controller_proto_cb)(void *user, proto_state_t from, proto_state_t to);
 void controller_set_proto_cb(controller_t *c, controller_proto_cb cb, void *user);
+
+// --- Step 3: roster recall + push ------------------------------------------
+// Roster provisioning state (the controller pushes the L2 roster down to the BC
+// as soon as it reaches OPERATIONAL, and re-pushes after any reset/resync).
+typedef enum {
+    PROV_IDLE = 0,    // no roster attached, or waiting for OPERATIONAL
+    PROV_CLEAR,       // CMD_BUS_CLEAR_ROSTER sent
+    PROV_REGISTER,    // CMD_BUS_REGISTER_SLAVE in flight (one per slave)
+    PROV_SET_POLL,    // CMD_BUS_SET_POLL sent
+    PROV_LIST,        // CMD_BUS_LIST_SLAVES sent (verification read-back)
+    PROV_DONE,        // BC roster matches the L2 roster
+    PROV_FAIL,        // a CMD_BUS_* rejected, or role is not bus_controller
+} prov_state_t;
+
+// Attach the authoritative roster. The controller copies it; pass NULL to detach.
+// Provisioning runs automatically once OPERATIONAL on a bus_controller-role dongle.
+void          controller_attach_roster(controller_t *c, const roster_t *r);
+prov_state_t  controller_prov_state(const controller_t *c);
+const char   *controller_prov_name(prov_state_t s);
+// Read-back from CMD_BUS_LIST_SLAVES after a successful push: how many slaves the
+// BC reports in its sweep roster (0 until PROV_DONE).
+uint8_t       controller_bc_roster_total(const controller_t *c);
+
+// --- raw shell command path (Step 5 building block) ------------------------
+// Send an OP_SHELL_EXEC to the dongle and resolve the reply via on_reply.
+// Returns the request_id (0xFFFF on error). Thin wrapper over the demux.
+uint16_t controller_send_shell(controller_t *c, uint16_t command_id,
+                               const uint8_t *args, uint16_t args_len,
+                               demux_reply_cb on_reply, void *reply_user);
 
 // 1 once a REGISTER has been parsed since the last link-up; 0 otherwise
 // (identity is cleared on link-down and re-learned on reconnect).

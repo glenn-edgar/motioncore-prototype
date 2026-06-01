@@ -51,6 +51,13 @@ opens a dongle, captures its REGISTER announcement, and prints the decoded ident
 (role from class_id, instance, commissioning, fw version, UID). Steps 2–3 grow this
 same controller object.
 
+`step2` lets the controller drive the sync ladder to OPERATIONAL itself and
+auto-resync after a dongle reset (no program restart).
+
+`step3` loads the Layer-2 authoritative roster (`roster.{h,c}`, e.g.
+`rosters/example.conf`) and, once OPERATIONAL on a BC, auto-pushes the sweep list
+down via `CMD_BUS_*` (CLEAR → REGISTER×N → SET_POLL → LIST), then reads it back.
+
 ## Status
 
 - **Step 0a — link-endpoint seam + USB link manager: DONE.** Hardware-verified on
@@ -70,7 +77,13 @@ same controller object.
   (schema_hash 0x80AEB146), and on a dongle reset re-runs the ladder back to
   OPERATIONAL with no program restart — riding the USB re-enumeration via the
   link manager's scan mode. Self-healing: every REGISTER re-triggers the ACK.
-- Next: Step 3 (roster load/recall + push sweep list to the BC via CMD_BUS_*).
+- **Step 3 — roster recall + push: DONE.** Hardware-verified on the BC (inst 42):
+  loaded a 3-slave roster from disk, auto-pushed CLEAR→REGISTER×3→SET_POLL→LIST
+  via chained CMD_BUS_* replies, and read it back (all 3 present, state=UNKNOWN —
+  polling not yet enabled). Role-gated to bus_controller. Reprovision-on-reset
+  rides the Step-2 resync path. End of Phase A.
+- Next: Step 4 (Phase B — Layer-1 ISR empty-poll sweep in firmware; the parked
+  Stage-3a logic splits here, sweep on-chip + DOWN/UP/retry already in L2).
 
 ## Known follow-ups
 - **Device pinning:** with multiple dongles, scan-grabs-first-`/dev/ttyACM*` is

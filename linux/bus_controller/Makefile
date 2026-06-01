@@ -11,8 +11,8 @@ LDFLAGS ?=
 LIBCOMM := vendor/libcomm/frame.c
 
 # ---- targets ---------------------------------------------------------------
-.PHONY: all clean step0a step0b step1 step2
-all: step0a step0b step1 step2
+.PHONY: all clean step0a step0b step1 step2 step3
+all: step0a step0b step1 step2 step3
 
 # Step 0a — link-endpoint seam + USB link manager bring-up driver.
 step0a: step0a_main.c usb_link.c $(LIBCOMM)
@@ -30,5 +30,9 @@ step1: step1_main.c controller.c demux.c identity.c usb_link.c $(LIBCOMM)
 step2: step2_main.c controller.c demux.c identity.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
+# Step 3 — roster recall from disk + push sweep list to the BC via CMD_BUS_*.
+step3: step3_main.c controller.c demux.c identity.c roster.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
 clean:
-	rm -f step0a step0b step1 step2
+	rm -f step0a step0b step1 step2 step3
