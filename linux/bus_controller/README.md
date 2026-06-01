@@ -97,8 +97,14 @@ down via `CMD_BUS_*` (CLEAR → REGISTER×N → SET_POLL → LIST), then reads i
   CMD_ECHO round-trips to the slave verified byte-for-byte with liveness polling
   concurrent. One command in flight; queue + scheduler + retry is Step 6.
   Completes the full one-slave vertical run.
-- Next: add RS-485 transceivers (MAX485) — same protocol, just the bus
-  electricals; then Step 6 (queue + scheduler) and Step 7 (interlocks).
+- **Capstone Phase 1 — fake-console API suite: DONE (point-to-point TTL).** A C
+  "fake console" (capstone_main.c) brings the BC to OPERATIONAL, provisions +
+  enables the sweep, then runs the API command suite to the slave through the
+  sweep: echo, sysinfo, stack_hwm, and the analog loopback DAC(A0)->ADC(A1)≈4×
+  (via the A0↔A1 jumper) — 4/4 pass. (i2c_scan omitted: blocks on bare pins.)
+- Next: Step 7 (summary-bit interlock escalation) → Capstone Phase 2 (arm an
+  interlock on A1, trigger it by driving the DAC, verify trip + escalation). Then
+  add RS-485 transceivers + more slaves.
 
 ## Known follow-ups
 - **Device pinning:** with multiple dongles, scan-grabs-first-`/dev/ttyACM*` is

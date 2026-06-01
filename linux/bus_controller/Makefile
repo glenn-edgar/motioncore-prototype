@@ -11,8 +11,8 @@ LDFLAGS ?=
 LIBCOMM := vendor/libcomm/frame.c
 
 # ---- targets ---------------------------------------------------------------
-.PHONY: all clean step0a step0b step1 step2 step3 step4 step5
-all: step0a step0b step1 step2 step3 step4 step5
+.PHONY: all clean step0a step0b step1 step2 step3 step4 step5 capstone
+all: step0a step0b step1 step2 step3 step4 step5 capstone
 
 # Step 0a — link-endpoint seam + USB link manager bring-up driver.
 step0a: step0a_main.c usb_link.c $(LIBCOMM)
@@ -42,5 +42,9 @@ step4: step4_main.c controller.c demux.c identity.c roster.c usb_link.c $(LIBCOM
 step5: step5_main.c controller.c demux.c identity.c roster.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
+# Capstone — fake console: full API suite + (Step 7) interlock arm/trigger.
+capstone: capstone_main.c controller.c demux.c identity.c roster.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
 clean:
-	rm -f step0a step0b step1 step2 step3 step4 step5
+	rm -f step0a step0b step1 step2 step3 step4 step5 capstone
