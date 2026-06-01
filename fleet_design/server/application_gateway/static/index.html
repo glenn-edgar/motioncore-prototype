@@ -120,6 +120,7 @@ const status = document.getElementById("status");
 const state = {
     robots: [],         // [{kb_name, class, instance, leaf_count}]
     leavesByKb: {},     // kb_name -> [{path, kind, ...}]
+    heartbeatByKb: {},  // kb_name -> heartbeat payload (cached by loadRobots)
     open: new Set(),    // kb_name set of expanded cards
     detail: {},         // kb_name -> {path, kind, html}
     chartMetric: {},    // "<kb>|<leaf>" -> picked metric path (sticky across renders)
@@ -217,7 +218,10 @@ function metricsFromRows(rows) {
 
 // Render an SVG line chart for one series. Returns SVG string.
 function svgChart(points, label) {
-    const W = 520, H = 180, PAD_L = 44, PAD_R = 10, PAD_T = 10, PAD_B = 22;
+    // viewBox W must match the natural drawing aspect we want filled — at
+    // 1200×180 the chart fills typical desktop panels (~1200 px wide content
+    // area) instead of being center-clamped at 520 px by preserveAspectRatio.
+    const W = 1200, H = 180, PAD_L = 44, PAD_R = 10, PAD_T = 10, PAD_B = 22;
     if (points.length < 2) {
         return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
             <text x="${W/2}" y="${H/2}" class="axlbl" text-anchor="middle">
@@ -311,14 +315,21 @@ async function loadRobots() {
     try {
         const j = await api("/api/robots");
         state.robots = j.data;
-        // Always re-fetch leaves — the topology can change as persistence
-        // catches up (initial bootstrap is racy), and we don't want stale
-        // partial data to lock in. Cost: one /leaves RPC per robot per
-        // refresh (~10s cadence) — cheap compared to /latest + /stream.
-        for (const kb of state.robots) {
-            const lj = await api(`/api/robots/${kb.class}/${kb.instance}/leaves`);
-            state.leavesByKb[kb.kb_name] = lj.data;
-        }
+        // Re-fetch leaves + heartbeat for every robot in PARALLEL so the
+        // periodic refresh (10s cadence) doesn't serialize ~100ms per call.
+        // We always refetch leaves because the topology can change as
+        // persistence catches up (initial bootstrap is racy); we cache
+        // heartbeat here so render() doesn't need to await anything and
+        // the leaf-detail click path renders instantly. Cost per refresh
+        // = 2 calls per robot, fired concurrently.
+        await Promise.all(state.robots.flatMap(kb => [
+            api(`/api/robots/${kb.class}/${kb.instance}/leaves`)
+                .then(lj => { state.leavesByKb[kb.kb_name] = lj.data; })
+                .catch(() => { state.leavesByKb[kb.kb_name] = state.leavesByKb[kb.kb_name] || []; }),
+            api(`/api/robots/${kb.class}/${kb.instance}/latest?path=heartbeat`)
+                .then(hj => { state.heartbeatByKb[kb.kb_name] = hj.data; })
+                .catch(() => { /* keep prior heartbeat */ }),
+        ]));
         status.textContent = `refreshed ${new Date().toLocaleTimeString()}`;
         render();
     } catch (e) {
@@ -327,15 +338,15 @@ async function loadRobots() {
     }
 }
 
-async function loadHeartbeat(kb) {
-    try {
-        const j = await api(`/api/robots/${kb.class}/${kb.instance}/latest?path=heartbeat`);
-        return j.data;
-    } catch (e) { return null; }
-}
-
 async function loadDetail(kb, leaf) {
     const params = new URLSearchParams({ path: leaf.path });
+    // Show a placeholder IMMEDIATELY so the click feels responsive. For
+    // chunky streams (e.g. moisture, ~5 rows/page × 40 pages) the full pull
+    // can take 4-5 s on its own; without this the dashboard sat frozen.
+    state.detail[kb.kb_name] = { path: leaf.path, kind: leaf.kind,
+        html: `<h4>${escapeHtml(leaf.path)} (${leaf.kind})</h4><div class="muted">loading…</div>` };
+    render();
+
     let html;
     try {
         if (leaf.kind === "status") {
@@ -348,8 +359,12 @@ async function loadDetail(kb, leaf) {
             // at 4 KB on the server side so a single call typically returns
             // only 3-6 rows for chunky JSON payloads (e.g. moisture readings
             // with full TTN gateway metadata). Fetch up to MAX_PAGES so the
-            // chart has enough points to draw a useful history.
-            const TARGET_ROWS = 30, MAX_PAGES = 8;
+            // chart has enough points to draw a useful history. 200 rows
+            // covers a 7-day window at the LaCima hourly cadence
+            // (7 × 24 = 168 + headroom for missed uplinks / partial-day edges).
+            // The intra-loop render() shows a per-page row counter so the
+            // user sees progress instead of a 4-5 s freeze.
+            const TARGET_ROWS = 200, MAX_PAGES = 60;
             params.set("limit", String(TARGET_ROWS));
             params.set("order", "desc");
             let rows = [], page, nextPageAtStop;
@@ -362,6 +377,12 @@ async function loadDetail(kb, leaf) {
                 page = j.next_page;
                 nextPageAtStop = page;     // cursor preserved for the "more rows available" footer
                 if (!page || rows.length >= TARGET_ROWS) break;
+                // Cheap progress tick — render() is synchronous now (no
+                // network in the path) so the DOM update is sub-ms.
+                state.detail[kb.kb_name].html =
+                    `<h4>${escapeHtml(leaf.path)} (stream)</h4>` +
+                    `<div class="muted">loading… ${rows.length} rows so far</div>`;
+                render();
             }
 
             // Chart: extract every numeric leaf path across rows, hide
@@ -435,11 +456,11 @@ async function loadDetail(kb, leaf) {
     render();
 }
 
-async function render() {
+function render() {
     const parts = [];
     for (const kb of state.robots) {
         const open = state.open.has(kb.kb_name);
-        const hb = await loadHeartbeat(kb);
+        const hb = state.heartbeatByKb[kb.kb_name];     // synchronous; loadRobots warmed the cache
         const hbState = hb && hb.state || "unknown";
         const hbTs    = hb && hb.ts;
         const hbApps  = hb && hb.apps;

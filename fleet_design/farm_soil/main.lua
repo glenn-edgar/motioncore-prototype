@@ -125,15 +125,18 @@ local ir = ct_loader.load(ir_path)
 
 -- KB0's user fns + the moisture skill-KB's user fns + both CIMIS KBs' fns
 -- + the daily-digest KB's user fns.
-local conn_fns     = require("connection_user_functions")
-local moisture_fns = require("moisture_user_functions")
-local cimis_fns    = require("cimis_user_functions")
-local digest_fns   = require("digest_user_functions")
-local eto_sync_fns = require("eto_sync_user_functions")
-local watchdog_fns = require("irrigation_watchdog_user_functions")
+local conn_fns         = require("connection_user_functions")
+local moisture_fns     = require("moisture_user_functions")
+local cimis_fns        = require("cimis_user_functions")
+local synoptic_fns     = require("synoptic_user_functions")
+local eto_resolver_fns = require("eto_resolver_user_functions")
+local digest_fns       = require("digest_user_functions")
+local eto_sync_fns     = require("eto_sync_user_functions")
+local watchdog_fns     = require("irrigation_watchdog_user_functions")
 fn_registry.register_functions(ir, builtins,
     conn_fns.registry, moisture_fns.registry,
-    cimis_fns.registry, digest_fns.registry,
+    cimis_fns.registry, synoptic_fns.registry,
+    eto_resolver_fns.registry, digest_fns.registry,
     eto_sync_fns.registry, watchdog_fns.registry)
 
 local ok, missing = fn_registry.validate(ir)
@@ -156,6 +159,18 @@ handle.blackboard.shutdown_requested = false
 -- last_recorded_date gate flag. One entry per cimis_<source> KB; the KBs
 -- read/write their own entry, and the repost queryable handler reads it.
 handle.blackboard._cimis = { station = {}, spatial = {} }
+
+-- Per-station Synoptic runtime state — same shape as _cimis. Each
+-- synoptic_<stid> KB reads/writes its own slot. Stations come from the
+-- class spec so adding a station is a class_spec edit, not a main.lua edit.
+handle.blackboard._synoptic = {}
+for stid, _ in pairs(class_spec.synoptic.stations) do
+    handle.blackboard._synoptic[stid] = {}
+end
+
+-- The resolver KB writes its own state slot — last_published_date so it
+-- doesn't republish, last_winner / last_chain for RPC / debug visibility.
+handle.blackboard._eto_resolver = {}
 
 -- Runtime-maintained field the KB0 controller-heartbeat boolean reads.
 -- handle.timestamp is advanced in the pump from CLOCK_MONOTONIC.
