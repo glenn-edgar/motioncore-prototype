@@ -1,0 +1,4 @@
+# build artifacts
+step0a
+*.o
+*.log
