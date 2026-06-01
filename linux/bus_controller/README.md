@@ -31,17 +31,28 @@ See the design docs:
 ## Build & run
 
 ```sh
-make step0a            # link-endpoint seam + USB link manager bring-up driver
-./step0a [/dev/ttyACMx] # no arg => scan first /dev/ttyACM*
+make                   # builds all step drivers
+./step0a [/dev/ttyACMx] # link manager bring-up: prints UP/DOWN + decoded frames
+./step0b [/dev/ttyACMx] # demux: walks a minimal sync ladder, sends CMD_ECHO,
+                        #   correlates the reply by request_id, prints PASS/FAIL
 ```
 
 `step0a` opens a dongle, prints every link UP/DOWN edge and every decoded inbound
 frame, and survives a manual unplug/reset (DOWN→UP, no restart). It sends nothing;
 the SAMD21 firmware's own REGISTER/HEARTBEAT traffic exercises the decode path.
 
+`step0b` adds the demux (`demux.{h,c}`): one RX path dispatching `SHELL_REPLY` to a
+pending request (correlated by request_id) vs. everything else to an async router.
+The inline sync ladder it walks is throwaway test scaffolding — Step 2 builds the
+robust version in the controller.
+
 ## Status
 
 - **Step 0a — link-endpoint seam + USB link manager: DONE.** Hardware-verified on
   the Pi: cold-start scan, UP on plug-in, clean SLIP+CRC decode, and clean DOWN→UP
   across resets with no program restart.
-- Next: Step 0b (demux reader — monotonic request_ids, reply-vs-async dispatch).
+- **Step 0b — demux reader: DONE.** Hardware-verified: CMD_ECHO round-trip
+  correlated by request_id, payload verified byte-for-byte, async stream
+  (REGISTER/HEARTBEAT/DBG_LOG/MANIFEST_REPLY) cleanly separated, monotonic
+  request_id (unknown-id replies dropped, not mis-latched).
+- Next: Step 1 (find dongle + connect — identify role via REGISTER/sysinfo class_id).

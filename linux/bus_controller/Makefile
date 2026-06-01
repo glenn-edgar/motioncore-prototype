@@ -11,12 +11,16 @@ LDFLAGS ?=
 LIBCOMM := vendor/libcomm/frame.c
 
 # ---- targets ---------------------------------------------------------------
-.PHONY: all clean step0a
-all: step0a
+.PHONY: all clean step0a step0b
+all: step0a step0b
 
 # Step 0a — link-endpoint seam + USB link manager bring-up driver.
 step0a: step0a_main.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
+# Step 0b — demux reader (reply-vs-async dispatch, monotonic request_ids).
+step0b: step0b_main.c demux.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
 clean:
-	rm -f step0a
+	rm -f step0a step0b
