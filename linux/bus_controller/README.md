@@ -46,6 +46,11 @@ pending request (correlated by request_id) vs. everything else to an async route
 The inline sync ladder it walks is throwaway test scaffolding — Step 2 builds the
 robust version in the controller.
 
+`step1` starts the reusable **controller core** (`controller.{h,c}` + `identity.{h,c}`):
+opens a dongle, captures its REGISTER announcement, and prints the decoded identity
+(role from class_id, instance, commissioning, fw version, UID). Steps 2–3 grow this
+same controller object.
+
 ## Status
 
 - **Step 0a — link-endpoint seam + USB link manager: DONE.** Hardware-verified on
@@ -55,4 +60,8 @@ robust version in the controller.
   correlated by request_id, payload verified byte-for-byte, async stream
   (REGISTER/HEARTBEAT/DBG_LOG/MANIFEST_REPLY) cleanly separated, monotonic
   request_id (unknown-id replies dropped, not mis-latched).
-- Next: Step 1 (find dongle + connect — identify role via REGISTER/sysinfo class_id).
+- **Step 1 — find dongle + connect, identify role: DONE.** Hardware-verified:
+  controller captured REGISTER in BOOT and decoded full identity (role from
+  class_id, instance, commissioning, fw version, UID). Reusable `controller`/
+  `identity` core established.
+- Next: Step 2 (sync ladder ported into the controller + auto-resync on link-up).
