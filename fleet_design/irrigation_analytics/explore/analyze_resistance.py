@@ -98,6 +98,14 @@ R_NEW_SPEC    = 43.0   # new-install solenoid baseline
 R_INOPERABLE  = 34.0   # ≈ cohort μ − 3σ; below this = physically inoperable
 R_IMPENDING   = 47.0   # ≈ cohort μ + 5σ; above this = trending open
 TREND_P_THRESHOLD = 0.10  # loose for baseline characterization
+# Minimum |R movement| over the trend window to call an AGING_OPEN / PRE_SHORT.
+# ACS712 noise + drive-voltage variation + phantom-offset residual together
+# floor at ~±1.5–2Ω per reading. Field DMM with finger-bridging adds another
+# ±1Ω. So anything under ~3Ω of movement is in the noise band — confirmed
+# 2026-06-01 against Glenn's bench measurements (sat_2:3 at 43Ω stable,
+# sat_3:11 fine, sat_2:7 at 44Ω = +1Ω above baseline = noise). Tighten if
+# field experience shows we miss real failures; relax if it lets noise in.
+R_TREND_MIN_DELTA = 3.0
 
 # "Today's reading" averaging window. The controller runs the resistance
 # check 1-2× per day; both go into the rolling-20 IRRIGATION_VALVE_TEST
@@ -257,7 +265,8 @@ def mann_kendall(series: list[float]) -> tuple[float, float, float]:
 
 
 def classify(valve: str, r_corr: float | None, cohort: str,
-             z_score: float | None, mk_p: float, mk_tau: float) -> str:
+             z_score: float | None, mk_p: float, mk_tau: float,
+             mk_delta: float = 0.0) -> str:
     if valve in MASTER_DEAD: return "DEAD_MASTER"
     if valve in DISCONNECTS: return "DISCONNECTED"
     if r_corr is None:       return "OPEN_CIRCUIT"
@@ -267,7 +276,12 @@ def classify(valve: str, r_corr: float | None, cohort: str,
         # Always classify STABLE_HEAVY — see [[irrigation-site-facts-2026-05-27]].
         return "STABLE_HEAVY"
     if r_corr < R_INOPERABLE:    return "INOPERABLE"
-    if mk_p < TREND_P_THRESHOLD:
+    # Trend-based classifications require BOTH a statistically meaningful
+    # Mann-Kendall result AND a real-world magnitude of movement. Without
+    # the magnitude gate, ~1Ω noise drift in the "right direction" produces
+    # 50% FP rate on AGING_OPEN (sat_2:3, sat_3:11 both at baseline R but
+    # tagged on 2026-05-31 with tau=+0.44/+0.49 — bench-confirmed false).
+    if mk_p < TREND_P_THRESHOLD and abs(mk_delta) >= R_TREND_MIN_DELTA:
         if mk_tau > 0:                          return "AGING_OPEN"   # R rising
         if mk_tau < 0 and r_corr < R_IMPENDING: return "PRE_SHORT"    # R falling
     if r_corr > R_IMPENDING:     return "IMPENDING_OPEN"
@@ -292,6 +306,7 @@ def emit_json(rows, cohort_stats, offsets, offset_today, phantom_drift) -> None:
             "z":       round(r["z"], 3) if r["z"] is not None else None,
             "mk_tau":  round(r["mk_tau"], 3),
             "mk_p":    round(r["mk_p"], 4),
+            "mk_delta": round(r.get("mk_delta", 0.0), 3),
             "mk_basis": r.get("mk_basis", "raw_R"),
             "mk_n":    r["mk_n"],
         }
@@ -419,10 +434,17 @@ def main() -> None:
             mk_basis = "raw_R"
         if len(mk_series) >= 5:
             tau, z, p = mann_kendall(mk_series)
+            # Magnitude-of-movement over the trend window. For raw_R basis
+            # this is ΔR; for residual basis this is the change in detrended
+            # residual. Either way, |this| < R_TREND_MIN_DELTA means the
+            # trend is below measurement noise floor → suppress trend label.
+            mk_delta = mk_series[-1] - mk_series[0]
         else:
             tau, z, p = 0.0, 0.0, 1.0
+            mk_delta = 0.0
         rows.append({"valve": valve, "latest_A": latest, "r_corr": r,
                      "cohort": cohort, "mk_tau": tau, "mk_p": p,
+                     "mk_delta": mk_delta,
                      "mk_basis": mk_basis, "mk_n": len(mk_series),
                      "k_start": k_start, "series": series})
 
@@ -445,7 +467,8 @@ def main() -> None:
             r["z"] = (rv - mu) / sd if sd > 1e-6 else 0.0
         else:
             r["z"] = None
-        r["status"] = classify(r["valve"], rv, c, r["z"], r["mk_p"], r["mk_tau"])
+        r["status"] = classify(r["valve"], rv, c, r["z"], r["mk_p"], r["mk_tau"],
+                               r.get("mk_delta", 0.0))
 
     # ── REPORT ────────────────────────────────────────────────────────────
     if args.json:
