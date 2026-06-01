@@ -246,6 +246,21 @@ uint8_t interlock_armed_count(void) {
     return n;
 }
 
+// Summary flags for the RS-485 poll terminator (the "summary-bit"): bit0 set if
+// any ARMED slot is currently in its ERR/veto state (tf == IL_TF_FALSE) — i.e.
+// an interlock has tripped and there is something for the controller to fetch.
+// Read from the per-tick status buffer so it reflects the latest evaluation.
+uint8_t interlock_summary_flags(void) {
+    const il_status_buffer_t* sb = interlock_get_status_buffer();
+    uint8_t flags = 0;
+    for (uint8_t i = 0; i < sb->num_slots && i < INTERLOCK_MAX_SLOTS; i++) {
+        if (sb->slots[i].state == INTERLOCK_SLOT_ARMED && sb->slots[i].tf == IL_TF_FALSE) {
+            flags |= 0x01u;   // bit0: an armed interlock is tripped
+        }
+    }
+    return flags;
+}
+
 uint8_t interlock_arm_slot_compiled(uint8_t slot, uint8_t id) {
     verify_persist_or_panic();
     if (slot >= INTERLOCK_MAX_SLOTS)            return SHELL_STATUS_BAD_ARGS;

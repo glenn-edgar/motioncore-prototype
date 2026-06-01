@@ -96,6 +96,12 @@ uint8_t       controller_bc_roster_total(const controller_t *c);
 typedef void (*controller_liveness_cb)(void *user, uint8_t addr, int is_up, uint32_t class_id);
 void controller_set_liveness_cb(controller_t *c, controller_liveness_cb cb, void *user);
 
+// Summary-bit escalation from the BC sweep (OP_BUS_SLAVE_FLAGGED): a slave's
+// poll-terminator summary changed. flags bit0 = an armed interlock is tripped.
+// Advisory — the slave already acted locally; L2 may read detail + notify.
+typedef void (*controller_flagged_cb)(void *user, uint8_t addr, uint8_t flags);
+void controller_set_flagged_cb(controller_t *c, controller_flagged_cb cb, void *user);
+
 // Start/stop the BC autonomous poll sweep (CMD_BUS_POLL_ENABLE). Reply ignored.
 // Returns the request_id (0xFFFF on error).
 uint16_t controller_set_poll_enable(controller_t *c, int on);

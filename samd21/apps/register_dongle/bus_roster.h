@@ -28,6 +28,8 @@ typedef struct {
     uint8_t  consecutive_misses;
     uint32_t last_seen_ms;         // board_millis() of last good frame (0 = never)
     uint8_t  announced_state;      // last state pushed to the Pi (event reconciler)
+    uint8_t  summary;              // last poll summary byte (bit0 = interlock tripped)
+    uint8_t  announced_summary;    // last summary pushed to the Pi (edge reconciler)
 } bus_slave_t;
 
 // Poll config — stored in Stage 2, consumed by the Stage-3 poll engine.

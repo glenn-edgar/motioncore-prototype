@@ -29,6 +29,7 @@
 
 #define OP_BUS_SLAVE_DOWN_       0x0015
 #define OP_BUS_SLAVE_UP_         0x0016
+#define OP_BUS_SLAVE_FLAGGED_    0x0017
 
 struct controller {
     link_endpoint_t  *ep;
@@ -50,6 +51,9 @@ struct controller {
 
     controller_liveness_cb liveness_cb;
     void                  *liveness_user;
+
+    controller_flagged_cb  flagged_cb;
+    void                  *flagged_user;
 
     // Step 3: roster recall + push.
     int               have_roster;
@@ -229,6 +233,11 @@ static void on_event(void *user, const frame_meta_t *meta, const uint8_t *payloa
             c->liveness_cb(c->liveness_user, payload[0], 1, rd_u32(&payload[1]));
         break;
 
+    case OP_BUS_SLAVE_FLAGGED_:  // [addr:u8][flags:u8]
+        if (meta->payload_len >= 2 && c->flagged_cb)
+            c->flagged_cb(c->flagged_user, payload[0], payload[1]);
+        break;
+
     default:
         break;  // DBG_LOG / EVENT / NAK / etc. — later steps own these.
     }
@@ -354,6 +363,10 @@ uint16_t controller_send_shell_to(controller_t *c, uint8_t dest_addr, uint16_t c
 
 void controller_set_liveness_cb(controller_t *c, controller_liveness_cb cb, void *user) {
     c->liveness_cb = cb; c->liveness_user = user;
+}
+
+void controller_set_flagged_cb(controller_t *c, controller_flagged_cb cb, void *user) {
+    c->flagged_cb = cb; c->flagged_user = user;
 }
 
 uint16_t controller_set_poll_enable(controller_t *c, int on) {

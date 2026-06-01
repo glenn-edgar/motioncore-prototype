@@ -102,9 +102,19 @@ down via `CMD_BUS_*` (CLEAR → REGISTER×N → SET_POLL → LIST), then reads i
   enables the sweep, then runs the API command suite to the slave through the
   sweep: echo, sysinfo, stack_hwm, and the analog loopback DAC(A0)->ADC(A1)≈4×
   (via the A0↔A1 jumper) — 4/4 pass. (i2c_scan omitted: blocks on bare pins.)
-- Next: Step 7 (summary-bit interlock escalation) → Capstone Phase 2 (arm an
-  interlock on A1, trigger it by driving the DAC, verify trip + escalation). Then
-  add RS-485 transceivers + more slaves.
+- **Step 7 — summary-bit interlock escalation: DONE (point-to-point TTL).** Slave
+  puts a 1-byte summary in its poll terminator (bit0 = an armed interlock tripped);
+  BC tracks it per-slave and escalates the edge as OP_BUS_SLAVE_FLAGGED
+  (defer-never-drop); L2 surfaces it via a flagged callback.
+- **CAPSTONE — fake console, full stack: 10/10 PASS (point-to-point TTL).** One
+  run: API suite (echo, sysinfo, stack_hwm, DAC→ADC loopback) + interlock arm →
+  trigger by driving the DAC into the watched ADC (self-triggering via the A0↔A1
+  jumper) → slave trips locally + sets summary-bit → BC escalates SLAVE_FLAGGED →
+  L2 sees tripped, INTERLOCK_STATUS tf=2, then clears on recovery → disarm. The
+  full BC stack + slave stack, end to end.
+- Next (per plan): add RS-485 transceivers (MAX485, 4-wire — same protocol/fw),
+  re-run the capstone over the real bus, then add more slaves. Then Step 6
+  (queue + scheduler + retry) for multi-slave fairness.
 
 ## Known follow-ups
 - **Device pinning:** with multiple dongles, scan-grabs-first-`/dev/ttyACM*` is

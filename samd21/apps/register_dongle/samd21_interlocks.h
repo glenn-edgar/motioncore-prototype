@@ -316,6 +316,10 @@ void     interlock_boot_decide(void);
 // Number of slots currently ARMED. Useful in the boot-emit path.
 uint8_t  interlock_armed_count(void);
 
+// Summary flags for the RS-485 poll terminator (bit0 = any armed interlock
+// tripped). See samd21_interlocks.c.
+uint8_t  interlock_summary_flags(void);
+
 // ---- Slot administration (slice 1 stubs) ---------------------------------
 
 // Arm a compile-time registry entry into a slot. `id` must be a valid

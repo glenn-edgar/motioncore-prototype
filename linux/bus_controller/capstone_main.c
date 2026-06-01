@@ -30,6 +30,11 @@
 #define CMD_DAC_WRITE   0x0103
 #define CMD_ADC_READ    0x0104
 #define CMD_I2C_SCAN    0x0133
+#define CMD_INTERLOCK_STATUS 0x0140
+#define CMD_INTERLOCK_DISARM 0x0142
+#define CMD_INTERLOCK_SET    0x0143
+#define IL_TF_TRUE      1     // watches satisfied (safe)
+#define IL_TF_FALSE     2     // a watch failed (tripped / ERR-veto)
 
 #define SLAVE_ADDR      1
 #define A1_AIN_CHANNEL  4      // D1/A1 = PA04 = AIN[4]
@@ -68,6 +73,27 @@ static int call(controller_t *c, uint16_t cmd, const uint8_t *args, uint16_t ale
     }
     *out = g_reply;
     return g_reply.done ? 0 : -1;
+}
+
+// Summary-bit escalation state, updated by the controller's flagged callback.
+static int g_flag_bit = 0;       // latest bit0 (interlock tripped) for the slave
+static int g_flag_events = 0;    // total OP_BUS_SLAVE_FLAGGED edges seen
+static void on_flagged(void *user, uint8_t addr, uint8_t flags) {
+    (void)user;
+    g_flag_bit = (flags & 0x01u) ? 1 : 0;
+    g_flag_events++;
+    printf("  >>> [escalation] OP_BUS_SLAVE_FLAGGED addr=%u flags=0x%02X (tripped=%d)\n",
+           addr, flags, g_flag_bit);
+    fflush(stdout);
+}
+// Pump the controller until the escalated summary-bit reaches `want`, or timeout.
+static int pump_until_flag(controller_t *c, int want, int timeout_ms) {
+    uint64_t deadline = mono_ms() + timeout_ms;
+    while (g_flag_bit != want && mono_ms() < deadline && !g_stop) {
+        controller_poll(c);
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = 3*1000*1000 }; nanosleep(&ts, NULL);
+    }
+    return g_flag_bit == want;
 }
 
 static int g_pass = 0, g_fail = 0;
@@ -130,6 +156,72 @@ static void run_api_suite(controller_t *c) {
     }
 }
 
+// ---- Phase 2: arm an interlock, trigger it via the DAC, verify escalation ---
+// Self-triggering via the A0<->A1 jumper: the interlock watches A1 (ADC); the
+// console drives A0 (DAC) high so A1 crosses the threshold and the slave trips.
+static void run_interlock_phase(controller_t *c) {
+    reply_t r; char d[96];
+    // DSL: safe while A1 < 600; trips (tf=FALSE -> drive D3 high) when A1 >= 600.
+    static const char DSL[] =
+        "cap;cfg[(A1):adc];cfg[(D3):out];watch[A1:lt:600];out_ok[D3:0];out_err[D3:1]";
+    const uint8_t SLOT = 0;
+
+    // Start from a known-safe analog level, and clear any persisted slot 0.
+    uint8_t dz[2] = {0,0}; call(c, CMD_DAC_WRITE, dz, 2, &r);
+    uint8_t ds[1] = { SLOT }; call(c, CMD_INTERLOCK_DISARM, ds, 1, &r);
+
+    // 1. Arm the interlock (slot + DSL text).
+    {
+        uint8_t a[1 + sizeof DSL - 1];
+        a[0] = SLOT; memcpy(&a[1], DSL, sizeof DSL - 1);
+        int ok = (call(c, CMD_INTERLOCK_SET, a, sizeof a, &r) == 0) && r.status == 0;
+        if (!ok && r.len >= 1)
+            snprintf(d, sizeof d, "status=%u err=%u off=%u", r.status, r.buf[0],
+                     r.len >= 3 ? (uint16_t)(r.buf[1]|(r.buf[2]<<8)) : 0);
+        else snprintf(d, sizeof d, "armed slot %u (watch A1<600 -> veto D3)", SLOT);
+        check("interlock_set (arm)", ok, d);
+        if (!ok) return;
+    }
+
+    // 2. Confirm it sits SAFE (not flagged) at low analog.
+    {
+        int safe = pump_until_flag(c, 0, 2000);
+        check("pre-trip: not flagged", safe && g_flag_bit == 0, safe ? "summary clear" : "unexpected flag");
+    }
+
+    // 3. TRIGGER: drive the DAC high -> A1 ~2048 >= 600 -> watch fails -> trip.
+    {
+        uint8_t dh[2] = { 0x00, 0x02 };  // 512
+        call(c, CMD_DAC_WRITE, dh, 2, &r);
+        int tripped = pump_until_flag(c, 1, 3000);
+        snprintf(d, sizeof d, "%d escalation edge(s) seen", g_flag_events);
+        check("trigger -> SLAVE_FLAGGED (tripped)", tripped, d);
+    }
+
+    // 4. Confirm via INTERLOCK_STATUS that slot 0 reads tf=FALSE (ERR/veto).
+    {
+        // INTERLOCK_STATUS reply: [ver][nslots] then 20B slots {state,id,bc,tf,name[16]}.
+        // slot0.tf is at offset 2 + 3 = 5.
+        int ok = (call(c, CMD_INTERLOCK_STATUS, NULL, 0, &r) == 0) && r.status == 0 && r.len >= 6;
+        uint8_t tf = (r.len >= 6) ? r.buf[5] : 0;
+        snprintf(d, sizeof d, "slot0 tf=%u (%s)", tf, tf==IL_TF_FALSE?"tripped":tf==IL_TF_TRUE?"safe":"?");
+        check("interlock_status: tripped", ok && tf == IL_TF_FALSE, d);
+    }
+
+    // 5. RECOVER: drop the DAC -> A1 < 600 -> safe -> summary clears.
+    {
+        call(c, CMD_DAC_WRITE, dz, 2, &r);
+        int cleared = pump_until_flag(c, 0, 3000);
+        check("recover -> SLAVE_FLAGGED clears", cleared, cleared ? "summary back to 0" : "still flagged");
+    }
+
+    // 6. Disarm.
+    {
+        int ok = (call(c, CMD_INTERLOCK_DISARM, ds, 1, &r) == 0) && r.status == 0;
+        check("interlock_disarm", ok, NULL);
+    }
+}
+
 int main(int argc, char **argv) {
     signal(SIGINT, on_sigint);
     const char *device = (argc > 1 && argv[1][0] != '-') ? argv[1] : NULL;
@@ -148,6 +240,7 @@ int main(int argc, char **argv) {
     if (!ep) { fprintf(stderr, "usb_link_create failed\n"); return 1; }
     controller_t *ctrl = controller_create(ep);
     if (!ctrl) { fprintf(stderr, "controller_create failed\n"); return 1; }
+    controller_set_flagged_cb(ctrl, on_flagged, NULL);
     controller_attach_roster(ctrl, &roster);
 
     // Bring up: sync -> provision -> enable sweep -> let the slave reach ALIVE.
@@ -169,11 +262,14 @@ int main(int argc, char **argv) {
     }
     if (!enabled) { fprintf(stderr, "[capstone] never reached OPERATIONAL/provisioned\n"); link_close(ep); return 1; }
 
-    printf("\n[capstone] === API command suite (through the sweep) ===\n");
+    printf("\n[capstone] === Phase 1: API command suite (through the sweep) ===\n");
     run_api_suite(ctrl);
 
-    printf("\n[capstone] API suite: %d passed, %d failed\n", g_pass, g_fail);
-    // Phase 2 (interlock arm -> trigger -> verify) added after Step 7.
+    printf("\n[capstone] === Phase 2: interlock arm -> trigger -> escalate ===\n");
+    run_interlock_phase(ctrl);
+
+    printf("\n[capstone] RESULT: %d passed, %d failed  (%d escalation edges)\n",
+           g_pass, g_fail, g_flag_events);
     controller_destroy(ctrl);
     link_close(ep);
     return g_fail == 0 ? 0 : 1;

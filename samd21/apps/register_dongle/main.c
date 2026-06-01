@@ -551,6 +551,28 @@ static void bus_drain_cmd_reply(void) {
     // else: ring full, retry next loop.
 }
 
+// Emit one pending summary-bit edge (OP_BUS_SLAVE_FLAGGED [addr][flags]) per
+// call, defer-never-drop (same discipline as bus_drain_events). The roster's
+// (summary != announced_summary) IS the pending-edge flag. The flags byte bit0
+// = an armed interlock on that slave is tripped; L2 reads detail + advises.
+static void bus_drain_flagged(void) {
+    uint8_t n = bus_roster_count();
+    for (uint8_t i = 0; i < n; i++) {
+        const bus_slave_t* cs = bus_roster_at(i);
+        if (cs == NULL || cs->summary == cs->announced_summary) continue;
+        bus_slave_t* s = bus_roster_find(cs->addr);
+        if (s == NULL) continue;
+        uint8_t body[2] = { s->addr, s->summary };
+        frame_meta_t meta = { .addr = s->addr, .cmd = OP_BUS_SLAVE_FLAGGED, .seq = g_bridge_seq,
+                              .ack_seq = 0, .ack_status = 0, .payload_len = sizeof(body) };
+        if (frame_encode_s2m(&meta, body, &g_tx_ring) == 0) {
+            g_bridge_seq++;
+            s->announced_summary = s->summary;
+        }
+        return;   // one emit per call; ring may be full — retry next loop
+    }
+}
+
 // Slave answered: clear misses, stamp last_seen, set ALIVE. (Event push is
 // handled by bus_reconcile_events so a momentarily-full TX ring can't drop it.)
 static void bus_mark_alive(uint8_t addr, uint32_t now) {
@@ -660,6 +682,11 @@ static void bus_poll_engine(void) {
             } else {
                 g_cmd_state = CMD_IDLE;         // non-DATA answer: nothing to relay
             }
+        } else {
+            // Routine poll reply (NO_MESSAGE [summary]): capture the summary-bit.
+            // bus_drain_flagged() emits the edge so a full ring defers, not drops.
+            bus_slave_t* s = bus_roster_find(g_poll_cur_addr);
+            if (s != NULL) s->summary = (f.len >= 1u) ? f.payload[0] : 0u;
         }
         g_poll_state   = POLL_IDLE;
         g_poll_next_ms = now + cfg->poll_period_ms;
@@ -692,13 +719,14 @@ static void rs485_slave_poll(void) {
     rs485_frame_t f;
     for (uint8_t guard = 0; guard < 4; guard++) {
         if (!rs485_recv(&f)) return;
-        // POLL (BC-3 / Stage 3a): "your window is open." We have no outbound queue
-        // yet (events = 3b), so terminate the window immediately with NO_MESSAGE.
-        // Sourced from our own addr so the BC's liveness check (f.src == polled)
-        // passes. NO_MESSAGE carries no payload.
+        // POLL (BC-3 / Stage 3a): "your window is open." Terminate the window with
+        // NO_MESSAGE carrying a 1-byte summary (Step 7): bit0 = an armed interlock
+        // is tripped. Sourced from our own addr so the BC liveness check passes.
+        // (Old BCs that ignore the payload still see a valid frame = alive.)
         if ((f.type & RS485_FT_MASK) == RS485_FT_POLL) {
+            uint8_t summary = interlock_summary_flags();
             rs485_send(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
-                       RS485_FT_NO_MESSAGE, f.seq, NULL, 0);
+                       RS485_FT_NO_MESSAGE, f.seq, &summary, 1);
             continue;
         }
         if ((f.type & RS485_FT_MASK) != RS485_FT_DATA) continue;  // ACK/NAK: later
@@ -950,6 +978,7 @@ int main(void) {
         if (bus_poll_cfg()->enabled) {
             bus_poll_engine();
             bus_drain_events();      // emit pending DOWN/UP; full ring defers, never drops
+            bus_drain_flagged();     // emit pending summary-bit edges (interlock tripped)
             bus_drain_cmd_reply();   // relay a captured command reply; same discipline
         } else {
             rs485_bridge_poll();

@@ -82,6 +82,8 @@ uint8_t bus_roster_register(uint8_t addr, uint32_t class_id, uint8_t flags,
         g_roster[i].consecutive_misses = 0;
         g_roster[i].last_seen_ms       = 0;
         g_roster[i].announced_state    = BUS_STATE_UNKNOWN;
+        g_roster[i].summary            = 0;
+        g_roster[i].announced_summary  = 0;
         if (out_count) *out_count = bus_roster_count();
         return BUS_REG_OK;
     }
