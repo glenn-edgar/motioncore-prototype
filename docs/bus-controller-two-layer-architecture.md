@@ -193,9 +193,41 @@ change, queued command). It is *not* a fully dumb bridge (USB latency forbids
 Pi-paced windowing) and *not* the full brain. The Stage-3a on-chip DOWN/UP/retry
 code is parked pending this migration.
 
-## 9. Why C for Layer 2
+## 9. Why C for Layer 2 — and the C / LuaJIT split (locked 2026-06-01)
 
 LuaJIT cannot run bare-metal on M33/M7; C can. Layer 2 in C + a transport HAL
 (`read` / `write` / `encode` / `decode`) + a command-source interface compiles
 for the Pi process, the M33/M7 dongle, and a Zenoh node alike. Only the HAL and
 the client binding change.
+
+Concretely, the boundary between C and LuaJIT **is** the command-source seam, and
+it is also the client-binding portability line:
+
+```
+  [LuaJIT Zenoh binding]   container/Pi-only; reuses fleet_design's existing
+        ↕ command-source API (FFI)        zenoh_session / RPC / fan-out code
+  [C: L2 bus controller + USB link mgr]    THE PORTABLE CORE → ports to M7/M33
+        ↕ link endpoint
+   dongle
+```
+
+- **The C core does the portable, timing-sensitive work** — roster, scheduler,
+  demux, async-command tracker, per-slave queues, interlock buffer, and the USB
+  link manager. It compiles bare-metal, so it is exactly what lifts to an M7/M33
+  unchanged.
+- **The LuaJIT layer does the network / policy / multi-client glue** — the Zenoh
+  command-source binding — and gets it nearly free by reusing the container's
+  proven Zenoh code (the fleet is already Zenoh-internal + LuaJIT). The bus
+  controller becomes just another Zenoh citizen; console/AI/dashboard reach it
+  with no new protocol.
+- **The LuaJIT layer is non-portable *by design*.** On an M7 you drop it entirely;
+  the C core is driven by the M7's native command sources (or another transport).
+  Only the binding above the seam changes — the core does not.
+
+Keep the C command-source API **small and stable** (it is the FFI seam): roughly
+`submit_command(slave, cmd, args, timeout) → handle`, `read_interlock_state(slave)`,
+and a `drain_events()` / callback for replies + interlock updates. **Single
+process, one event loop** (consistent with the in-process link-manager decision):
+LuaJIT drives the C controller's poll, drains its events, and fans them to Zenoh —
+no extra threads, no IPC inside the one-in-flight discipline. Zenoh clients are
+the only out-of-process boundary.
