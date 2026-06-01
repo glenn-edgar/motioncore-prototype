@@ -61,6 +61,9 @@ struct controller {
     prov_state_t      prov;
     int               prov_idx;          // slave being registered
     uint8_t           bc_total;          // from LIST read-back
+
+    // Step 6a: L2 command tracker (per-slave queue + availability).
+    cmd_tracker_t    *tracker;
 };
 
 static uint64_t mono_ms(void) {
@@ -261,11 +264,14 @@ controller_t *controller_create(link_endpoint_t *ep) {
     c->proto = PROTO_UNKNOWN;
     c->dx    = demux_create(ep, on_event, on_state, c);
     if (!c->dx) { free(c); return NULL; }
+    c->tracker = cmd_tracker_create(c->dx);
+    if (!c->tracker) { demux_destroy(c->dx); free(c); return NULL; }
     return c;
 }
 
 void controller_destroy(controller_t *c) {
     if (!c) return;
+    cmd_tracker_destroy(c->tracker);
     demux_destroy(c->dx);
     free(c);
 }
@@ -293,6 +299,10 @@ void controller_poll(controller_t *c) {
         if (controller_role(c) == ROLE_BUS_CONTROLLER) prov_start(c);
         else                                           c->prov = PROV_FAIL;
     }
+
+    // Step 6a: advance per-slave command queues (sends freed by completions, plus
+    // retries of any transiently-failed send).
+    cmd_tracker_poll(c->tracker);
 }
 
 link_state_t controller_link_state(const controller_t *c) { return c->link; }
@@ -331,6 +341,14 @@ void controller_attach_roster(controller_t *c, const roster_t *r) {
     c->prov = PROV_IDLE;
     c->prov_idx = 0;
     c->bc_total = 0;
+
+    // Rebuild the command-tracker slot set to match the roster. Any in-flight /
+    // queued command from a previous roster is aborted (LINK_DOWN) so no caller is
+    // orphaned. Queued commands survive a link bounce (the demux resolves only
+    // in-flight pendings) — this reset is specifically for a roster change.
+    cmd_tracker_reset(c->tracker, DEMUX_STATUS_LINK_DOWN);
+    for (int i = 0; i < c->roster.count; i++)
+        cmd_tracker_add_slave(c->tracker, c->roster.slaves[i].addr);
 }
 
 prov_state_t controller_prov_state(const controller_t *c) { return c->prov; }
@@ -372,4 +390,20 @@ void controller_set_flagged_cb(controller_t *c, controller_flagged_cb cb, void *
 uint16_t controller_set_poll_enable(controller_t *c, int on) {
     uint8_t arg = on ? 1u : 0u;
     return demux_send_shell(c->dx, CMD_BUS_POLL_ENABLE, &arg, 1, NULL, NULL);
+}
+
+uint32_t controller_submit_command(controller_t *c, uint8_t addr, uint16_t command_id,
+                                   const uint8_t *args, uint16_t args_len,
+                                   uint32_t exec_timeout_ms,
+                                   cmd_done_cb on_done, void *user) {
+    return cmd_tracker_submit(c->tracker, addr, command_id, args, args_len,
+                              exec_timeout_ms, on_done, user);
+}
+
+cmd_slot_state_t controller_slave_state(const controller_t *c, uint8_t addr) {
+    return cmd_tracker_state(c->tracker, addr);
+}
+
+uint8_t controller_slave_qdepth(const controller_t *c, uint8_t addr) {
+    return cmd_tracker_qdepth(c->tracker, addr);
 }

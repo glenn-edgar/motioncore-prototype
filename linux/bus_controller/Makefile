@@ -11,8 +11,8 @@ LDFLAGS ?=
 LIBCOMM := vendor/libcomm/frame.c
 
 # ---- targets ---------------------------------------------------------------
-.PHONY: all clean step0a step0b step1 step2 step3 step4 step5 capstone
-all: step0a step0b step1 step2 step3 step4 step5 capstone
+.PHONY: all clean step0a step0b step1 step2 step3 step4 step5 step6a capstone
+all: step0a step0b step1 step2 step3 step4 step5 step6a capstone
 
 # Step 0a — link-endpoint seam + USB link manager bring-up driver.
 step0a: step0a_main.c usb_link.c $(LIBCOMM)
@@ -23,28 +23,32 @@ step0b: step0b_main.c demux.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 # Step 1 — find dongle + connect; identify role via REGISTER class_id.
-step1: step1_main.c controller.c demux.c identity.c usb_link.c $(LIBCOMM)
+step1: step1_main.c controller.c demux.c identity.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 # Step 2 — controller-driven sync ladder + auto-resync.
-step2: step2_main.c controller.c demux.c identity.c usb_link.c $(LIBCOMM)
+step2: step2_main.c controller.c demux.c identity.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 # Step 3 — roster recall from disk + push sweep list to the BC via CMD_BUS_*.
-step3: step3_main.c controller.c demux.c identity.c roster.c usb_link.c $(LIBCOMM)
+step3: step3_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 # Step 4 — BC autonomous poll sweep + liveness escalation (point-to-point slave).
-step4: step4_main.c controller.c demux.c identity.c roster.c usb_link.c $(LIBCOMM)
+step4: step4_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 # Step 5 — content command->reply to a slave injected through the sweep.
-step5: step5_main.c controller.c demux.c identity.c roster.c usb_link.c $(LIBCOMM)
+step5: step5_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+# Step 6a — L2 command tracker: per-slave queue + availability + one-in-flight.
+step6a: step6a_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 # Capstone — fake console: full API suite + (Step 7) interlock arm/trigger.
-capstone: capstone_main.c controller.c demux.c identity.c roster.c usb_link.c $(LIBCOMM)
+capstone: capstone_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 clean:
-	rm -f step0a step0b step1 step2 step3 step4 step5 capstone
+	rm -f step0a step0b step1 step2 step3 step4 step5 step6a capstone

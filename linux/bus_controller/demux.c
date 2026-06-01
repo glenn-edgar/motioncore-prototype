@@ -16,7 +16,9 @@
 
 #define SHELL_EXEC_HDR     4   // [request_id u16][command_id u16]
 #define SHELL_REPLY_HDR    3   // [request_id u16][status u8]
-#define PENDING_MAX        16
+// One in-flight per slave (Step 6a tracker) across up to ROSTER_MAX_SLAVES(16),
+// PLUS the provisioning/sync chain, can exceed 16 — size above that.
+#define PENDING_MAX        24
 
 typedef struct {
     int            in_use;

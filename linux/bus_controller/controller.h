@@ -16,6 +16,7 @@
 #include "identity.h"
 #include "demux.h"
 #include "roster.h"
+#include "cmd_tracker.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -118,6 +119,21 @@ uint16_t controller_send_shell(controller_t *c, uint16_t command_id,
 uint16_t controller_send_shell_to(controller_t *c, uint8_t dest_addr, uint16_t command_id,
                                   const uint8_t *args, uint16_t args_len,
                                   demux_reply_cb on_reply, void *reply_user);
+
+// --- Step 6a: L2 command tracker (per-slave queue + availability) -----------
+// Submit a command to a roster slave through the L2 tracker: it is enqueued
+// per-slave (depth CMD_QUEUE_DEPTH), at most one in flight per slave, and
+// completed via on_done (correlated by the returned handle, not the wire id).
+// Returns a monotonic handle (>0), or 0 on backpressure / unknown addr / args too
+// big. The slot set is (re)built from the attached roster. exec_timeout_ms is
+// carried through now; 6b puts it on the wire + makes it the execution deadline.
+uint32_t controller_submit_command(controller_t *c, uint8_t addr, uint16_t command_id,
+                                   const uint8_t *args, uint16_t args_len,
+                                   uint32_t exec_timeout_ms,
+                                   cmd_done_cb on_done, void *user);
+// Per-slave availability + pending-queue depth (0 if addr is not a roster slave).
+cmd_slot_state_t controller_slave_state(const controller_t *c, uint8_t addr);
+uint8_t          controller_slave_qdepth(const controller_t *c, uint8_t addr);
 
 // 1 once a REGISTER has been parsed since the last link-up; 0 otherwise
 // (identity is cleared on link-down and re-learned on reconnect).
