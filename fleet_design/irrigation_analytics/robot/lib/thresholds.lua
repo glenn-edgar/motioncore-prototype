@@ -112,4 +112,12 @@ function M.mode3_high_warn(mu)
     return 1.5 * mu
 end
 
+-- Per-bin Mode 3 RED (sustained-high → SKIP_STATION). Set at 2.0× the
+-- bin's mu — substantially above the YELLOW warn at 1.5× so we only
+-- escalate on serious deviation. Glenn 2026-06-01: shorted-solenoid
+-- candidates should advance to next station, not just Discord-ping.
+function M.mode3_high_red(mu)
+    return 2.0 * mu
+end
+
 return M

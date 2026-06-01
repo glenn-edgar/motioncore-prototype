@@ -11,7 +11,24 @@ local M = {}
 
 local SUPPORTED_SCHEMA = "baseline.v1"
 
+-- Canonicalize a compound bin_key by sorting its valve components.
+-- Controller emits compound keys in arbitrary order (e.g. past_actions
+-- saw "satellite_1:39/satellite_4:6/satellite_4:8" on 2026-06-01 while
+-- time_history had "satellite_4:6/satellite_4:8/satellite_1:39"); pure
+-- hash lookup against either form silently misses the bin, so a 50-sample
+-- pipe break on 4:6/4:8 went undetected and cost ~500 gal city water.
+function M.canonicalize_key(bin_key)
+    if not bin_key or type(bin_key) ~= "string" then return bin_key end
+    if not bin_key:find("/", 1, true) then return bin_key end
+    local parts = {}
+    for p in bin_key:gmatch("[^/]+") do parts[#parts+1] = p end
+    table.sort(parts)
+    return table.concat(parts, "/")
+end
+
 -- Load baselines.json. Returns (loaded_table, n_long, n_short, err).
+-- Re-keys all bins through canonicalize_key on load, so the file can
+-- have been written with any valve ordering and lookup still resolves.
 function M.load(path)
     local fh, oerr = io.open(path, "r")
     if not fh then return nil, 0, 0, "open: " .. tostring(oerr) end
@@ -25,6 +42,11 @@ function M.load(path)
     if type(decoded.bins) ~= "table" then
         return nil, 0, 0, "missing 'bins' table"
     end
+    local rekeyed = {}
+    for k, v in pairs(decoded.bins) do
+        rekeyed[M.canonicalize_key(k)] = v
+    end
+    decoded.bins = rekeyed
     local n_long, n_short = 0, 0
     for _, v in pairs(decoded.bins) do
         if v.mode == "long" then n_long = n_long + 1
@@ -34,10 +56,12 @@ function M.load(path)
 end
 
 -- Convenience: pull out the per-bin entry for a given key. Returns nil
--- if missing or if loaded is nil.
+-- if missing or if loaded is nil. Caller passes the bin_key as observed
+-- from past_actions; we canonicalize before lookup so valve-ordering
+-- mismatches between controller streams don't cause silent misses.
 function M.lookup(loaded, bin_key)
     if not loaded or not loaded.bins or not bin_key then return nil end
-    return loaded.bins[bin_key]
+    return loaded.bins[M.canonicalize_key(bin_key)]
 end
 
 -- Bool: bin is long-mode and KB3-eligible (low-noise enough to live-monitor).

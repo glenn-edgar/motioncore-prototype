@@ -240,6 +240,13 @@ def main():
         sys.exit(1)
     th = json.loads(snap_path.read_text())
 
+    # Canonicalize compound bin_keys by sorting their valve components.
+    # time_history and past_actions stream compound keys in different valve
+    # orders; baselines.json must use one canonical form so runtime lookup
+    # is deterministic regardless of which stream observed the run.
+    def canonical(k):
+        return "/".join(sorted(k.split("/"))) if "/" in k else k
+
     bins_out = {}
     skipped = []
     for bin_key, runs in sorted(th.items()):
@@ -248,7 +255,7 @@ def main():
         b = per_bin_baseline(bin_key, runs, args.window)
         if b is None:
             skipped.append((bin_key, "insufficient_history")); continue
-        bins_out[bin_key] = b
+        bins_out[canonical(bin_key)] = b
 
     payload = {
         "version":      SCHEMA_VERSION,

@@ -44,6 +44,7 @@ local Baselines  = require("baselines")
 local KB3Live    = require("kb3_live")
 local KB2Post    = require("kb2_post")
 local KB4Post    = require("kb4_post")
+local WsCommand  = require("ws_command")
 
 -- ---------------------------------------------------------------------------
 -- Config
@@ -69,6 +70,16 @@ local kb2_log,   err4  = Logger.open(VAR_DIR .. "/kb2_events.log")
 if not kb2_log then io.stderr:write("FATAL: open kb2_events.log: " .. err4 .. "\n"); os.exit(1) end
 local kb4_log,   err5  = Logger.open(VAR_DIR .. "/kb4_events.log")
 if not kb4_log then io.stderr:write("FATAL: open kb4_events.log: " .. err5 .. "\n"); os.exit(1) end
+local ws_log,    err6  = Logger.open(VAR_DIR .. "/ws_command.log")
+if not ws_log then io.stderr:write("FATAL: open ws_command.log: " .. err6 .. "\n"); os.exit(1) end
+
+-- Set of event.action values the robot is allowed to POST to the controller.
+-- Anything not in this set falls through to log-only (avoids accidentally
+-- emitting CLEAR or other dangerous commands if a new event ever tags one).
+local ALLOWED_ACTIONS = {
+    SKIP_STATION       = true,
+    CLOSE_MASTER_VALVE = true,
+}
 
 -- KB4 edge-triggered cond_state per (bin_key, direction).
 -- Direction is implicit in the KIND (KB4_SHORT_LOW or KB4_SHORT_HIGH); state
@@ -244,6 +255,40 @@ local function poll_once()
                 -- KB3 live detector per-bin sample buffer + run-scoped one-shot
                 kb3                    = { samples = {}, consec = 0, fired = false },
             }
+            -- BIN_UNCALIBRATED one-shot: if either the KB1 current curve OR
+            -- the KB3/KB4 flow baseline is missing for this bin, the robot
+            -- has no detector watching this run. Surface it immediately —
+            -- the 4:6/4:8 incident (2026-06-01) cost ~500 gal of city water
+            -- because both lookups silently missed and operator only saw
+            -- the fetch_failed line in kb4_events.log the next morning.
+            local has_curve    = arming.curve ~= nil
+            local has_baseline = baselines and Baselines.lookup(baselines, arming.bin_key) ~= nil
+            if not has_curve or not has_baseline then
+                local missing = {}
+                if not has_curve    then missing[#missing+1] = "KB1-curve" end
+                if not has_baseline then missing[#missing+1] = "KB3/KB4-baseline" end
+                local msg = string.format(
+                    "[KB1 SHADOW] BIN_UNCALIBRATED (YELLOW)\n" ..
+                    "Run started for bin=%s without %s — robot has no detector " ..
+                    "watching. Verify baseline key ordering or new-bin commissioning.\n" ..
+                    "schedule=%s step=%s",
+                    arming.bin_key, table.concat(missing, " + "),
+                    arming.schedule_name or "?",
+                    tostring(arming.step))
+                local ok, derr = Discord.send(msg, {
+                    logger = function(m) io.stderr:write("[discord] " .. m .. "\n") end,
+                })
+                event_log:write({
+                    event = { kind = "BIN_UNCALIBRATED", level = "YELLOW",
+                              bin_key = arming.bin_key,
+                              missing = missing,
+                              msg     = "run started without one or more detectors" },
+                    sent  = ok,
+                    send_err = (not ok) and derr or nil,
+                    state    = "ACTIVE_RUN",
+                    bin_key  = arming.bin_key,
+                })
+            end
         elseif ent.action == "IRRIGATION_STEP_COMPLETE" then
             -- Derive bin_key from details (more robust than relying on arming,
             -- which can be nil if robot started after STATION_START).
@@ -566,11 +611,32 @@ local function poll_once()
                 sess.cond_state[ev.kind] = "fired"
             end
         end
+        -- Controller-side action: dispatch on the SAME edge as the Discord
+        -- send (suppress on cooldown, fire once per ok→fired transition).
+        -- ALLOWED_ACTIONS gates which event actions actually POST; unknown
+        -- action strings fall through to log-only.
+        local ws_ok, ws_code, ws_err
+        if not suppressed and ev.action and ALLOWED_ACTIONS[ev.action] then
+            ws_ok, ws_code, ws_err = WsCommand.post(ev.action, {
+                logger = function(m) io.stderr:write("[ws] " .. m .. "\n") end,
+            })
+            ws_log:write({
+                kind   = ev.kind,
+                action = ev.action,
+                ok     = ws_ok,
+                code   = ws_code,
+                err    = ws_err,
+                bin_key = arming and arming.bin_key,
+            })
+        end
         event_log:write({
             event                 = ev,
             sent                  = ok,
             edge_suppressed       = suppressed or nil,
             send_err              = (not ok and not suppressed) and derr or nil,
+            action_dispatched     = ws_ok or nil,
+            action_code           = ws_code,
+            action_err            = ws_err,
             state                 = state,
             bin_key               = arming and arming.bin_key,
             window_n              = irr_window_n,

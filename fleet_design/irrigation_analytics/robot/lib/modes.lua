@@ -75,7 +75,8 @@ function M.eval_calibrated_modes(irr_current, irr_median, irr_window_n,
     if not irr_median then return events end
     if (irr_window_n or 0) < T.MEDIAN_WINDOW_N then return events end
 
-    local mode3_th = T.mode3_high_warn(curve.mu)
+    local mode3_warn_th = T.mode3_high_warn(curve.mu)
+    local mode3_red_th  = T.mode3_high_red(curve.mu)
     if irr_median < curve.i_low_open then
         events[#events+1] = event(
             "MODE_1_LOW", "YELLOW", nil,
@@ -85,14 +86,24 @@ function M.eval_calibrated_modes(irr_current, irr_median, irr_window_n,
               window_n = irr_window_n,
               threshold = curve.i_low_open, bin_key = bin_key })
     end
-    if irr_median > mode3_th then
+    -- RED tier first — if RED fires, also skip the YELLOW (single Discord
+    -- per poll, avoid double-event for the same condition).
+    if irr_median > mode3_red_th then
+        events[#events+1] = event(
+            "MODE_3_HIGH_RED", "RED", "SKIP_STATION",
+            string.format("Irrigation Current med-%d %.3f A > %.3f A (2.0×mu RED, bin=%s)",
+                irr_window_n, irr_median, mode3_red_th, bin_key),
+            { irr_current = irr_current, irr_median = irr_median,
+              window_n = irr_window_n,
+              threshold = mode3_red_th, bin_key = bin_key })
+    elseif irr_median > mode3_warn_th then
         events[#events+1] = event(
             "MODE_3_HIGH_WARN", "YELLOW", nil,
             string.format("Irrigation Current med-%d %.3f A > %.3f A (1.5×mu, bin=%s)",
-                irr_window_n, irr_median, mode3_th, bin_key),
+                irr_window_n, irr_median, mode3_warn_th, bin_key),
             { irr_current = irr_current, irr_median = irr_median,
               window_n = irr_window_n,
-              threshold = mode3_th, bin_key = bin_key })
+              threshold = mode3_warn_th, bin_key = bin_key })
     end
     return events
 end

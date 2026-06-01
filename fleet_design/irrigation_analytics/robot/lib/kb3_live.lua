@@ -94,11 +94,11 @@ function M.event(bin_key, baseline, kb3_state, result)
     return {
         kind   = "KB3_PIPE_BREAK_HIGH",
         level  = "RED",
-        action = "WOULD_HARD_KILL_BIN",   -- shadow only — no actual shutoff
+        action = "SKIP_STATION",
         msg    = string.format(
             "KB3 LIVE: filtered flow %.2f GPM HIGH (err +%.2f, thresh %.2f) "
                 .. "vs ref %.2f over %d consec samples on bin=%s  "
-                .. ">> WOULD HARD-KILL (pipe break / over-spray)",
+                .. ">> SKIP_STATION (pipe break / over-spray)",
             result.sample, result.err, result.threshold, result.ref,
             result.consec, bin_key),
         bin_key   = bin_key,

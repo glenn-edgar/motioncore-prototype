@@ -126,12 +126,26 @@ function M.time_history_bin(bin_key)
     if not bin_key or bin_key == "" then return nil, "bin_key empty" end
     -- The bin's hash key is the bin_key string (not the master hash key).
     -- Pull the field directly with HGET to avoid loading the entire 8 MB hash.
+    -- IMPORTANT: time_history stores compound keys in arbitrary valve order
+    -- (e.g. "satellite_4:6/satellite_4:8/satellite_1:39"), while past_actions
+    -- emits a different order ("satellite_1:39/satellite_4:6/satellite_4:8").
+    -- Direct HGET on the past_actions form misses the data; that bug let a
+    -- 50-sample pipe break on 4:6/4:8 go undetected. We resolve by matching
+    -- on the SORTED valve set rather than the literal field name.
     local py = string.format([[
 import redis, msgpack, json, sys
 r = redis.Redis(db=%d)
 KEY = %q
-FIELD = %q
-v = r.hget(KEY, FIELD)
+WANT = sorted(%q.split("/"))
+# Fast path: try the literal name first.
+v = r.hget(KEY, %q)
+if v is None:
+    # Fallback: scan field names, match on sorted-valve-set.
+    for field in r.hkeys(KEY):
+        f = field.decode() if isinstance(field, bytes) else field
+        if sorted(f.split("/")) == WANT:
+            v = r.hget(KEY, field)
+            break
 if v is None:
     sys.stdout.write(json.dumps({"_error": "bin not found in time_history"}))
     sys.exit(0)
@@ -150,7 +164,7 @@ out = {
     "n_runs":    len(runs),
 }
 sys.stdout.write(json.dumps(out, default=str))
-]], TIME_HISTORY_DB, TIME_HISTORY_KEY, bin_key)
+]], TIME_HISTORY_DB, TIME_HISTORY_KEY, bin_key, bin_key)
     local raw, _ = run_remote_python(py)
     if not raw or raw == "" then
         return nil, "controller: time_history_bin ssh returned empty"

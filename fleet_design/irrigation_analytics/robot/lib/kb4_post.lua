@@ -25,6 +25,7 @@
 -- generate_curves.py periodic rebuilds.
 
 local cjson = require("cjson")
+local Baselines = require("baselines")
 
 local M = {}
 
@@ -201,6 +202,9 @@ function M.process(bin_key, baselines_root, flow_data, kb4_cond_state)
     if not baselines_root or not baselines_root.bins then
         return nil, nil, "baselines_root missing"
     end
+    -- Canonicalize: past_actions and time_history disagree on valve ordering
+    -- in compound keys; baselines table is canonical-keyed on load.
+    bin_key = Baselines.canonicalize_key(bin_key)
     local entry = baselines_root.bins[bin_key]
     if not entry then
         return nil, nil, "bin not in baselines: " .. bin_key
