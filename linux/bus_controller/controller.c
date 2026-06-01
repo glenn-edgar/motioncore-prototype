@@ -262,10 +262,10 @@ void controller_destroy(controller_t *c) {
 }
 
 void controller_poll(controller_t *c) {
-    // Bound the in-flight provisioning command so a lost reply fails the push
-    // rather than hanging; otherwise no shell timeouts yet (Step 5+).
-    int provisioning = (c->prov >= PROV_CLEAR && c->prov <= PROV_LIST);
-    demux_poll(c->dx, provisioning ? 1000u : 0u);
+    // Bound every in-flight shell reply (provisioning AND targeted slave commands)
+    // so a lost reply fails rather than hanging. 2500ms > the BC's 1500ms command
+    // window, so the BC's own timeout/relay resolves first.
+    demux_poll(c->dx, 2500u);
 
     // Fire the deferred GET_MANIFEST once the post-ACK gap has elapsed.
     if (c->get_manifest_pending && mono_ms() >= c->get_manifest_at) {
@@ -344,6 +344,12 @@ uint16_t controller_send_shell(controller_t *c, uint16_t command_id,
                                const uint8_t *args, uint16_t args_len,
                                demux_reply_cb on_reply, void *reply_user) {
     return demux_send_shell(c->dx, command_id, args, args_len, on_reply, reply_user);
+}
+
+uint16_t controller_send_shell_to(controller_t *c, uint8_t dest_addr, uint16_t command_id,
+                                  const uint8_t *args, uint16_t args_len,
+                                  demux_reply_cb on_reply, void *reply_user) {
+    return demux_send_shell_to(c->dx, dest_addr, command_id, args, args_len, on_reply, reply_user);
 }
 
 void controller_set_liveness_cb(controller_t *c, controller_liveness_cb cb, void *user) {

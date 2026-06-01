@@ -11,8 +11,8 @@ LDFLAGS ?=
 LIBCOMM := vendor/libcomm/frame.c
 
 # ---- targets ---------------------------------------------------------------
-.PHONY: all clean step0a step0b step1 step2 step3 step4
-all: step0a step0b step1 step2 step3 step4
+.PHONY: all clean step0a step0b step1 step2 step3 step4 step5
+all: step0a step0b step1 step2 step3 step4 step5
 
 # Step 0a — link-endpoint seam + USB link manager bring-up driver.
 step0a: step0a_main.c usb_link.c $(LIBCOMM)
@@ -38,5 +38,9 @@ step3: step3_main.c controller.c demux.c identity.c roster.c usb_link.c $(LIBCOM
 step4: step4_main.c controller.c demux.c identity.c roster.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
+# Step 5 — content command->reply to a slave injected through the sweep.
+step5: step5_main.c controller.c demux.c identity.c roster.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
 clean:
-	rm -f step0a step0b step1 step2 step3 step4
+	rm -f step0a step0b step1 step2 step3 step4 step5

@@ -100,12 +100,18 @@ void controller_set_liveness_cb(controller_t *c, controller_liveness_cb cb, void
 // Returns the request_id (0xFFFF on error).
 uint16_t controller_set_poll_enable(controller_t *c, int on);
 
-// --- raw shell command path (Step 5 building block) ------------------------
-// Send an OP_SHELL_EXEC to the dongle and resolve the reply via on_reply.
-// Returns the request_id (0xFFFF on error). Thin wrapper over the demux.
+// --- shell command path ----------------------------------------------------
+// Send an OP_SHELL_EXEC and resolve the reply via on_reply (correlated by
+// request_id). controller_send_shell targets the dongle itself; ..._to targets
+// an RS-485 slave by addr — while the sweep is enabled the BC injects it into a
+// poll slot (Stage 3c), so liveness polling and command/reply coexist.
+// Returns the request_id (0xFFFF on error).
 uint16_t controller_send_shell(controller_t *c, uint16_t command_id,
                                const uint8_t *args, uint16_t args_len,
                                demux_reply_cb on_reply, void *reply_user);
+uint16_t controller_send_shell_to(controller_t *c, uint8_t dest_addr, uint16_t command_id,
+                                  const uint8_t *args, uint16_t args_len,
+                                  demux_reply_cb on_reply, void *reply_user);
 
 // 1 once a REGISTER has been parsed since the last link-up; 0 otherwise
 // (identity is cleared on link-down and re-learned on reconnect).

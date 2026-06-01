@@ -507,6 +507,50 @@ static uint8_t      g_poll_seq      = 0;   // POLL frame seq
 static uint32_t     g_poll_next_ms  = 0;   // next slot start (cadence gate)
 static uint32_t     g_poll_deadline = 0;   // current window deadline
 
+// --- Stage 3c: one command injected into the sweep (single in flight) -------
+// While polling owns the bus, a Pi frame addressed to a slave is queued here and
+// sent on the next slot as DATA (instead of a routine POLL). The slave's reply
+// rides that same window back and is relayed to the Pi (defer-never-drop). One
+// transaction in flight; Step 6 adds a real queue + scheduler + retry.
+#define CMD_WINDOW_TIMEOUT_MS  BRIDGE_TIMEOUT_MS   // commands may run slow HIL; >> 20ms poll window
+
+typedef enum { CMD_IDLE = 0, CMD_QUEUED, CMD_SENT, CMD_REPLY } cmd_state_t;
+static cmd_state_t   g_cmd_state = CMD_IDLE;
+static uint8_t       g_cmd_slave = 0;
+static uint8_t       g_cmd_buf[RS485_PAYLOAD_MAX];   // [opcode:u16][exec body]
+static uint8_t       g_cmd_len   = 0;
+static rs485_frame_t g_cmd_reply;                    // buffered slave reply awaiting USB relay
+
+// Pi -> slave command enqueue (from rx_drain while polling is enabled). Drops a
+// second enqueue while one is in flight (the Pi retries; Step 6 queues properly).
+static void bus_cmd_enqueue(uint8_t slave, const uint8_t* exec, uint8_t exec_len) {
+    if (g_cmd_state != CMD_IDLE) return;
+    if (exec_len > (uint8_t)(RS485_PAYLOAD_MAX - 2u)) exec_len = RS485_PAYLOAD_MAX - 2u;
+    g_cmd_buf[0] = (uint8_t)(OP_SHELL_EXEC & 0xFFu);
+    g_cmd_buf[1] = (uint8_t)(OP_SHELL_EXEC >> 8);
+    for (uint8_t i = 0; i < exec_len; i++) g_cmd_buf[2u + i] = exec[i];
+    g_cmd_len   = (uint8_t)(2u + exec_len);
+    g_cmd_slave = slave;
+    g_cmd_state = CMD_QUEUED;
+}
+
+// Relay a captured command reply to the Pi, retrying while the TX ring is full
+// (defer-never-drop, same discipline as bus_drain_events). Reply DATA payload =
+// [opcode:u16][body] -> s2m frame addr=slave, cmd=opcode. Called every main loop.
+static void bus_drain_cmd_reply(void) {
+    if (g_cmd_state != CMD_REPLY) return;
+    uint16_t opcode = (uint16_t)g_cmd_reply.payload[0]
+                    | ((uint16_t)g_cmd_reply.payload[1] << 8);
+    frame_meta_t meta = { .addr = g_cmd_slave, .cmd = opcode, .seq = g_bridge_seq,
+                          .ack_seq = 0, .ack_status = 0,
+                          .payload_len = (uint8_t)(g_cmd_reply.len - 2u) };
+    if (frame_encode_s2m(&meta, &g_cmd_reply.payload[2], &g_tx_ring) == 0) {
+        g_bridge_seq++;
+        g_cmd_state = CMD_IDLE;   // transaction complete
+    }
+    // else: ring full, retry next loop.
+}
+
 // Slave answered: clear misses, stamp last_seen, set ALIVE. (Event push is
 // handled by bus_reconcile_events so a momentarily-full TX ring can't drop it.)
 static void bus_mark_alive(uint8_t addr, uint32_t now) {
@@ -581,10 +625,21 @@ static void bus_poll_engine(void) {
 
     if (g_poll_state == POLL_IDLE) {
         if ((int32_t)(now - g_poll_next_ms) < 0) return;     // hold cadence
+        rs485_rx_flush();                                    // drop stale before listening
+        if (g_cmd_state == CMD_QUEUED) {
+            // Inject the queued command into this slot instead of a routine POLL.
+            // Its reply (a DATA frame) is captured in POLL_WAIT and relayed.
+            g_poll_cur_addr = g_cmd_slave;
+            rs485_send(g_cmd_slave, BUS_CONTROLLER_LOCAL_ADDR, RS485_FT_DATA,
+                       ++g_poll_seq, g_cmd_buf, g_cmd_len);
+            g_cmd_state     = CMD_SENT;
+            g_poll_deadline = now + CMD_WINDOW_TIMEOUT_MS;
+            g_poll_state    = POLL_WAIT;
+            return;
+        }
         const bus_slave_t* s = bus_roster_next_enabled(&g_poll_cursor);
         if (s == NULL) { g_poll_next_ms = now + cfg->poll_period_ms; return; }
         g_poll_cur_addr = s->addr;
-        rs485_rx_flush();                                    // drop stale before listening
         rs485_send(s->addr, BUS_CONTROLLER_LOCAL_ADDR, RS485_FT_POLL, ++g_poll_seq, NULL, 0);
         g_poll_deadline = now + POLL_SLOT_TIMEOUT_MS;
         g_poll_state    = POLL_WAIT;
@@ -592,17 +647,25 @@ static void bus_poll_engine(void) {
     }
 
     // POLL_WAIT: any valid frame from the polled slave = alive; else timeout = miss.
-    // Reconcile after resolving so the DOWN/UP edge event is (re)tried; a drop on
-    // a full ring is retried on this slave's next round-robin visit.
-    // POLL_WAIT only updates roster state; bus_drain_events() (main loop) emits
-    // the DOWN/UP edge so a full ring defers rather than drops the event.
+    // For a command slot (CMD_SENT) the slave's DATA reply is buffered for relay;
+    // bus_drain_cmd_reply() (main loop) forwards it defer-never-drop. POLL_WAIT
+    // only updates roster state; bus_drain_events() emits the DOWN/UP edge.
     rs485_frame_t f;
     if (rs485_recv(&f) && f.src == g_poll_cur_addr) {
         bus_mark_alive(g_poll_cur_addr, now);
+        if (g_cmd_state == CMD_SENT) {
+            if ((f.type & RS485_FT_MASK) == RS485_FT_DATA && f.len >= 2u) {
+                g_cmd_reply = f;
+                g_cmd_state = CMD_REPLY;        // hand off to bus_drain_cmd_reply()
+            } else {
+                g_cmd_state = CMD_IDLE;         // non-DATA answer: nothing to relay
+            }
+        }
         g_poll_state   = POLL_IDLE;
         g_poll_next_ms = now + cfg->poll_period_ms;
     } else if ((int32_t)(now - g_poll_deadline) >= 0) {
         bus_mark_miss(g_poll_cur_addr, cfg->max_misses);
+        if (g_cmd_state == CMD_SENT) g_cmd_state = CMD_IDLE;   // give up; Pi demux times out
         g_poll_state   = POLL_IDLE;
         g_poll_next_ms = now + cfg->poll_period_ms;
     }
@@ -673,9 +736,13 @@ static void rx_drain_to_event_queue(s_expr_tree_instance_t* tree) {
             g_last_m2s_rx_ms = board_millis();
 #if defined(ROLE_BUS_CONTROLLER)
             // Address routing: a frame for any addr other than ours is destined
-            // for an RS-485 slave — bridge it instead of dispatching locally.
+            // for an RS-485 slave. While the sweep owns the bus, inject it into a
+            // poll slot (Stage 3c); otherwise use the reactive one-shot bridge.
             if (meta.addr != BUS_CONTROLLER_LOCAL_ADDR) {
-                bridge_start(meta.addr, g_rx_payload, meta.payload_len);
+                if (bus_poll_cfg()->enabled)
+                    bus_cmd_enqueue(meta.addr, g_rx_payload, meta.payload_len);
+                else
+                    bridge_start(meta.addr, g_rx_payload, meta.payload_len);
                 continue;
             }
 #endif
@@ -882,7 +949,8 @@ int main(void) {
         // --target bridge stays available for bench HIL on a single slave.
         if (bus_poll_cfg()->enabled) {
             bus_poll_engine();
-            bus_drain_events();   // emit pending DOWN/UP; full ring defers, never drops
+            bus_drain_events();      // emit pending DOWN/UP; full ring defers, never drops
+            bus_drain_cmd_reply();   // relay a captured command reply; same discipline
         } else {
             rs485_bridge_poll();
         }

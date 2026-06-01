@@ -144,10 +144,11 @@ void demux_poll(demux_t *d, uint32_t timeout_ms) {
     }
 }
 
-int demux_send_raw(demux_t *d, uint16_t opcode,
-                   const uint8_t *payload, uint16_t len) {
+// Encode+enqueue one m2s frame addressed to `addr`.
+static int send_frame_addr(demux_t *d, uint8_t addr, uint16_t opcode,
+                           const uint8_t *payload, uint16_t len) {
     frame_meta_t m = {
-        .addr        = DONGLE_ADDR,
+        .addr        = addr,
         .cmd         = opcode,
         .seq         = d->tx_seq++,
         .ack_seq     = 0,
@@ -157,9 +158,13 @@ int demux_send_raw(demux_t *d, uint16_t opcode,
     return link_send(d->ep, &m, payload);
 }
 
-uint16_t demux_send_shell(demux_t *d, uint16_t command_id,
-                          const uint8_t *args, uint16_t args_len,
-                          demux_reply_cb on_reply, void *reply_user) {
+int demux_send_raw(demux_t *d, uint16_t opcode, const uint8_t *payload, uint16_t len) {
+    return send_frame_addr(d, DONGLE_ADDR, opcode, payload, len);
+}
+
+uint16_t demux_send_shell_to(demux_t *d, uint8_t dest_addr, uint16_t command_id,
+                             const uint8_t *args, uint16_t args_len,
+                             demux_reply_cb on_reply, void *reply_user) {
     if ((uint16_t)(SHELL_EXEC_HDR + args_len) > COMM_PAYLOAD_MAX) return 0xFFFF;
     pending_t *p = pending_alloc(d);
     if (!p) return 0xFFFF;
@@ -174,7 +179,9 @@ uint16_t demux_send_shell(demux_t *d, uint16_t command_id,
     if (args_len && args) memcpy(&buf[SHELL_EXEC_HDR], args, args_len);
     uint16_t total = (uint16_t)(SHELL_EXEC_HDR + args_len);
 
-    if (demux_send_raw(d, OP_SHELL_EXEC, buf, total) != 0) return 0xFFFF;
+    // Frame addr selects the node: 0 = the dongle itself; else the BC routes/
+    // injects it to that RS-485 slave. The reply correlates by request_id.
+    if (send_frame_addr(d, dest_addr, OP_SHELL_EXEC, buf, total) != 0) return 0xFFFF;
 
     p->in_use     = 1;
     p->request_id = rid;
@@ -182,4 +189,10 @@ uint16_t demux_send_shell(demux_t *d, uint16_t command_id,
     p->user       = reply_user;
     p->sent_ms    = mono_ms();
     return rid;
+}
+
+uint16_t demux_send_shell(demux_t *d, uint16_t command_id,
+                          const uint8_t *args, uint16_t args_len,
+                          demux_reply_cb on_reply, void *reply_user) {
+    return demux_send_shell_to(d, DONGLE_ADDR, command_id, args, args_len, on_reply, reply_user);
 }

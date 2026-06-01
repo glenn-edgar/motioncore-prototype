@@ -90,8 +90,15 @@ down via `CMD_BUS_*` (CLEAR → REGISTER×N → SET_POLL → LIST), then reads i
   `OP_BUS_SLAVE_UP`. (The parked Stage-3a firmware is the main-loop sweep; the ISR
   migration is the deferred Step 4b.) Provisioning now gated on identity so an
   already-OPERATIONAL attach can't spuriously FAIL.
-- Next: Step 5 (content path — single command→reply to the slave through the
-  sweep), completing the one-slave run before RS-485 transceivers are added.
+- **Step 5 — content command→reply through the sweep: DONE (point-to-point TTL).**
+  Hardware-verified: while the liveness sweep runs, the BC injects a Pi command
+  into a poll slot as DATA (firmware "Stage 3c"), the slave executes it, the reply
+  rides the same window back, and the demux correlates it by request_id. 5/5
+  CMD_ECHO round-trips to the slave verified byte-for-byte with liveness polling
+  concurrent. One command in flight; queue + scheduler + retry is Step 6.
+  Completes the full one-slave vertical run.
+- Next: add RS-485 transceivers (MAX485) — same protocol, just the bus
+  electricals; then Step 6 (queue + scheduler) and Step 7 (interlocks).
 
 ## Known follow-ups
 - **Device pinning:** with multiple dongles, scan-grabs-first-`/dev/ttyACM*` is

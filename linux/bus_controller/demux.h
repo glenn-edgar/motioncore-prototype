@@ -62,9 +62,15 @@ int      demux_send_raw(demux_t *d, uint16_t opcode,
 // Send OP_SHELL_EXEC: allocates a monotonic request_id, registers a pending
 // entry resolved by on_reply, and frames [request_id u16][command_id u16][args].
 // Returns the allocated request_id, or 0xFFFF on error (link down / table full).
+// demux_send_shell targets the dongle itself (frame addr 0); demux_send_shell_to
+// targets an RS-485 slave by addr (the BC bridges/injects it onto the bus). The
+// reply correlates by request_id regardless of which node answered.
 uint16_t demux_send_shell(demux_t *d, uint16_t command_id,
                           const uint8_t *args, uint16_t args_len,
                           demux_reply_cb on_reply, void *reply_user);
+uint16_t demux_send_shell_to(demux_t *d, uint8_t dest_addr, uint16_t command_id,
+                             const uint8_t *args, uint16_t args_len,
+                             demux_reply_cb on_reply, void *reply_user);
 
 #ifdef __cplusplus
 }
