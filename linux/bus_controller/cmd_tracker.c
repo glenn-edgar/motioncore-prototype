@@ -78,7 +78,11 @@ static void on_tracker_reply(void *user, uint16_t rid, uint8_t status,
 // first send (from pump) and ACK-timeout / NAK resends.
 static int send_inflight(cmd_tracker_t *t, slot_t *s) {
     cmd_entry_t *e = &s->inflight;
-    uint16_t rid = demux_send_shell_to(t->dx, s->addr, e->command_id,
+    // 6b-ii: carry exec_timeout_ms on the wire (OP_BUS_EXEC) so the slave self-
+    // aborts on overrun. Clamp the u32 API field to the u16 wire field (65 s max).
+    uint16_t wire_to = (e->exec_timeout_ms > 0xFFFFu) ? 0xFFFFu
+                     : (uint16_t)e->exec_timeout_ms;
+    uint16_t rid = demux_send_bus_exec(t->dx, s->addr, e->command_id, wire_to,
                                        e->args, e->args_len, on_tracker_reply, s);
     s->sent_ms = t->now;                 // restart the ACK clock either way
     if (rid == 0xFFFF) return -1;        // link down / table full: poll retries

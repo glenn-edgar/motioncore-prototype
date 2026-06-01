@@ -44,6 +44,7 @@
 #define OP_OPERATIONAL_BEGIN ((uint16_t)0x0108)  // advance L1_DONE → OPERATIONAL
 #define OP_SHELL_EXEC        ((uint16_t)0x0109)  // app-shell command invocation
 #define OP_POLL              ((uint16_t)0x010A)  // request 64 B status buffer snapshot (slice 5)
+#define OP_BUS_EXEC          ((uint16_t)0x010B)  // 6b-ii: bus command w/ exec_timeout — [exec_timeout:u16][req_id:u16][cmd:u16][args]; bus-only wrapper (USB shell schema untouched)
 
 // ----- engine-internal events (never appear on the wire) -----
 // main.c (or other firmware-internal code) pushes these to the engine

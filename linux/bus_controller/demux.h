@@ -72,6 +72,16 @@ uint16_t demux_send_shell_to(demux_t *d, uint8_t dest_addr, uint16_t command_id,
                              const uint8_t *args, uint16_t args_len,
                              demux_reply_cb on_reply, void *reply_user);
 
+// 6b-ii: like demux_send_shell_to but as an OP_BUS_EXEC bus command carrying a
+// per-command exec_timeout_ms on the wire (the slave self-aborts on overrun).
+// payload = [exec_timeout_ms u16][request_id u16][command_id u16][args]. The reply
+// is still OP_SHELL_REPLY correlated by request_id. Bus-only — never sent to the
+// dongle itself (addr 0), so the USB shell schema is unchanged.
+uint16_t demux_send_bus_exec(demux_t *d, uint8_t dest_addr, uint16_t command_id,
+                             uint16_t exec_timeout_ms,
+                             const uint8_t *args, uint16_t args_len,
+                             demux_reply_cb on_reply, void *reply_user);
+
 #ifdef __cplusplus
 }
 #endif

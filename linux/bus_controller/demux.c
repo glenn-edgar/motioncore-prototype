@@ -15,6 +15,7 @@
 #define DONGLE_ADDR        0x00u
 
 #define SHELL_EXEC_HDR     4   // [request_id u16][command_id u16]
+#define BUS_EXEC_HDR       6   // [exec_timeout u16][request_id u16][command_id u16]
 #define SHELL_REPLY_HDR    3   // [request_id u16][status u8]
 // One in-flight per slave (Step 6a tracker) across up to ROSTER_MAX_SLAVES(16),
 // PLUS the provisioning/sync chain, can exceed 16 — size above that.
@@ -197,4 +198,34 @@ uint16_t demux_send_shell(demux_t *d, uint16_t command_id,
                           const uint8_t *args, uint16_t args_len,
                           demux_reply_cb on_reply, void *reply_user) {
     return demux_send_shell_to(d, DONGLE_ADDR, command_id, args, args_len, on_reply, reply_user);
+}
+
+uint16_t demux_send_bus_exec(demux_t *d, uint8_t dest_addr, uint16_t command_id,
+                             uint16_t exec_timeout_ms,
+                             const uint8_t *args, uint16_t args_len,
+                             demux_reply_cb on_reply, void *reply_user) {
+    if ((uint16_t)(BUS_EXEC_HDR + args_len) > COMM_PAYLOAD_MAX) return 0xFFFF;
+    pending_t *p = pending_alloc(d);
+    if (!p) return 0xFFFF;
+
+    uint16_t rid = (uint16_t)(d->next_id++);     // monotonic, never reused
+
+    uint8_t buf[COMM_PAYLOAD_MAX];
+    buf[0] = (uint8_t)(exec_timeout_ms & 0xFFu);
+    buf[1] = (uint8_t)(exec_timeout_ms >> 8);
+    buf[2] = (uint8_t)(rid & 0xFFu);
+    buf[3] = (uint8_t)(rid >> 8);
+    buf[4] = (uint8_t)(command_id & 0xFFu);
+    buf[5] = (uint8_t)(command_id >> 8);
+    if (args_len && args) memcpy(&buf[BUS_EXEC_HDR], args, args_len);
+    uint16_t total = (uint16_t)(BUS_EXEC_HDR + args_len);
+
+    if (send_frame_addr(d, dest_addr, OP_BUS_EXEC, buf, total) != 0) return 0xFFFF;
+
+    p->in_use     = 1;
+    p->request_id = rid;
+    p->cb         = on_reply;
+    p->user       = reply_user;
+    p->sent_ms    = mono_ms();
+    return rid;
 }

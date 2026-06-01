@@ -404,15 +404,20 @@ static bool          g_bridge_have_reply = false;
 // the OP_SHELL_EXEC body; we wrap it as a DATA frame payload [opcode][body] and
 // send it to the slave. UDP DATA for now — the reply is the response; the TCP
 // ack-table + retransmit lands with the BC-3 poll engine.
-static void bridge_start(uint8_t slave, const uint8_t* exec, uint8_t exec_len) {
+// NOTE (6b): the reactive bridge waits for a synchronous DATA reply in the same
+// window — incompatible with the 6b async slave (which ACKs then replies on a
+// later poll). It is superseded by the always-on sweep (bus_cmd_enqueue path) and
+// kept only for the poll-disabled fallback; opcode is passed through so the wire
+// frame is well-formed.
+static void bridge_start(uint16_t opcode, uint8_t slave, const uint8_t* exec, uint8_t exec_len) {
     // Mutually exclusive with autonomous polling (Stage 3a): while polling owns
     // the bus, refuse the reactive --target bridge. 3c queues it onto a poll slot.
     if (bus_poll_cfg()->enabled) return;
     if (g_bridge_pending) return;          // one-in-flight; drop (host will retry)
     if (exec_len > (uint8_t)(RS485_PAYLOAD_MAX - 2u)) exec_len = RS485_PAYLOAD_MAX - 2u;
     uint8_t buf[RS485_PAYLOAD_MAX];
-    buf[0] = (uint8_t)(OP_SHELL_EXEC & 0xFFu);
-    buf[1] = (uint8_t)(OP_SHELL_EXEC >> 8);
+    buf[0] = (uint8_t)(opcode & 0xFFu);
+    buf[1] = (uint8_t)(opcode >> 8);
     for (uint8_t i = 0; i < exec_len; i++) buf[2u + i] = exec[i];
     rs485_send(slave, BUS_CONTROLLER_LOCAL_ADDR, RS485_FT_DATA, ++g_bridge_req_seq,
                buf, (uint8_t)(2u + exec_len));
@@ -534,12 +539,14 @@ static uint8_t       g_cmd_ack_addr    = 0;
 static uint16_t      g_cmd_ack_reqid   = 0;
 
 // Pi -> slave command enqueue (from rx_drain while polling is enabled). Drops a
-// second enqueue while one is in flight (the Pi retries; Step 6 queues properly).
-static void bus_cmd_enqueue(uint8_t slave, const uint8_t* exec, uint8_t exec_len) {
+// second enqueue while one is in flight (the L2 tracker queues + retries properly).
+// The DATA frame to the slave is [opcode:u16][body]: opcode passes through from the
+// Pi frame — OP_BUS_EXEC (6b-ii, body carries exec_timeout) or legacy OP_SHELL_EXEC.
+static void bus_cmd_enqueue(uint16_t opcode, uint8_t slave, const uint8_t* exec, uint8_t exec_len) {
     if (g_cmd_state != CMD_IDLE) return;
     if (exec_len > (uint8_t)(RS485_PAYLOAD_MAX - 2u)) exec_len = RS485_PAYLOAD_MAX - 2u;
-    g_cmd_buf[0] = (uint8_t)(OP_SHELL_EXEC & 0xFFu);
-    g_cmd_buf[1] = (uint8_t)(OP_SHELL_EXEC >> 8);
+    g_cmd_buf[0] = (uint8_t)(opcode & 0xFFu);
+    g_cmd_buf[1] = (uint8_t)(opcode >> 8);
     for (uint8_t i = 0; i < exec_len; i++) g_cmd_buf[2u + i] = exec[i];
     g_cmd_len   = (uint8_t)(2u + exec_len);
     g_cmd_slave = slave;
@@ -771,21 +778,48 @@ static void bus_poll_engine(void) {
 // into its own ISR, the reply becomes a second "fresh" buffer the slave ISR emits
 // on a poll alongside the interlock buffer (the full two-buffer model).
 // ----------------------------------------------------------------------------
-#define RS485_SHELL_EXEC_HEADER_LEN 4u   // request_id u16 + command_id u16
+#define RS485_SHELL_EXEC_HEADER_LEN 4u     // request_id u16 + command_id u16
+#define SLAVE_ABORT_MARGIN_MS       1000u  // 6b-ii: BUSY-watchdog slack over exec_timeout
 
 static volatile uint8_t g_slave_summary;        // primed interlock summary (ISR reads)
 
-// 6b — ACK-frees-the-bus, single-in-flight. The RX ISR ACKs a SHELL_EXEC on
-// receipt (claim -> BUSY) or NAKs if already busy; the main loop executes it and
-// arms the reply, which the ISR emits on the NEXT poll (reply-ready). The bus is
-// freed the instant the ACK shifts out — a slow command runs entirely off the bus.
-static volatile bool g_slave_busy;        // claimed a command; held until its reply ships
-static volatile bool g_slave_work_fresh;  // a claimed command awaits main-loop execution
-static rs485_frame_t g_slave_in;          // ISR -> main loop (the claimed command)
-static volatile bool g_slave_reply_ready; // main loop armed a reply; ISR emits it on a poll
+// 6b — ACK-frees-the-bus, single-in-flight. The RX ISR ACKs a command on receipt
+// (claim -> BUSY) or NAKs if already busy; the main loop executes it and arms the
+// reply, which the ISR emits on the NEXT poll. The bus is freed the instant the ACK
+// shifts out — a slow command runs entirely off the bus.
+//
+// 6b-ii — the command DATA carries a per-command exec_timeout: an OP_BUS_EXEC frame
+// is [opcode][exec_timeout:u16][req_id][cmd][args] (hdr 4); a legacy OP_SHELL_EXEC
+// frame is [opcode][req_id][cmd][args] (hdr 2, no timeout). A BUSY-watchdog frees
+// the slot if a claimed command overruns exec_timeout+margin (wedged command, or a
+// master that vanished before collecting the reply) so the node stays commandable.
+static volatile bool     g_slave_busy;        // claimed a command; held until its reply ships
+static volatile bool     g_slave_work_fresh;  // a claimed command awaits main-loop execution
+static rs485_frame_t     g_slave_in;          // ISR -> main loop (the claimed command)
+static volatile bool     g_slave_reply_ready; // main loop armed a reply; ISR emits it on a poll
+static uint32_t          g_slave_claim_ms;    // when the in-flight command was picked up
+static uint16_t          g_slave_exec_to;     // its exec_timeout (0 = watchdog disabled)
 
 static uint8_t g_slave_reply[RS485_PAYLOAD_MAX];  // [OP_SHELL_REPLY:u16][req_id][status][result]
 static uint8_t g_slave_reply_len;
+
+// Locate the shell-exec body inside a bus DATA command + extract exec_timeout.
+// Returns the header length (offset to [req_id][cmd][args]), or 0 if not a command.
+static uint8_t slave_cmd_parse(const rs485_frame_t* f, uint16_t* exec_timeout_ms) {
+    if (f->len < 2u) return 0u;
+    uint16_t opcode = (uint16_t)f->payload[0] | ((uint16_t)f->payload[1] << 8);
+    if (opcode == OP_BUS_EXEC) {
+        if (f->len < (uint8_t)(4u + RS485_SHELL_EXEC_HEADER_LEN)) return 0u;  // opcode+to+rid+cmd
+        *exec_timeout_ms = (uint16_t)f->payload[2] | ((uint16_t)f->payload[3] << 8);
+        return 4u;   // opcode(2) + exec_timeout(2)
+    }
+    if (opcode == OP_SHELL_EXEC) {
+        if (f->len < (uint8_t)(2u + RS485_SHELL_EXEC_HEADER_LEN)) return 0u;
+        *exec_timeout_ms = 0u;
+        return 2u;   // opcode(2)
+    }
+    return 0u;
+}
 
 // ISR context:
 //   POLL -> if a reply is armed, ship it on this window (frees BUSY); else
@@ -809,11 +843,13 @@ static void slave_rx_isr(const rs485_frame_t* f) {
                                  RS485_FT_NO_MESSAGE, f->seq,
                                  (const uint8_t*)&g_slave_summary, 1);
         }
-    } else if (cls == RS485_FT_DATA && f->len >= 6u) {
-        // [opcode:u16][req_id:u16][cmd_id:u16]... — only SHELL_EXEC is a command.
-        uint16_t opcode = (uint16_t)f->payload[0] | ((uint16_t)f->payload[1] << 8);
-        if (opcode != OP_SHELL_EXEC) return;
-        uint8_t rid[2] = { f->payload[2], f->payload[3] };   // request_id (echoed in ACK/NAK)
+    } else if (cls == RS485_FT_DATA) {
+        // OP_BUS_EXEC (6b-ii, with exec_timeout) or legacy OP_SHELL_EXEC; req_id
+        // sits right after the header so it can be echoed in the ACK/NAK.
+        uint16_t to;
+        uint8_t hdr = slave_cmd_parse(f, &to);
+        if (hdr == 0u) return;                                 // not a recognised command
+        uint8_t rid[2] = { f->payload[hdr], f->payload[hdr + 1u] };
         if (!g_slave_busy) {
             g_slave_in         = *f;
             g_slave_busy       = true;
@@ -827,19 +863,35 @@ static void slave_rx_isr(const rs485_frame_t* f) {
     }
 }
 
-// Main loop: keep the summary primed, then execute a claimed command and arm its
-// reply for the ISR to ship on the next poll. Does NOT transmit (the ISR owns the
-// wire), so execution never holds the bus.
+// Main loop: BUSY-watchdog, keep the summary primed, then execute a claimed command
+// and arm its reply for the ISR to ship on the next poll. Does NOT transmit (the ISR
+// owns the wire), so execution never holds the bus.
 static void rs485_slave_poll(void) {
     g_slave_summary = interlock_summary_flags();   // 1 byte = atomic on M0+
+
+    // 6b-ii BUSY-watchdog: a claimed command that overruns exec_timeout+margin (or
+    // whose reply never ships because the master vanished) frees the slot so the
+    // node stays commandable; the L2 exec-deadline reports the failure.
+    if (g_slave_busy && g_slave_exec_to > 0u &&
+        (uint32_t)(board_millis() - g_slave_claim_ms) >
+            (uint32_t)g_slave_exec_to + SLAVE_ABORT_MARGIN_MS) {
+        g_slave_busy        = false;
+        g_slave_work_fresh  = false;
+        g_slave_reply_ready = false;
+        g_slave_exec_to     = 0u;
+    }
 
     if (!g_slave_work_fresh) return;
     g_slave_work_fresh = false;
     rs485_frame_t f = g_slave_in;      // stable while BUSY (ISR won't reclaim until reply ships)
 
-    const uint8_t* exec     = &f.payload[2];
-    uint16_t       exec_len = (uint16_t)(f.len - 2u);
-    if (exec_len < RS485_SHELL_EXEC_HEADER_LEN) { g_slave_busy = false; return; }
+    uint16_t to;
+    uint8_t hdr = slave_cmd_parse(&f, &to);
+    if (hdr == 0u) { g_slave_busy = false; return; }   // malformed (ISR already filtered)
+    g_slave_claim_ms = board_millis();
+    g_slave_exec_to  = to;
+    const uint8_t* exec     = &f.payload[hdr];
+    uint16_t       exec_len = (uint16_t)(f.len - hdr);
 
     uint8_t  reply_body[COMM_PAYLOAD_MAX];
     uint16_t reply_len = shell_dispatch_payload(exec, exec_len, reply_body);
@@ -868,9 +920,9 @@ static void rx_drain_to_event_queue(s_expr_tree_instance_t* tree) {
             // poll slot (Stage 3c); otherwise use the reactive one-shot bridge.
             if (meta.addr != BUS_CONTROLLER_LOCAL_ADDR) {
                 if (bus_poll_cfg()->enabled)
-                    bus_cmd_enqueue(meta.addr, g_rx_payload, meta.payload_len);
+                    bus_cmd_enqueue(meta.cmd, meta.addr, g_rx_payload, meta.payload_len);
                 else
-                    bridge_start(meta.addr, g_rx_payload, meta.payload_len);
+                    bridge_start(meta.cmd, meta.addr, g_rx_payload, meta.payload_len);
                 continue;
             }
 #endif
