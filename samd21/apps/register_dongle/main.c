@@ -927,11 +927,14 @@ static void rs485_slave_poll(void) {
     g_slave_summary = summ;                        // 1 byte = atomic on M0+
 
     // 7b piece 1 — buffer 2: on a summary CHANGE (trip or recover edge), fill the
-    // async interlock message; the ISR pushes it on the next poll. A latest-state-
-    // wins overwrite is fine (best-effort). If TX still owes the prior message, the
-    // new state simply replaces it.
-    if (summ != g_slave_prev_summary) {
-        g_slave_prev_summary = summ;
+    // async interlock message; the ISR pushes it on the next poll. 7b piece 3 — the
+    // dumb re-push: the Pi (reconciliation) pokes CMD_INTERLOCK_REPUSH to fill a gap,
+    // which re-emits the current message the same way. A latest-state-wins overwrite
+    // is fine (best-effort).
+    bool edge   = (summ != g_slave_prev_summary);
+    if (edge) g_slave_prev_summary = summ;
+    bool repush = interlock_take_repush();   // one-shot; evaluated even when edge fires
+    if (edge || repush) {
         g_slave_il_msg[0] = (uint8_t)(OP_BUS_INTERLOCK_MSG & 0xFFu);
         g_slave_il_msg[1] = (uint8_t)(OP_BUS_INTERLOCK_MSG >> 8);
         uint16_t n = interlock_build_status_v2(&g_slave_il_msg[2]);

@@ -327,6 +327,12 @@ uint8_t  interlock_summary_flags(void);
 // out must be >= 64 bytes.
 uint16_t interlock_build_status_v2(uint8_t* out);
 
+// 7b piece 3 — the dumb-slave re-push. CMD_INTERLOCK_REPUSH sets the request;
+// the slave's poll loop takes it (one-shot) and re-emits buffer 2. The Pi owns the
+// decision (reconciliation); the slave just re-emits when poked.
+void interlock_request_repush(void);   // set the one-shot request (from the command)
+bool interlock_take_repush(void);      // read+clear it (from the slave poll loop)
+
 // ---- Slot administration (slice 1 stubs) ---------------------------------
 
 // Arm a compile-time registry entry into a slot. `id` must be a valid

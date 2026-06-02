@@ -27,6 +27,12 @@
 #define CMD_BUS_CLEAR_ROSTER     0x0165
 #define BUS_REG_OK               0u
 
+// 7b-3 reconciliation: heal a lost buffer-2 message by poking the slave to re-push.
+#define CMD_INTERLOCK_REPUSH     0x0144
+#define IL_TF_FALSE_BYTE         2u       // v2 status slot0.tf == tripped
+#define GAP_SETTLE_MS            1500u    // ignore the trip/recover one-poll lag transient
+#define REPUSH_COOLDOWN_MS       2000u    // min gap between re-pushes to one slave
+
 #define OP_BUS_SLAVE_DOWN_       0x0015
 #define OP_BUS_SLAVE_UP_         0x0016
 #define OP_BUS_SLAVE_FLAGGED_    0x0017
@@ -71,6 +77,11 @@ struct controller {
 
     // 7b-2: count of BC status-report snapshots received (the reliable index).
     uint32_t          status_reports;
+
+    // 7b-3: per-slave reconciliation state (index il_flags vs received message).
+    uint64_t          gap_since[ROSTER_MAX_SLAVES];  // when a gap was first seen (0=none)
+    uint64_t          repush_at[ROSTER_MAX_SLAVES];  // when we last poked a re-push (cooldown)
+    uint32_t          repushes;                       // total re-pushes sent
 };
 
 static uint64_t mono_ms(void) {
@@ -313,6 +324,42 @@ void controller_destroy(controller_t *c) {
     free(c);
 }
 
+// 7b-3: reconcile the reliable INDEX (cmd_tracker il_flags, kept fresh by edges +
+// the periodic status report) against the lossy PAYLOAD (the received buffer-2
+// message). A GAP is when they disagree on tripped-ness — a lost buffer-2 push. We
+// debounce it past GAP_SETTLE_MS so the normal one-poll lag on a trip/recover edge
+// is NOT mistaken for a gap, then poke the slave to re-push (CMD_INTERLOCK_REPUSH)
+// via the UNGATED path (a clear/diagnostic command bypasses the FAULTED gate),
+// rate-limited per slave. The re-pushed message arrives on the normal push path and
+// closes the gap.
+static void reconcile_interlocks(controller_t *c) {
+    if (!c->have_roster) return;
+    uint64_t now = mono_ms();
+    for (int i = 0; i < c->roster.count; i++) {
+        uint8_t addr = c->roster.slaves[i].addr;
+
+        int tripped = 0; uint8_t flags = 0;
+        if (!cmd_tracker_interlock(c->tracker, addr, &tripped, &flags)) {
+            c->gap_since[i] = 0;   // index still unknown — nothing to reconcile
+            continue;
+        }
+        uint8_t msg[CMD_IL_MSG_MAX]; uint32_t mcnt = 0;
+        uint16_t mlen = cmd_tracker_interlock_msg(c->tracker, addr, msg, sizeof msg, &mcnt);
+        int msg_tripped = (mlen >= 6 && msg[5] == IL_TF_FALSE_BYTE) ? 1 : 0;
+
+        if (tripped == msg_tripped) { c->gap_since[i] = 0; continue; }  // consistent
+
+        // Gap: the index and the cached message disagree. Debounce the edge transient.
+        if (c->gap_since[i] == 0) c->gap_since[i] = now;
+        if ((now - c->gap_since[i]) < GAP_SETTLE_MS) continue;
+        if (c->repush_at[i] != 0 && (now - c->repush_at[i]) < REPUSH_COOLDOWN_MS) continue;
+
+        controller_send_shell_to(c, addr, CMD_INTERLOCK_REPUSH, NULL, 0, NULL, NULL);
+        c->repush_at[i] = now;
+        c->repushes++;
+    }
+}
+
 void controller_poll(controller_t *c) {
     // Bound every in-flight shell reply (provisioning AND targeted slave commands)
     // so a lost reply fails rather than hanging. 2500ms > the BC's 1500ms command
@@ -340,6 +387,9 @@ void controller_poll(controller_t *c) {
     // Step 6a/6b: advance per-slave command queues (sends freed by completions,
     // retries of transient sends) + sweep the ACK-timeout / exec-deadline timers.
     cmd_tracker_poll(c->tracker, mono_ms());
+
+    // 7b-3: reconcile the reliable index against received messages; heal gaps.
+    reconcile_interlocks(c);
 }
 
 link_state_t controller_link_state(const controller_t *c) { return c->link; }
@@ -386,6 +436,10 @@ void controller_attach_roster(controller_t *c, const roster_t *r) {
     cmd_tracker_reset(c->tracker, DEMUX_STATUS_LINK_DOWN);
     for (int i = 0; i < c->roster.count; i++)
         cmd_tracker_add_slave(c->tracker, c->roster.slaves[i].addr);
+
+    // 7b-3: clear the per-slave reconciliation state for the new roster.
+    memset(c->gap_since, 0, sizeof c->gap_since);
+    memset(c->repush_at, 0, sizeof c->repush_at);
 }
 
 prov_state_t controller_prov_state(const controller_t *c) { return c->prov; }
@@ -462,4 +516,8 @@ uint16_t controller_interlock_msg(const controller_t *c, uint8_t addr,
 
 uint32_t controller_total_status_reports(const controller_t *c) {
     return c->status_reports;
+}
+
+uint32_t controller_total_repushes(const controller_t *c) {
+    return c->repushes;
 }

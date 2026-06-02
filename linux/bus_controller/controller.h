@@ -155,6 +155,12 @@ uint16_t         controller_interlock_msg(const controller_t *c, uint8_t addr,
 // refresh is flowing.
 uint32_t         controller_total_status_reports(const controller_t *c);
 
+// 7b-3: total reconciliation re-pushes sent (each = a detected gap — index says
+// tripped but the matching buffer-2 message was missing — that the controller
+// healed by poking the slave to re-emit). The reconciliation runs automatically in
+// controller_poll; this is purely observation.
+uint32_t         controller_total_repushes(const controller_t *c);
+
 // 1 once a REGISTER has been parsed since the last link-up; 0 otherwise
 // (identity is cleared on link-down and re-learned on reconnect).
 int                      controller_has_identity(const controller_t *c);

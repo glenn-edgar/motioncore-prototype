@@ -11,8 +11,8 @@ LDFLAGS ?=
 LIBCOMM := vendor/libcomm/frame.c
 
 # ---- targets ---------------------------------------------------------------
-.PHONY: all clean step0a step0b step1 step2 step3 step4 step5 step6a step6b step7a step7b1 step7b2 capstone
-all: step0a step0b step1 step2 step3 step4 step5 step6a step6b step7a step7b1 step7b2 capstone
+.PHONY: all clean step0a step0b step1 step2 step3 step4 step5 step6a step6b step7a step7b1 step7b2 step7b3 capstone
+all: step0a step0b step1 step2 step3 step4 step5 step6a step6b step7a step7b1 step7b2 step7b3 capstone
 
 # Step 0a — link-endpoint seam + USB link manager bring-up driver.
 step0a: step0a_main.c usb_link.c $(LIBCOMM)
@@ -60,6 +60,10 @@ step7b1: step7b1_main.c controller.c demux.c identity.c roster.c cmd_tracker.c u
 
 # Step 7b-2 — BC->Pi periodic status report (the reliable index; zero bus traffic).
 step7b2: step7b2_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+# Step 7b-3 — Pi reconciliation: index vs received messages, targeted re-push.
+step7b3: step7b3_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 # Capstone — fake console: full API suite + (Step 7) interlock arm/trigger.

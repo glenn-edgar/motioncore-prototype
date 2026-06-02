@@ -981,6 +981,15 @@ static uint8_t cmd_interlock_status(shell_reader_t* args, shell_writer_t* result
     return SHELL_STATUS_OK;
 }
 
+// 7b piece 3 — the dumb-slave re-push: just flag the request; the slave poll loop
+// re-emits buffer 2 on the next poll. No state, no decisions — the Pi owns those.
+static uint8_t cmd_interlock_repush(shell_reader_t* args, shell_writer_t* result) {
+    (void)result;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    interlock_request_repush();
+    return SHELL_STATUS_OK;
+}
+
 static uint8_t cmd_interlock_set(shell_reader_t* args, shell_writer_t* result) {
     uint8_t slot = sr_u8(args);
     if (args->overflow) return SHELL_STATUS_BAD_ARGS;
@@ -1182,6 +1191,7 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_INTERLOCK_ARM_NOOP,  "interlock_arm_noop", cmd_interlock_arm_noop },
     { CMD_INTERLOCK_DISARM,    "interlock_disarm",   cmd_interlock_disarm   },
     { CMD_INTERLOCK_SET,       "interlock_set",      cmd_interlock_set      },
+    { CMD_INTERLOCK_REPUSH,    "interlock_repush",   cmd_interlock_repush   },
 #endif
     { CMD_STACK_HWM,           "stack_hwm",          cmd_stack_hwm          },
 };

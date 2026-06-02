@@ -126,6 +126,11 @@ const shell_cmd_entry_t* shell_find_cmd(uint16_t command_id);
 //   SHELL_STATUS_BAD_ARGS   → {parse_err:u8, offset_lo:u8, offset_hi:u8}
 //   SHELL_STATUS_BUSY       → {0xFF marker} (slot armed or pin-claim conflict)
 #define CMD_INTERLOCK_SET     ((uint16_t)0x0143)
+// 7b piece 3: CMD_INTERLOCK_REPUSH args: (empty); reply: (empty). The dumb-slave
+// re-push: re-emit the current interlock message (buffer 2) on the next poll. The
+// Pi sends it ONLY to fill a reconciliation gap (index says tripped, no message);
+// all the smarts are on the Pi — the slave just re-emits when poked.
+#define CMD_INTERLOCK_REPUSH  ((uint16_t)0x0144)
 // Slice 4 stack hardening: read peak observed stack depth + total budget +
 // canary-tripped flag. Reply (5 B): hwm_bytes:u16, size_bytes:u16, tripped:u8
 #define CMD_STACK_HWM         ((uint16_t)0x0050)

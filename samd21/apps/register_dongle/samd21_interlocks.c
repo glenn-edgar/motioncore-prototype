@@ -261,6 +261,16 @@ uint8_t interlock_summary_flags(void) {
     return flags;
 }
 
+// 7b piece 3 — the dumb-slave re-push one-shot. Set by CMD_INTERLOCK_REPUSH,
+// consumed by the slave poll loop, which then re-emits buffer 2 on the next poll.
+static volatile bool s_repush_req;
+void interlock_request_repush(void) { s_repush_req = true; }
+bool interlock_take_repush(void) {
+    bool r = s_repush_req;
+    s_repush_req = false;
+    return r;
+}
+
 uint16_t interlock_build_status_v2(uint8_t* out) {
     uint16_t n = 0;
     out[n++] = 2;                          // reply version
