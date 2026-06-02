@@ -8,12 +8,15 @@
 io.stdout:setvbuf("line")
 local ffi  = require("ffi")
 local zrpc = require("zenoh_rpc")
+local zps  = require("zenoh_pubsub")
 local zt   = require("zenoh_token")
 local json = require("mini_json")
 
-local ROUTER = os.getenv("ROUTER") or "tcp/127.0.0.1:7447"
-local SECS   = tonumber(arg[1] or "10")
-local TOK    = zt.hash("bus/slave/1/cmd")
+local ROUTER   = os.getenv("ROUTER") or "tcp/127.0.0.1:7447"
+local SECS     = tonumber(arg[1] or "10")
+local CLASS    = os.getenv("SLAVE_CLASS")    or "samd21_hil"
+local INSTANCE = os.getenv("SLAVE_INSTANCE") or "1"
+local TOK      = zt.hash(CLASS .. "/" .. INSTANCE .. "/cmd")   -- model-B namespace
 
 ffi.cdef[[ typedef struct { long tv_sec; long tv_usec; } ztv_t; int gettimeofday(ztv_t *tv, void *tz); int usleep(unsigned int); ]]
 local _tv = ffi.new("ztv_t")
@@ -23,6 +26,30 @@ local cli = zrpc.Client.new({ locators = { ROUTER }, mode = "client" })
 cli:connect()
 print("[zclient] connected to " .. ROUTER)
 
+local pass, fail = 0, 0
+local function check(name, ok, detail)
+  print(string.format("  [%s] %-30s %s", ok and "PASS" or "FAIL", name, detail or ""))
+  if ok then pass = pass + 1 else fail = fail + 1 end
+end
+
+-- ---- Phase 0: catalog discovery (pubsub) ----------------------------------
+print("\n[zclient] === Phase 0: discover the catalog (fleet/catalog/" .. CLASS .. ") ===")
+do
+  local ps = zps.PubSub.new({ locators = { ROUTER }, mode = "client" }); ps:connect()
+  local sub = ps:subscribe(zt.hash("fleet/catalog/" .. CLASS), 8)
+  local catalog, t0 = nil, ms()
+  while ms() - t0 < 6000 do
+    local m = sub:poll()
+    if m then catalog = json.decode(m.payload); break end
+    ffi.C.usleep(50000)
+  end
+  local ncmd = 0; if catalog and catalog.commands then for _ in pairs(catalog.commands) do ncmd = ncmd + 1 end end
+  check("catalog discovered for " .. CLASS,
+        catalog ~= nil and catalog.commands ~= nil and catalog.commands.echo ~= nil,
+        catalog and ("schema=" .. tostring(catalog.schema) .. " cmds=" .. ncmd) or "none")
+  ps:disconnect(); ps:destroy()
+end
+
 -- one synchronous command RPC. admin=true uses the ungated lane (clear/diagnostic).
 local function rpc(command, args, timeout, admin)
   local body = json.encode({ command = command, args = args or {}, timeout_ms = timeout or 1000, admin = admin or false })
@@ -31,12 +58,6 @@ local function rpc(command, args, timeout, admin)
   local r = json.decode(reply)
   if not r.ok then return nil, r.error end
   return r.result or {}
-end
-
-local pass, fail = 0, 0
-local function check(name, ok, detail)
-  print(string.format("  [%s] %-30s %s", ok and "PASS" or "FAIL", name, detail or ""))
-  if ok then pass = pass + 1 else fail = fail + 1 end
 end
 
 -- warm-up: absorb a possible stale-reply transient from a prior session.
