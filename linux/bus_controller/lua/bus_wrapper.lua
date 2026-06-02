@@ -46,11 +46,11 @@ local libc = ffi.C
 -- types: u8 u16 u32 | str (raw bytes) | lenstr ([u16 len][bytes], e.g. echo) | raw (rest)
 local CATALOG = {
   echo             = { id=0x0001, args={{"text","lenstr"}},                       reply={{"text","lenstr"}} },
-  sysinfo          = { id=0x0002, args={},                                         reply={{"raw","raw"}} },
+  sysinfo          = { id=0x0002, args={},                                         reply={{"hex","hex"}} },
   stack_hwm        = { id=0x0050, args={},                                         reply={{"hwm","u16"}} },
   dac_write        = { id=0x0103, args={{"value","u16"}},                          reply={} },
   adc_read         = { id=0x0104, args={{"channel","u8"},{"oversample","u8"},{"sh","u8"}}, reply={{"value","u16"}} },
-  interlock_status = { id=0x0140, args={},                                         reply={{"raw","raw"}} },
+  interlock_status = { id=0x0140, args={},                                         reply={{"hex","hex"}} },
   interlock_disarm = { id=0x0142, args={{"slot","u8"}},                            reply={} },
   interlock_set    = { id=0x0143, args={{"slot","u8"},{"dsl","str"}},              reply={} },
   interlock_repush = { id=0x0144, args={},                                         reply={} },
@@ -88,6 +88,9 @@ local function decode(cmd, bytes)
       local len=bytes:byte(pos)+bytes:byte(pos+1)*256; out[f[1]]=bytes:sub(pos+2,pos+2+len-1); pos=pos+2+len
     elseif typ=="raw" then
       out[f[1]]=bytes:sub(pos); pos=n+1
+    elseif typ=="hex" then   -- binary → hex string (JSON-safe across the wire)
+      local h={}; for k=pos,n do h[#h+1]=string.format("%02x", bytes:byte(k)) end
+      out[f[1]]=table.concat(h); pos=n+1
     end
   end
   return out

@@ -49,7 +49,7 @@ do
 end
 do
   local r, er = bus:call(SLAVE, "sysinfo", {}, 1000)
-  check("sysinfo", r ~= nil and #r.raw >= 16, r and (#r.raw.."B") or ("err="..tostring(er)))
+  check("sysinfo", r ~= nil and r.hex and #r.hex/2 >= 16, r and (#r.hex/2 .."B") or ("err="..tostring(er)))
 end
 do
   local r, er = bus:call(SLAVE, "stack_hwm", {}, 1000)
@@ -87,10 +87,10 @@ do
   check("trigger -> tripped (summary-bit)", tripped, "state="..bus:interlock_state(SLAVE))
 end
 do  -- admin/ungated lane: a tripped slave is FAULTED, which gates the normal queue.
-  local r, er = bus:call_admin(SLAVE, "interlock_status", {}, 1000)  -- v2 status; slot0.tf @ offset 5 (Lua byte 6)
-  local tf = (r and #r.raw >= 6) and r.raw:byte(6) or -1
+  local r, er = bus:call_admin(SLAVE, "interlock_status", {}, 1000)  -- v2 status hex; slot0.tf @ offset 5
+  local tf = (r and r.hex and #r.hex >= 12) and tonumber(r.hex:sub(11,12), 16) or -1
   check("interlock_status: tripped (ungated)", tf == 2,
-        r and ("slot0.tf="..tf.." len="..#r.raw) or ("ERR="..tostring(er)))
+        r and ("slot0.tf="..tf) or ("ERR="..tostring(er)))
 end
 do
   bus:call_admin(SLAVE, "dac_write", {value=0}, 1000)        -- recover via the ungated lane
