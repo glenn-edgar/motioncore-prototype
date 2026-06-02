@@ -119,3 +119,64 @@ emitted.
   the report layout: `[state:u8]` always, `[message…]` when tripped).
 - The slave RX-filter change to accept `dest==0xFF` in addition to `my_addr`.
 - Where the broadcast-interval timer lives (reuse/extend the BC sweep timing).
+
+## 9. Reconciliation model — index vs payload (refined 2026-06-01)
+
+A sharper framing of §1–§4, settled in design dialog. It splits the reporting
+into a **reliable index** (who is tripped) and a **lossy payload** (the message),
+and makes the BC the authority that lets the Pi heal holes in the payload.
+
+### The three parties
+
+| Party | Holds | Reliability |
+|---|---|---|
+| **Slave** | the source of truth | on trip: sets the **bit** (in every poll) **and** pushes the **message** (buffer 2) |
+| **BC** | each slave's current **status bit** | **reliable** — it polls every slave continuously, so it can never lose track of *who is tripped* (fresh within one poll cycle) |
+| **Pi (L2)** | the **messages it actually received** | **lossy** — some buffer-2 messages were dropped (best-effort/UDP-style) |
+
+The BC's picture (bits) is complete; the Pi's picture (messages) has holes.
+
+### Bit = index, message = payload
+
+- The **summary bit** is the reliable *index*: "slave N is tripped." It rides every
+  poll (continuous) and is re-asserted by the BC→Pi status report (below).
+- The **interlock message** (buffer 2: which slot, name, inputs, tf) is the *payload*
+  — pushed by the slave on the trip edge, **best-effort, may be lost**.
+
+### How the Pi heals holes: BC→Pi status report + reconciliation
+
+The BC reports its **per-slave status** (the bits it already holds) to the Pi over
+the **USB link** — periodically, and may also push on change. **This costs zero
+RS-485 traffic** (the BC already has the status from the sweep; the report never
+touches the bus). This report is the *truth reference* the Pi reconciles against:
+
+```
+for each slave:
+  BC=TRIPPED & Pi has the message     -> consistent
+  BC=TRIPPED & Pi has NO message      -> GAP (a buffer-2 message was lost)
+  BC=ok      & Pi still shows tripped  -> clear (a recovery edge/message was lost)
+```
+
+A detected gap (BC bit says tripped, Pi is missing the message) is filled by the
+Pi **requesting that one slave re-push its message** (a *targeted* re-solicit, not
+a broadcast). So: the bit (reliable) tells the Pi *that* a message exists; the
+reconciliation finds *which* are missing; a targeted re-push delivers them.
+
+The BC is the authority **precisely because it polls everyone continuously**, and
+it hands that authority to the Pi for free over USB. This supersedes the literal
+"periodic 0xFF broadcast solicits every slave to re-report on the RS-485 bus" of
+§2–§4 for the slow bus: the re-report the broadcast would trigger carries the same
+*bit* the BC already holds, so re-asserting from the BC's copy over USB is strictly
+cheaper. (The 0xFF broadcast mechanic remains the model for a future high-speed
+tier where the master does **not** continuously poll every node.)
+
+### Build order
+
+1. **Slave buffer 2** — push the interlock message on the trip edge (the lossy
+   payload). The 4b-i two-buffer ISR was specified for this but only the bit
+   (Step 7) was built; this adds the message buffer. ISR transmits it on the next
+   poll; BC relays it to the Pi.
+2. **BC→Pi status report** — periodic per-slave status snapshot over USB (the
+   reconciliation reference; zero bus traffic). Reuses 7a's L2 cache.
+3. **Pi reconciliation** — diff BC-status vs received-messages; on a gap, request
+   the missing slave's message (targeted re-push).
