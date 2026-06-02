@@ -33,6 +33,7 @@
 #define OP_BUS_CMD_ACK_          0x0018
 #define OP_BUS_CMD_NAK_          0x0019
 #define OP_BUS_INTERLOCK_MSG_    0x001A
+#define OP_BUS_STATUS_REPORT_    0x001B
 
 struct controller {
     link_endpoint_t  *ep;
@@ -67,6 +68,9 @@ struct controller {
 
     // Step 6a: L2 command tracker (per-slave queue + availability).
     cmd_tracker_t    *tracker;
+
+    // 7b-2: count of BC status-report snapshots received (the reliable index).
+    uint32_t          status_reports;
 };
 
 static uint64_t mono_ms(void) {
@@ -264,6 +268,16 @@ static void on_event(void *user, const frame_meta_t *meta, const uint8_t *payloa
         cmd_tracker_on_interlock_msg(c->tracker, meta->addr, payload, meta->payload_len);
         break;
 
+    case OP_BUS_STATUS_REPORT_:  // 7b-2: BC's periodic status index [addr:u8][flags:u8]
+        // Re-assert the authoritative summary into the cache + re-evaluate the gate
+        // (heals a lost edge, establishes the confirmed-ok baseline). SILENT — no
+        // flagged_cb: this is a periodic refresh, not a change to notify clients of.
+        if (meta->payload_len >= 2) {
+            cmd_tracker_on_flagged(c->tracker, payload[0], payload[1]);
+            c->status_reports++;
+        }
+        break;
+
     default:
         break;  // DBG_LOG / EVENT / NAK / etc. — later steps own these.
     }
@@ -444,4 +458,8 @@ int controller_interlock_state(const controller_t *c, uint8_t addr, uint8_t *fla
 uint16_t controller_interlock_msg(const controller_t *c, uint8_t addr,
                                   uint8_t *out, uint16_t cap, uint32_t *count) {
     return cmd_tracker_interlock_msg(c->tracker, addr, out, cap, count);
+}
+
+uint32_t controller_total_status_reports(const controller_t *c) {
+    return c->status_reports;
 }

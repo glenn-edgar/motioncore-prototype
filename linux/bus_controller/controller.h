@@ -150,6 +150,11 @@ int              controller_interlock_state(const controller_t *c, uint8_t addr,
 uint16_t         controller_interlock_msg(const controller_t *c, uint8_t addr,
                                           uint8_t *out, uint16_t cap, uint32_t *count);
 
+// 7b-2: total BC status-report snapshots received (the reliable index that heals
+// lost edges + establishes the confirmed-ok baseline). >0 means the periodic
+// refresh is flowing.
+uint32_t         controller_total_status_reports(const controller_t *c);
+
 // 1 once a REGISTER has been parsed since the last link-up; 0 otherwise
 // (identity is cleared on link-down and re-learned on reconnect).
 int                      controller_has_identity(const controller_t *c);

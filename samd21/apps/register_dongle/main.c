@@ -613,6 +613,43 @@ static void bus_drain_flagged(void) {
     }
 }
 
+// 7b piece 2 — the BC->Pi status report: periodically re-assert EVERY slave's
+// CURRENT summary (the bit the BC already holds from the sweep) to the Pi as
+// OP_BUS_STATUS_REPORT, UNCONDITIONAL (not edge-gated). This is the reliable status
+// INDEX the Pi reconciles its received messages against: it heals a lost summary
+// edge and establishes the confirmed-ok baseline for a never-tripped slave. Travels
+// BC->Pi over USB only — ZERO RS-485 traffic. One emit per call, cursor walks the
+// roster, defer-never-drop (same discipline as the other drains).
+#define BUS_STATUS_INTERVAL_MS 3000u
+
+static uint32_t g_status_next_ms = 0;   // when the next snapshot is due
+static uint8_t  g_status_cursor  = 0;   // roster index within the active snapshot
+static bool     g_status_active  = false;
+
+static void bus_drain_status_report(void) {
+    if (!bus_poll_cfg()->enabled) { g_status_active = false; return; }
+    uint32_t now = board_millis();
+    if (!g_status_active && (int32_t)(now - g_status_next_ms) >= 0) {
+        g_status_active  = true;             // start a fresh roster snapshot
+        g_status_cursor  = 0;
+        g_status_next_ms = now + BUS_STATUS_INTERVAL_MS;
+    }
+    if (!g_status_active) return;
+
+    uint8_t n = bus_roster_count();
+    if (g_status_cursor >= n) { g_status_active = false; return; }
+    const bus_slave_t* s = bus_roster_at(g_status_cursor);
+    if (s == NULL) { g_status_cursor++; return; }
+    uint8_t body[2] = { s->addr, s->summary };
+    frame_meta_t meta = { .addr = s->addr, .cmd = OP_BUS_STATUS_REPORT, .seq = g_bridge_seq,
+                          .ack_seq = 0, .ack_status = 0, .payload_len = sizeof(body) };
+    if (frame_encode_s2m(&meta, body, &g_tx_ring) == 0) {
+        g_bridge_seq++;
+        g_status_cursor++;   // advance only on a successful emit (defer-never-drop)
+    }
+    // else: ring full — retry this same slave next loop.
+}
+
 // Slave answered: clear misses, stamp last_seen, set ALIVE. (Event push is
 // handled by bus_reconcile_events so a momentarily-full TX ring can't drop it.)
 static void bus_mark_alive(uint8_t addr, uint32_t now) {
@@ -1170,6 +1207,7 @@ int main(void) {
             bus_drain_flagged();     // emit pending summary-bit edges (interlock tripped)
             bus_drain_cmd_ack();     // relay a command ACK/NAK (6b); same discipline
             bus_drain_cmd_reply();   // relay an async command reply; same discipline
+            bus_drain_status_report(); // 7b-2: periodic per-slave status index (USB-only)
         } else {
             rs485_bridge_poll();
         }
