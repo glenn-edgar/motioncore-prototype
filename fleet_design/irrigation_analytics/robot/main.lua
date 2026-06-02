@@ -252,8 +252,11 @@ local function poll_once()
                 -- suppresses on fired→event, returns to ok when event stops.
                 -- No recovery alerts.
                 cond_state             = {},
-                -- KB3 live detector per-bin sample buffer + run-scoped one-shot
-                kb3                    = { samples = {}, consec = 0, fired = false },
+                -- KB3 live detector: per-sprinkler-step sample slots + run-scoped
+                -- one-shot. by_step[STEP] = filtered_flow_sample. fires when
+                -- the 5-step sliding window [n-4..n] is all over threshold and
+                -- n >= 9 (controller's STEP counter, per popup.STEP).
+                kb3                    = { by_step = {}, last_step = 0, fired = false },
             }
             -- BIN_UNCALIBRATED one-shot: if either the KB1 current curve OR
             -- the KB3/KB4 flow baseline is missing for this bin, the robot
@@ -458,32 +461,35 @@ local function poll_once()
         }
     end
 
-    -- 6c) KB3 LIVE flow detector — runs only during ACTIVE_RUN, on accepted samples
-    -- (TIME_STAMP-gated, same cadence as the KB1 median window).
+    -- 6c) KB3 LIVE flow detector — runs only during ACTIVE_RUN.
+    -- Step-indexed (popup.STEP) sliding window: warmup until STEP >= 9,
+    -- then fire when [STEP-4..STEP] are ALL over threshold. KB3 dedups
+    -- internally by step number, so we feed every poll (no TIME_STAMP gate).
     local kb3_result = nil
-    if state == SM.states.ACTIVE_RUN and arming and arming.bin_key
-       and sample_accepted and baselines then
-        local bl = Baselines.lookup(baselines, arming.bin_key)
+    if state == SM.states.ACTIVE_RUN and arming and arming.bin_key and baselines then
+        local bl   = Baselines.lookup(baselines, arming.bin_key)
         local filt = tonumber(popup.FILTERED_HUNTER_VALVE)
-        if bl and filt then
-            kb3_result = KB3Live.update(bl, arming.kb3, filt)
+        local step = tonumber(popup.STEP)
+        if bl and filt and step then
+            kb3_result = KB3Live.update(bl, arming.kb3, filt, step)
             if kb3_result then
                 cycle.kb3 = {
-                    bin_key   = arming.bin_key,
-                    eligible  = bl.kb3_eligible,
-                    sample    = kb3_result.sample,
-                    ref       = kb3_result.ref,
-                    err       = kb3_result.err,
-                    threshold = kb3_result.threshold,
-                    consec    = kb3_result.consec,
-                    fired     = kb3_result.fired,
-                    suppressed= kb3_result.suppressed,
+                    bin_key       = arming.bin_key,
+                    eligible      = bl.kb3_eligible,
+                    sample        = kb3_result.sample,
+                    ref           = kb3_result.ref,
+                    err           = kb3_result.err,
+                    threshold     = kb3_result.threshold,
+                    step          = kb3_result.step,
+                    window_over_n = kb3_result.window_over_n,
+                    fired         = kb3_result.fired,
+                    suppressed    = kb3_result.suppressed,
                 }
                 if kb3_result.fired then
                     io.stderr:write(string.format(
-                        "KB3 LIVE FIRE: bin=%s sample=%.2f err=%+.2f consec=%d\n",
+                        "KB3 LIVE FIRE: bin=%s sample=%.2f err=%+.2f step=%d\n",
                         arming.bin_key, kb3_result.sample, kb3_result.err,
-                        kb3_result.consec))
+                        kb3_result.step))
                 end
             end
         end
@@ -547,8 +553,9 @@ local function poll_once()
             sample  = cycle.kb3.sample,
             ref     = cycle.kb3.ref,
             err     = cycle.kb3.err,
-            consec  = cycle.kb3.consec,
-            fired   = cycle.kb3.fired,
+            step          = cycle.kb3.step,
+            window_over_n = cycle.kb3.window_over_n,
+            fired      = cycle.kb3.fired,
             suppressed = cycle.kb3.suppressed,
         })
     end

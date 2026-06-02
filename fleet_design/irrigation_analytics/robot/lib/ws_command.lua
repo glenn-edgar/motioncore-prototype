@@ -102,8 +102,12 @@ function M.post(command, opts)
     local url = string.format("http://%s%s", CONTROLLER_HOST, AJAX_PATH)
     -- -s silent, -S show errors, --digest+--user for HTTP Digest auth,
     -- -w "%{http_code}" appends the HTTP status to stdout for capture.
+    -- -b '' enables the cookie engine in-memory: Flask's HTTPDigestAuth
+    -- binds the WWW-Authenticate nonce to the session cookie, so the
+    -- second leg of the digest handshake must echo the cookie back or
+    -- the server can't find the nonce and returns 401.
     local cmd = string.format(
-        "curl -sS --digest -u %s --max-time %d " ..
+        "curl -sS --digest -u %s -b '' --max-time %d " ..
         "-H 'Content-Type: application/json' " ..
         "-X POST -d %s -o /dev/null -w '%%{http_code}' %s 2>&1",
         shell_quote(user .. ":" .. pass),

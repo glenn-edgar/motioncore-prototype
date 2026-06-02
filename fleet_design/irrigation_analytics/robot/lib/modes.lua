@@ -62,10 +62,44 @@ function M.eval_eq(eq_current, prev_eq_current)
 end
 
 -- ---------------------------------------------------------------------------
--- Mode 1 (low) — calibrated bin only, warn on rolling-MEDIAN below threshold
--- Mode 3 (high warn) — calibrated bin only, warn on rolling-MEDIAN above
--- Gated off during warm-up (lag region); see thresholds.WARMUP_S.
--- Gated off until the window has MEDIAN_WINDOW_N accepted samples.
+-- Mode 3 RED (shorted-sprinkler trip) — per-sample, instant.
+--
+-- A shorted solenoid coil draws above-baseline current immediately on
+-- activation. We don't wait for the median window to fill or for the
+-- warmup lag to clear — Glenn 2026-06-01: "one step sample is enough
+-- for trip". Edge-triggered dispatch in main.lua section 9 handles the
+-- per-bin one-shot (won't re-POST SKIP_STATION while still firing).
+--
+-- This sits between MODE_4_PER_VALVE_TRIP (universal 1.75 A ceiling,
+-- always armed) and MODE_3_HIGH_WARN (median-based YELLOW). For a
+-- 0.4 A bin with a partial short to 1.0 A, Mode 4 misses (under 1.75)
+-- but Mode 3 RED (2.0×0.4 = 0.8 A threshold) catches it on the first
+-- sample over.
+-- ---------------------------------------------------------------------------
+function M.eval_mode3_red_irr(irr_current, curve, bin_key)
+    if not curve or not curve.mu or not irr_current then return nil end
+    local red_th = T.mode3_high_red(curve.mu)
+    if irr_current > red_th then
+        return event(
+            "MODE_3_HIGH_RED", "RED", "SKIP_STATION",
+            string.format("Irrigation Current %.3f A > %.3f A (2.0×mu=%.3f RED, bin=%s)",
+                irr_current, red_th, curve.mu, bin_key),
+            { irr_current = irr_current, threshold = red_th,
+              mu = curve.mu, bin_key = bin_key })
+    end
+    return nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Mode 1 (low) and Mode 3 high-warn — calibrated bin only.
+-- These remain median-based YELLOW alerts (Discord ping, no SKIP):
+--   - Gated off during warm-up (PLC reading lag).
+--   - Gated off until the window has MEDIAN_WINDOW_N accepted samples.
+--   - 15-sample median filters the 6 mA quantization noise that would
+--     otherwise generate 100s of duplicate Discord pushes per run.
+-- Mode 3 RED has been split out to eval_mode3_red_irr (per-sample, no
+-- gates) so a shorted sprinkler trips immediately instead of waiting
+-- ~15 min for the median window to fill.
 -- ---------------------------------------------------------------------------
 function M.eval_calibrated_modes(irr_current, irr_median, irr_window_n,
                                  curve, bin_key, in_warmup)
@@ -76,7 +110,6 @@ function M.eval_calibrated_modes(irr_current, irr_median, irr_window_n,
     if (irr_window_n or 0) < T.MEDIAN_WINDOW_N then return events end
 
     local mode3_warn_th = T.mode3_high_warn(curve.mu)
-    local mode3_red_th  = T.mode3_high_red(curve.mu)
     if irr_median < curve.i_low_open then
         events[#events+1] = event(
             "MODE_1_LOW", "YELLOW", nil,
@@ -86,17 +119,7 @@ function M.eval_calibrated_modes(irr_current, irr_median, irr_window_n,
               window_n = irr_window_n,
               threshold = curve.i_low_open, bin_key = bin_key })
     end
-    -- RED tier first — if RED fires, also skip the YELLOW (single Discord
-    -- per poll, avoid double-event for the same condition).
-    if irr_median > mode3_red_th then
-        events[#events+1] = event(
-            "MODE_3_HIGH_RED", "RED", "SKIP_STATION",
-            string.format("Irrigation Current med-%d %.3f A > %.3f A (2.0×mu RED, bin=%s)",
-                irr_window_n, irr_median, mode3_red_th, bin_key),
-            { irr_current = irr_current, irr_median = irr_median,
-              window_n = irr_window_n,
-              threshold = mode3_red_th, bin_key = bin_key })
-    elseif irr_median > mode3_warn_th then
+    if irr_median > mode3_warn_th then
         events[#events+1] = event(
             "MODE_3_HIGH_WARN", "YELLOW", nil,
             string.format("Irrigation Current med-%d %.3f A > %.3f A (1.5×mu, bin=%s)",
@@ -199,8 +222,18 @@ function M.evaluate(state, popup, arming, last, ctx)
         local e = M.eval_mode4_irr(irr)
         if e then events[#events+1] = e end
 
-        -- Mode 1 + Mode 3 require: bin calibrated, no ETO-restriction
-        -- suppression, past warm-up, and a full rolling-median window.
+        -- Mode 3 RED per-bin (shorted-sprinkler trip) — per-sample, no
+        -- warmup, no median. Requires bin calibrated + no ETO-restriction.
+        -- Sits below Mode 4 (so Mode 4 wins when both would fire); we
+        -- still emit only one event per kind per poll, so duplicate
+        -- MODE_3_HIGH_RED with MODE_4 is fine — they're different kinds.
+        if arming and not arming.eto_restriction_seen and arming.curve then
+            local red = M.eval_mode3_red_irr(irr, arming.curve, arming.bin_key)
+            if red then events[#events+1] = red end
+        end
+
+        -- Mode 1 LOW + Mode 3 HIGH WARN (median-based YELLOWs) require:
+        -- bin calibrated, no ETO-restriction, past warm-up, full window.
         if arming and not arming.eto_restriction_seen and arming.curve then
             local in_warmup =
                 (now_ts and arming.started_at_ts
