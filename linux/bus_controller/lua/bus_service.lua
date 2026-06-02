@@ -28,11 +28,15 @@ local SLAVE    = 1
 -- for now; A4 will read it from the per-dongle JSON config.
 local CLASS    = os.getenv("SLAVE_CLASS")    or "samd21_hil"
 local INSTANCE = os.getenv("SLAVE_INSTANCE") or "1"
+-- logical dongle id (A3 supervisor reconciliation key; A4 sources it from config)
+local DONGLE_ID  = os.getenv("DONGLE_ID")    or "samd21-bc-1"
 local CMD_KEY    = CLASS .. "/" .. INSTANCE .. "/cmd"
 local CAT_KEY    = "fleet/catalog/" .. CLASS
 local HEALTH_KEY = CLASS .. "/" .. INSTANCE .. "/health"
 local IL_KEY     = CLASS .. "/" .. INSTANCE .. "/interlock"
+local ANN_KEY    = "fleet/bus/announce"   -- A3: dongle->supervisor inventory announce
 local REPUB_MS   = tonumber(os.getenv("HEALTH_REPUBLISH_MS") or "3000")
+local ANN_MS     = tonumber(os.getenv("BUS_ANNOUNCE_MS")     or "2000")
 
 local bus = assert(W.Bus.open(DEV, ROSTER))
 print("[bus_service] bus up; provisioning...")
@@ -53,6 +57,16 @@ local g_il     = { schema = "bus_interlock/1", class = CLASS, instance = INSTANC
 local function pub_health()    ps:publish(zt.hash(HEALTH_KEY), json.encode(g_health)) end
 local function pub_interlock() ps:publish(zt.hash(IL_KEY),     json.encode(g_il)) end
 
+-- A3: idempotent, liveness-bearing announce of this dongle + its slave inventory.
+local function pub_announce()
+  ps:publish(zt.hash(ANN_KEY), json.encode({
+    schema = "bus_announce/1", role = "bus_controller", dongle_id = DONGLE_ID,
+    ts = math.floor(ms()/1000),
+    slaves = { { class = CLASS, instance = INSTANCE, addr = SLAVE,
+                 present = (g_health.state == "present") } },
+  }))
+end
+
 bus:set_event_handler(function(kind, addr, status, aux, data)
   if kind == 4 then            -- LIVENESS (status = is_up): found ⇄ missing
     g_health.state = (status == 1) and "present" or "missing"
@@ -68,14 +82,15 @@ end)
 -- the slave reached ALIVE during wait_ready (initial ALIVE is silent — no event).
 g_health.state = "present"
 
-print(string.format("[bus_service] serving '%s' (token %u); catalog '%s'; health '%s'; interlock '%s'; via %s",
-      CMD_KEY, zt.hash(CMD_KEY), CAT_KEY, HEALTH_KEY, IL_KEY, ROUTER))
+print(string.format("[bus_service] serving '%s' (token %u); catalog '%s'; health '%s'; interlock '%s'; announce '%s' as dongle '%s'; via %s",
+      CMD_KEY, zt.hash(CMD_KEY), CAT_KEY, HEALTH_KEY, IL_KEY, ANN_KEY, DONGLE_ID, ROUTER))
 
-local next_cat, next_pub = 0, 0   -- publish catalog + health/interlock immediately, then periodically
+local next_cat, next_pub, next_ann = 0, 0, 0   -- publish immediately, then periodically
 while true do
   local now = ms()
   if now >= next_cat then ps:publish(zt.hash(CAT_KEY), catalog_json); next_cat = now + 5000 end
   if now >= next_pub then pub_health(); pub_interlock(); next_pub = now + REPUB_MS end
+  if now >= next_ann then pub_announce(); next_ann = now + ANN_MS end
   local req = q:poll()
   if req then
     local ok, j = pcall(json.decode, req:payload())

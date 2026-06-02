@@ -16,6 +16,7 @@ local ROUTER   = os.getenv("ROUTER") or "tcp/127.0.0.1:7447"
 local SECS     = tonumber(arg[1] or "10")
 local CLASS    = os.getenv("SLAVE_CLASS")    or "samd21_hil"
 local INSTANCE = os.getenv("SLAVE_INSTANCE") or "1"
+local DONGLE   = os.getenv("DONGLE_ID")      or "samd21-bc-1"
 local TOK      = zt.hash(CLASS .. "/" .. INSTANCE .. "/cmd")   -- model-B namespace
 
 ffi.cdef[[ typedef struct { long tv_sec; long tv_usec; } ztv_t; int gettimeofday(ztv_t *tv, void *tz); int usleep(unsigned int); ]]
@@ -37,12 +38,16 @@ local ps = zps.PubSub.new({ locators = { ROUTER }, mode = "client" }); ps:connec
 local cat_sub    = ps:subscribe(zt.hash("fleet/catalog/" .. CLASS), 8)
 local health_sub = ps:subscribe(zt.hash(CLASS .. "/" .. INSTANCE .. "/health"), 16)
 local il_sub     = ps:subscribe(zt.hash(CLASS .. "/" .. INSTANCE .. "/interlock"), 16)
-local g_catalog, g_health, g_il
+local oper_sub   = ps:subscribe(zt.hash("fleet/bus/operational"), 8)   -- A3 system gate
+local rec_sub    = ps:subscribe(zt.hash("fleet/bus/reconcile"), 8)      -- A3 reconciliation
+local g_catalog, g_health, g_il, g_oper, g_rec
 local function drain_subs()
   local m
   m = cat_sub:poll();    while m do g_catalog = json.decode(m.payload); m = cat_sub:poll() end
   m = health_sub:poll(); while m do g_health  = json.decode(m.payload); m = health_sub:poll() end
   m = il_sub:poll();     while m do g_il       = json.decode(m.payload); m = il_sub:poll() end
+  m = oper_sub:poll();   while m do g_oper     = json.decode(m.payload); m = oper_sub:poll() end
+  m = rec_sub:poll();    while m do g_rec      = json.decode(m.payload); m = rec_sub:poll() end
 end
 local function wait_for(pred, timeout_ms)
   local t0 = ms()
@@ -62,6 +67,22 @@ do
   wait_for(function() return g_health ~= nil and g_health.state == "present" end, 6000)
   check("health leaf: slave present", g_health ~= nil and g_health.state == "present",
         g_health and ("state=" .. tostring(g_health.state)) or "none")
+end
+
+-- ---- Phase 0.5: supervisor reconciliation + system gate (A3) ---------------
+print("\n[zclient] === Phase 0.5: bus supervisor reconciliation + operational gate ===")
+do
+  -- the supervisor needs a couple of announces to settle; wait for the gate to lift.
+  wait_for(function() return g_oper ~= nil and g_oper.operational == true end, 8000)
+  check("system operational gate", g_oper ~= nil and g_oper.operational == true,
+        g_oper and ("reason=" .. tostring(g_oper.reason)) or "none")
+  local dd = g_rec and g_rec.dongles and g_rec.dongles[DONGLE]
+  check("dongle reconciled PRESENT", dd ~= nil and dd.status == "PRESENT",
+        dd and ("status=" .. tostring(dd.status)) or ("no entry for " .. DONGLE))
+  local ci = CLASS .. "/" .. INSTANCE
+  local ss = dd and dd.slaves and dd.slaves[ci]
+  check("slave reconciled PRESENT", ss ~= nil and ss.status == "PRESENT",
+        ss and ("status=" .. tostring(ss.status)) or ("no slave " .. ci))
 end
 
 -- one synchronous command RPC. admin=true uses the ungated lane (clear/diagnostic).

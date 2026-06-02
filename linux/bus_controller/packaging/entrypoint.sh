@@ -13,6 +13,10 @@ case "$MODE" in
   client)
     exec luajit /app/lua/zclient_capstone.lua "${2:-12}"
     ;;
+  supervisor)
+    echo "[bus_controller] supervisor: router=${ROUTER}"
+    exec luajit /app/lua/bus_supervisor.lua
+    ;;
   service|*)
     echo "[bus_controller] device=${BUS_DEVICE} router=${ROUTER} roster=${ROSTER}"
     exec luajit /app/lua/bus_service.lua "${BUS_DEVICE}"
