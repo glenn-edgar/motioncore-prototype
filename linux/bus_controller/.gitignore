@@ -16,3 +16,5 @@ capstone
 *.o
 *.log
 bench
+evtest
+libbus_controller.so

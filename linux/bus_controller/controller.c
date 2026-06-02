@@ -41,6 +41,8 @@
 #define OP_BUS_INTERLOCK_MSG_    0x001A
 #define OP_BUS_STATUS_REPORT_    0x001B
 
+#define CTRL_EVQ_CAP 128         // FFI event-queue depth (>> the slow bus's event rate)
+
 struct controller {
     link_endpoint_t  *ep;
     demux_t          *dx;
@@ -82,7 +84,45 @@ struct controller {
     uint64_t          gap_since[ROSTER_MAX_SLAVES];  // when a gap was first seen (0=none)
     uint64_t          repush_at[ROSTER_MAX_SLAVES];  // when we last poked a re-push (cooldown)
     uint32_t          repushes;                       // total re-pushes sent
+
+    // FFI event seam: drainable typed event queue + per-slot payload copies.
+    ctrl_event_t      evq[CTRL_EVQ_CAP];
+    uint8_t           evq_data[CTRL_EVQ_CAP][CTRL_EV_DATA_MAX];
+    int               evq_head;
+    int               evq_count;
 };
+
+// Enqueue an event (copying up to CTRL_EV_DATA_MAX payload bytes into the slot, so
+// the event's data ptr stays valid until that slot is reused). Drops on overflow
+// (logged) — the queue is sized well above the slow bus's event rate.
+static void evq_push(controller_t *c, uint8_t kind, uint8_t addr, uint8_t status,
+                     uint32_t handle, uint32_t aux, const uint8_t *data, uint16_t len) {
+    if (c->evq_count >= CTRL_EVQ_CAP) {
+        fprintf(stderr, "[controller] event queue full — dropping kind=%u\n", kind);
+        return;
+    }
+    int i = (c->evq_head + c->evq_count) % CTRL_EVQ_CAP;
+    if (len > CTRL_EV_DATA_MAX) len = CTRL_EV_DATA_MAX;
+    if (data && len) memcpy(c->evq_data[i], data, len);
+    c->evq[i] = (ctrl_event_t){ .kind=kind, .addr=addr, .status=status,
+                                .handle=handle, .aux=aux,
+                                .data = (len ? c->evq_data[i] : NULL), .data_len=len };
+    c->evq_count++;
+}
+
+int controller_drain(controller_t *c, ctrl_event_t *out) {
+    if (c->evq_count == 0) return 0;
+    *out = c->evq[c->evq_head];
+    c->evq_head = (c->evq_head + 1) % CTRL_EVQ_CAP;
+    c->evq_count--;
+    return 1;
+}
+
+// Internal on_done for the _ev submit path: route the completion into the queue.
+static void ev_on_done(void *user, uint32_t handle, uint8_t addr, uint8_t status,
+                       const uint8_t *result, uint16_t len) {
+    evq_push((controller_t *)user, CTRL_EV_CMD_DONE, addr, status, handle, 0, result, len);
+}
 
 static uint64_t mono_ms(void) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -245,18 +285,24 @@ static void on_event(void *user, const frame_meta_t *meta, const uint8_t *payloa
         break;
 
     case OP_BUS_SLAVE_DOWN_:   // [addr:u8]
-        if (meta->payload_len >= 1 && c->liveness_cb)
-            c->liveness_cb(c->liveness_user, payload[0], 0, 0);
+        if (meta->payload_len >= 1) {
+            evq_push(c, CTRL_EV_LIVENESS, payload[0], 0, 0, 0, NULL, 0);
+            if (c->liveness_cb) c->liveness_cb(c->liveness_user, payload[0], 0, 0);
+        }
         break;
 
     case OP_BUS_SLAVE_UP_:     // [addr:u8][class_id:u32 LE]
-        if (meta->payload_len >= 5 && c->liveness_cb)
-            c->liveness_cb(c->liveness_user, payload[0], 1, rd_u32(&payload[1]));
+        if (meta->payload_len >= 5) {
+            uint32_t cid = rd_u32(&payload[1]);
+            evq_push(c, CTRL_EV_LIVENESS, payload[0], 1, 0, cid, NULL, 0);
+            if (c->liveness_cb) c->liveness_cb(c->liveness_user, payload[0], 1, cid);
+        }
         break;
 
     case OP_BUS_SLAVE_FLAGGED_:  // [addr:u8][flags:u8]
         if (meta->payload_len >= 2) {
             cmd_tracker_on_flagged(c->tracker, payload[0], payload[1]);  // 7a: cache + gate
+            evq_push(c, CTRL_EV_FLAGGED, payload[0], 0, 0, payload[1], NULL, 0);
             if (c->flagged_cb) c->flagged_cb(c->flagged_user, payload[0], payload[1]);
         }
         break;
@@ -275,8 +321,9 @@ static void on_event(void *user, const frame_meta_t *meta, const uint8_t *payloa
 
     case OP_BUS_INTERLOCK_MSG_:  // 7b-1: slave's async interlock message (buffer 2)
         // The BC relayed the slave's buffer-2 push; meta->addr is the source slave,
-        // payload is the v2 status snapshot. Cache it as a received message.
+        // payload is the v2 status snapshot. Cache it + surface as an event.
         cmd_tracker_on_interlock_msg(c->tracker, meta->addr, payload, meta->payload_len);
+        evq_push(c, CTRL_EV_INTERLOCK, meta->addr, 0, 0, 0, payload, meta->payload_len);
         break;
 
     case OP_BUS_STATUS_REPORT_:  // 7b-2: BC's periodic status index [addr:u8][flags:u8]
@@ -297,6 +344,7 @@ static void on_event(void *user, const frame_meta_t *meta, const uint8_t *payloa
 static void on_state(void *user, link_state_t state) {
     controller_t *c = (controller_t *)user;
     c->link = state;
+    evq_push(c, CTRL_EV_LINK, 0, 0, 0, (uint32_t)state, NULL, 0);
     if (state == LINK_DOWN) {
         c->have_identity = 0;
         memset(&c->identity, 0, sizeof c->identity);
@@ -489,6 +537,14 @@ uint32_t controller_submit_command(controller_t *c, uint8_t addr, uint16_t comma
                                    cmd_done_cb on_done, void *user) {
     return cmd_tracker_submit(c->tracker, addr, command_id, args, args_len,
                               exec_timeout_ms, on_done, user);
+}
+
+uint32_t controller_submit_command_ev(controller_t *c, uint8_t addr, uint16_t command_id,
+                                      const uint8_t *args, uint16_t args_len,
+                                      uint32_t exec_timeout_ms) {
+    // Route completion into the event queue (ev_on_done) instead of a caller cb.
+    return cmd_tracker_submit(c->tracker, addr, command_id, args, args_len,
+                              exec_timeout_ms, ev_on_done, c);
 }
 
 cmd_slot_state_t controller_slave_state(const controller_t *c, uint8_t addr) {

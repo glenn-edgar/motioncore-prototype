@@ -76,3 +76,12 @@ clean:
 # Bench — bus soak + API throughput benchmark.
 bench: bench_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+# evtest — verify the FFI event seam (submit_command_ev + drain).
+evtest: evtest_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+# Shared lib for the LuaJIT FFI wrapper (the portable C core, position-independent).
+SOLIB_SRC := controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+libbus_controller.so: $(SOLIB_SRC)
+	$(CC) $(CFLAGS) -fPIC -shared $^ -o $@ $(LDFLAGS)

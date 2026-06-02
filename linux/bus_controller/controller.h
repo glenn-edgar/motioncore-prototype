@@ -42,6 +42,32 @@ typedef struct {
 
 typedef struct controller controller_t;
 
+// --- FFI event seam (concern 3) --------------------------------------------
+// The C controller delivers events via a DRAINABLE TYPED QUEUE for the LuaJIT
+// wrapper (queue+poll — avoids FFI callbacks aborting JIT traces, keeps the one
+// event loop in control of when it re-enters Lua, and makes deferred replies
+// clean). Native C harnesses keep using the callbacks above; both coexist.
+#define CTRL_EV_DATA_MAX  64u    // per-event payload copy (v2 status = 55 B; results small)
+
+typedef enum {
+    CTRL_EV_CMD_DONE  = 1,  // submitted command finished — handle, addr, status, data=result bytes
+    CTRL_EV_FLAGGED   = 2,  // interlock summary edge — addr, aux=flags (bit0 tripped)
+    CTRL_EV_INTERLOCK = 3,  // interlock message (buffer 2) — addr, data=v2 status snapshot
+    CTRL_EV_LIVENESS  = 4,  // slave down/up — addr, status=is_up, aux=class_id
+    CTRL_EV_LINK      = 5,  // link state change — aux=link_state
+} ctrl_ev_kind_t;
+
+typedef struct {
+    uint8_t        kind;       // ctrl_ev_kind_t
+    uint8_t        addr;       // slave addr (0 if N/A)
+    uint8_t        status;     // CMD_DONE: shell status / DEMUX_*; LIVENESS: is_up
+    uint8_t        _pad;
+    uint32_t       handle;     // CMD_DONE: the submit handle
+    uint32_t       aux;        // FLAGGED: flags; LIVENESS: class_id; LINK: state
+    const uint8_t *data;       // CMD_DONE/INTERLOCK: bytes, valid until the next drain
+    uint16_t       data_len;
+} ctrl_event_t;
+
 // Create a controller bound to an existing (down or up) link endpoint. The
 // controller installs the demux onto the endpoint, so do not bind the endpoint's
 // handlers elsewhere. Returns NULL on alloc failure.
@@ -131,6 +157,17 @@ uint32_t controller_submit_command(controller_t *c, uint8_t addr, uint16_t comma
                                    const uint8_t *args, uint16_t args_len,
                                    uint32_t exec_timeout_ms,
                                    cmd_done_cb on_done, void *user);
+// --- FFI event seam: submit-by-event + drain (the LuaJIT wrapper path) ------
+// Submit a command WITHOUT a caller callback: the completion arrives as a
+// CTRL_EV_CMD_DONE event keyed by the returned handle. Same queue/timeout/gating
+// as controller_submit_command. Returns a monotonic handle (>0) or 0.
+uint32_t controller_submit_command_ev(controller_t *c, uint8_t addr, uint16_t command_id,
+                                      const uint8_t *args, uint16_t args_len,
+                                      uint32_t exec_timeout_ms);
+// Drain one queued event into *out. Returns 1 (got one) or 0 (empty). out->data
+// points into a controller-owned buffer valid only until the next drain — copy now.
+int controller_drain(controller_t *c, ctrl_event_t *out);
+
 // Per-slave availability + pending-queue depth (0 if addr is not a roster slave).
 cmd_slot_state_t controller_slave_state(const controller_t *c, uint8_t addr);
 uint8_t          controller_slave_qdepth(const controller_t *c, uint8_t addr);
