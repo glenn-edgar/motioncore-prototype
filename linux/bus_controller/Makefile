@@ -82,6 +82,6 @@ evtest: evtest_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 # Shared lib for the LuaJIT FFI wrapper (the portable C core, position-independent).
-SOLIB_SRC := controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+SOLIB_SRC := ffi_facade.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 libbus_controller.so: $(SOLIB_SRC)
 	$(CC) $(CFLAGS) -fPIC -shared $^ -o $@ $(LDFLAGS)

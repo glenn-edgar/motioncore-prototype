@@ -164,6 +164,13 @@ uint32_t controller_submit_command(controller_t *c, uint8_t addr, uint16_t comma
 uint32_t controller_submit_command_ev(controller_t *c, uint8_t addr, uint16_t command_id,
                                       const uint8_t *args, uint16_t args_len,
                                       uint32_t exec_timeout_ms);
+// Ungated variant (clear/safety/diagnostic lane): bypasses the per-slave queue +
+// the FAULTED interlock gate, going straight to the demux (so it works even while
+// the slave is tripped — that's how status-read + recovery reach a faulted slave).
+// Completion is a CTRL_EV_CMD_DONE with the high bit set in the handle.
+uint32_t controller_submit_command_ungated_ev(controller_t *c, uint8_t addr,
+                                              uint16_t command_id,
+                                              const uint8_t *args, uint16_t args_len);
 // Drain one queued event into *out. Returns 1 (got one) or 0 (empty). out->data
 // points into a controller-owned buffer valid only until the next drain — copy now.
 int controller_drain(controller_t *c, ctrl_event_t *out);

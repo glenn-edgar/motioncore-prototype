@@ -547,6 +547,25 @@ uint32_t controller_submit_command_ev(controller_t *c, uint8_t addr, uint16_t co
                               exec_timeout_ms, ev_on_done, c);
 }
 
+// Completion for the ungated path: demux_reply_cb signature (rid, not handle/addr).
+// Tag the handle with the high bit so it can't collide with a tracker handle.
+static void ev_on_done_ungated(void *user, uint16_t rid, uint8_t status,
+                               const uint8_t *result, uint16_t len) {
+    evq_push((controller_t *)user, CTRL_EV_CMD_DONE, 0, status,
+             (uint32_t)rid | 0x80000000u, 0, result, len);
+}
+
+uint32_t controller_submit_command_ungated_ev(controller_t *c, uint8_t addr,
+                                              uint16_t command_id,
+                                              const uint8_t *args, uint16_t args_len) {
+    // Bypass the per-slave queue + FAULTED gate (the clear/safety/diagnostic lane):
+    // straight to the demux. Completion arrives as CTRL_EV_CMD_DONE keyed by rid|hi.
+    uint16_t rid = controller_send_shell_to(c, addr, command_id, args, args_len,
+                                            ev_on_done_ungated, c);
+    if (rid == 0xFFFFu) return 0;
+    return (uint32_t)rid | 0x80000000u;
+}
+
 cmd_slot_state_t controller_slave_state(const controller_t *c, uint8_t addr) {
     return cmd_tracker_state(c->tracker, addr);
 }
