@@ -15,12 +15,13 @@ local zt   = require("zenoh_token")
 local W    = require("bus_wrapper")
 local json = require("mini_json")
 
-local DEV    = arg[1]
+local DEV    = arg[1] or os.getenv("BUS_DEVICE")     -- nil = scan /dev/ttyACM*
 local ROUTER = os.getenv("ROUTER") or "tcp/127.0.0.1:7447"
+local ROSTER = os.getenv("ROSTER") or "rosters/bench.conf"
 local SLAVE  = 1
 local KEY    = "bus/slave/1/cmd"           -- per-slave command RPC (model B: <class>/<instance>/cmd)
 
-local bus = assert(W.Bus.open(DEV, "rosters/bench.conf"))
+local bus = assert(W.Bus.open(DEV, ROSTER))
 print("[bus_service] bus up; provisioning...")
 assert(bus:wait_ready(8000))
 

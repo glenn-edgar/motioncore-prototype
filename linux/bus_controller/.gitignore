@@ -18,3 +18,4 @@ capstone
 bench
 evtest
 libbus_controller.so
+packaging/build_assets/

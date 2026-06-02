@@ -1,0 +1,24 @@
+# Keep the build context lean: the builder stage rebuilds the .so from sources, so
+# the host-built artifacts/executables aren't needed (and the .so is glibc-specific).
+# NOTE: packaging/build_assets/lib/*.so ARE needed (staged zenoh libs) — not matched
+# by these root-level patterns.
+step0a
+step0b
+step1
+step2
+step3
+step4
+step5
+step6a
+step6b
+step7a
+step7b1
+step7b2
+step7b3
+capstone
+evtest
+bench
+libbus_controller.so
+*.o
+build/
+.git
