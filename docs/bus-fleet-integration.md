@@ -293,7 +293,45 @@ next drain — the zenoh_pubsub idiom). Seam stays small: `submit_command(...)�
   fleet_manager opens the system gate when all reconcile clean → processes flip
   operational, client API goes live. Fail-safe.
 
-## 12. Deferred / "experience will shape it"
+## 12. Onboarding a new slave type: dongle mode → slave mode (locked 2026-06-02)
+
+How a new slave TYPE comes into existence — develop + validate it as a **dongle over
+the production API**, then deploy it as a **slave**. Enabled by the catalog/API being
+**transport-agnostic**: the same firmware command table → the same catalog → the same
+`<class>/<instance>/cmd` RPC, whether the chip is a dongle on its own USB (commands →
+`addr 0` = the chip itself) or a slave on the bus (routed through the BC to `addr N`).
+Only transport + addr change, invisibly to clients.
+
+**Lifecycle:**
+1. **Dev in dongle mode** — flash the chip `ROLE=dongle`, plug it into its own USB; run
+   the bus_controller image in a **dongle mode** that skips the roster/sweep and routes
+   the cmd RPC to `addr 0` via the ungated/direct path, under a dev namespace
+   (`<class>/dev/cmd`). Develop the firmware features **and the catalog together**,
+   validating with the per-class **conformance test** over the *same* client API.
+   (Offline/dev plane — the chip isn't on a bus.)
+2. **Move to slave mode** — re-flash `ROLE=slave`, re-wire (own USB → RS-485 bus behind a
+   BC), and **commission** (offline, via `docker exec` into the bus container that owns
+   the BC): assign bus addr + fleet `(class, instance)`, recorded in the roster. The bus
+   container's expected/found flips it to PRESENT and serves `<class>/<instance>/cmd`.
+
+| Stays identical | Changes |
+|---|---|
+| client API (`…/cmd`), the **catalog**, the conformance test | role flash (dongle→slave), wiring (USB→RS-485), addr (`0`→`N`), namespace (`/dev`→`/<instance>`) |
+
+**Container mechanics:** flashing is a HOST op (UF2 bootloader), never in the container;
+one image, two modes (`dongle` | `bus`, role auto-detectable from the chip's REGISTER);
+commissioning stays offline via `docker exec`, reusing the bus's own USB + C controller.
+
+**To add (small):** a **dongle mode in the service** — connect, *skip provisioning* (a
+dongle would PROV_FAIL the bus_controller ladder), route the cmd RPC to `addr 0`
+ungated, publish the in-development catalog under the dev namespace.
+
+**SEQUENCING: this lands BEFORE real RS-485 slaves** — you can't sensibly bring a new
+slave type onto a bus without first developing + validating its firmware/catalog as a
+dongle. Dongle mode + the catalog/conformance tooling = the slave-type onboarding kit;
+it gates real-slave deployment.
+
+## 13. Deferred / "experience will shape it"
 - **Offline-tool CLI surface** (exact commission/zombie verbs) — kept deliberately thin
   until real use.
 - **Hard access control** on admin ops (ACL/admin-token) — only if the soft
