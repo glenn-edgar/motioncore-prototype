@@ -38,10 +38,12 @@ local function build_kb(ct, kb_name, dongles)
         ct:asm_log_message("BUS_SUP: starting one_for_one supervisor")
 
         -- restart_enabled=true, reset_limited_enabled=true (bootloop guard),
-        -- max_reset_number=3, reset_window=100 ticks, auto_start=true,
-        -- finalize=BUS_GATE_DOWN (called when a child exceeds the restart limit).
+        -- max_reset_number=3 failures within reset_window TICKS, auto_start=true,
+        -- finalize=BUS_GATE_DOWN. reset_window=120000 ticks ≈ 60 s @2 kHz pump —
+        -- catches a dongle that keeps failing (each fail/rebind cycle is seconds)
+        -- without false-tripping on a lone transient that rebinds cleanly.
         local sup = ct:define_supervisor_one_for_one_node(
-            "bus_sup", "CFL_NULL", {}, true, true, 3, 100, true, "BUS_GATE_DOWN", {})
+            "bus_sup", "CFL_NULL", {}, true, true, 3, 120000, true, "BUS_GATE_DOWN", {})
             for _, cfg in ipairs(dongles) do add_dongle(ct, cfg) end
         ct:end_column(sup)
 

@@ -24,11 +24,11 @@ if #arg ~= 1 then
     os.exit(1)
 end
 
--- Slice 1: a single dongle that faults every 20 ticks, to exercise restart +
--- the bootloop limit (max_reset_number=3) → BUS_GATE_DOWN. Slice 2 sources this
--- list from the per-dongle config glob.
+-- Slice 1b: a single real dongle (no auto-fault; fault is injected on demand via
+-- the __fault test command). Slice 2 sources this list from the per-dongle config
+-- glob. The dongle_id must match main.lua's DONGLE_ID (the runtime key).
 local DONGLES = {
-    { dongle_id = "samd21-bc-1", fail_after = 20 },
+    { dongle_id = "samd21-bc-1", fail_after = 0 },
 }
 
 local ct = ChainTreeMaster.new(arg[1])
