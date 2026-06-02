@@ -800,8 +800,18 @@ static volatile bool     g_slave_reply_ready; // main loop armed a reply; ISR em
 static uint32_t          g_slave_claim_ms;    // when the in-flight command was picked up
 static uint16_t          g_slave_exec_to;     // its exec_timeout (0 = watchdog disabled)
 
-static uint8_t g_slave_reply[RS485_PAYLOAD_MAX];  // [OP_SHELL_REPLY:u16][req_id][status][result]
+static uint8_t g_slave_reply[RS485_PAYLOAD_MAX];  // buffer 1: [OP_SHELL_REPLY:u16][req_id][status][result]
 static uint8_t g_slave_reply_len;
+
+// 7b piece 1 — buffer 2: the async interlock MESSAGE. On a summary CHANGE (trip or
+// recover edge) the main loop fills this with [OP_BUS_INTERLOCK_MSG:u16][v2 status]
+// and marks it fresh; the ISR pushes it on the next poll (best-effort/UDP-style —
+// a lost push is healed by the BC-status reconciliation, piece 3). The two-buffer
+// model: buffer 1 = command reply, buffer 2 = interlock message.
+static uint8_t       g_slave_il_msg[RS485_PAYLOAD_MAX];
+static uint8_t       g_slave_il_msg_len;
+static volatile bool g_slave_il_msg_fresh;
+static uint8_t       g_slave_prev_summary;   // edge detector for the fill
 
 // Locate the shell-exec body inside a bus DATA command + extract exec_timeout.
 // Returns the header length (offset to [req_id][cmd][args]), or 0 if not a command.
@@ -829,7 +839,16 @@ static uint8_t slave_cmd_parse(const rs485_frame_t* f, uint16_t* exec_timeout_ms
 static void slave_rx_isr(const rs485_frame_t* f) {
     uint8_t cls = (uint8_t)(f->type & RS485_FT_MASK);
     if (cls == RS485_FT_POLL) {
-        if (g_slave_reply_ready) {
+        // Priority: the safety interlock message (buffer 2) > the command reply
+        // (buffer 1) > NO_MESSAGE+summary. Each poll ships one; both buffers drain
+        // over successive polls ("the ISR sends both").
+        if (g_slave_il_msg_fresh) {
+            if (rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
+                                     RS485_FT_DATA, f->seq,
+                                     g_slave_il_msg, g_slave_il_msg_len))
+                g_slave_il_msg_fresh = false;
+            // TX busy this round -> retry on the next poll (message stays fresh).
+        } else if (g_slave_reply_ready) {
             // Deliver the finished command's reply on this poll (req_id is inside it).
             if (rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
                                      RS485_FT_DATA, f->seq,
@@ -867,7 +886,22 @@ static void slave_rx_isr(const rs485_frame_t* f) {
 // and arm its reply for the ISR to ship on the next poll. Does NOT transmit (the ISR
 // owns the wire), so execution never holds the bus.
 static void rs485_slave_poll(void) {
-    g_slave_summary = interlock_summary_flags();   // 1 byte = atomic on M0+
+    uint8_t summ = interlock_summary_flags();
+    g_slave_summary = summ;                        // 1 byte = atomic on M0+
+
+    // 7b piece 1 — buffer 2: on a summary CHANGE (trip or recover edge), fill the
+    // async interlock message; the ISR pushes it on the next poll. A latest-state-
+    // wins overwrite is fine (best-effort). If TX still owes the prior message, the
+    // new state simply replaces it.
+    if (summ != g_slave_prev_summary) {
+        g_slave_prev_summary = summ;
+        g_slave_il_msg[0] = (uint8_t)(OP_BUS_INTERLOCK_MSG & 0xFFu);
+        g_slave_il_msg[1] = (uint8_t)(OP_BUS_INTERLOCK_MSG >> 8);
+        uint16_t n = interlock_build_status_v2(&g_slave_il_msg[2]);
+        if (n > (uint16_t)(RS485_PAYLOAD_MAX - 2u)) n = RS485_PAYLOAD_MAX - 2u;
+        g_slave_il_msg_len   = (uint8_t)(2u + n);
+        g_slave_il_msg_fresh = true;
+    }
 
     // 6b-ii BUSY-watchdog: a claimed command that overruns exec_timeout+margin (or
     // whose reply never ships because the master vanished) frees the slot so the

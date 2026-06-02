@@ -40,6 +40,11 @@ typedef struct {
     int              il_known;             // a flagged update has been seen
     uint8_t          il_flags;             // raw summary flags (bit0 = tripped)
     int              faulted;              // hold the queue while tripped
+
+    // 7b-1: latest received async interlock message (buffer 2) + receive count.
+    uint8_t          il_msg[CMD_IL_MSG_MAX];
+    uint8_t          il_msg_len;
+    uint32_t         il_msg_count;
 } slot_t;
 
 struct cmd_tracker {
@@ -213,6 +218,30 @@ void cmd_tracker_on_flagged(cmd_tracker_t *t, uint8_t addr, uint8_t flags) {
     int was     = s->faulted;
     s->faulted  = tripped;
     if (was && !tripped) pump_slot(t, s);   // trip cleared -> resume the held queue
+}
+
+void cmd_tracker_on_interlock_msg(cmd_tracker_t *t, uint8_t addr,
+                                  const uint8_t *msg, uint16_t len) {
+    slot_t *s = slot_for(t, addr);
+    if (!s) return;
+    if (len > CMD_IL_MSG_MAX) len = CMD_IL_MSG_MAX;
+    if (msg && len) memcpy(s->il_msg, msg, len);
+    s->il_msg_len = (uint8_t)len;
+    s->il_msg_count++;
+}
+
+uint16_t cmd_tracker_interlock_msg(const cmd_tracker_t *t, uint8_t addr,
+                                   uint8_t *out, uint16_t cap, uint32_t *count) {
+    for (int i = 0; i < SLOT_MAX; i++) {
+        if (t->slots[i].in_use && t->slots[i].addr == addr) {
+            if (count) *count = t->slots[i].il_msg_count;
+            uint16_t n = t->slots[i].il_msg_len;
+            if (n > cap) n = cap;
+            if (out && n) memcpy(out, t->slots[i].il_msg, n);
+            return n;
+        }
+    }
+    return 0;
 }
 
 int cmd_tracker_interlock(const cmd_tracker_t *t, uint8_t addr,

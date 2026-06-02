@@ -143,6 +143,13 @@ uint32_t         controller_total_acks(const controller_t *c);
 // clear/safety command can still be sent via controller_send_shell_to (ungated).
 int              controller_interlock_state(const controller_t *c, uint8_t addr, uint8_t *flags);
 
+// 7b-1: read the latest async interlock MESSAGE pushed by a slave (buffer 2 — the
+// v2 status snapshot, same layout as a CMD_INTERLOCK_STATUS reply). Returns its
+// length (0 if none); copies up to cap bytes into out; *count (if non-NULL) gets
+// the total received from addr (so a client can tell a fresh push from a repeat).
+uint16_t         controller_interlock_msg(const controller_t *c, uint8_t addr,
+                                          uint8_t *out, uint16_t cap, uint32_t *count);
+
 // 1 once a REGISTER has been parsed since the last link-up; 0 otherwise
 // (identity is cleared on link-down and re-learned on reconnect).
 int                      controller_has_identity(const controller_t *c);

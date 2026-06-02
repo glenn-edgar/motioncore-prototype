@@ -35,6 +35,7 @@ extern "C" {
 
 #define CMD_QUEUE_DEPTH   5     // per-slave queued commands (excl. the in-flight one)
 #define CMD_ARG_MAX       96    // max args bytes carried per queued command
+#define CMD_IL_MSG_MAX    64    // cached async interlock message (v2 status snapshot)
 
 // Synthetic completion status for a NAK whose bounded resends were exhausted
 // (sits above the firmware shell range and the DEMUX_STATUS_* codes).
@@ -88,6 +89,16 @@ void cmd_tracker_on_flagged(cmd_tracker_t *t, uint8_t addr, uint8_t flags);
 // seen for addr (then *tripped = bit0, *flags = raw); 0 if unknown. NULL outs ok.
 int  cmd_tracker_interlock(const cmd_tracker_t *t, uint8_t addr,
                            int *tripped, uint8_t *flags);
+
+// 7b-1: store a received async interlock MESSAGE (buffer 2) for a slave — the
+// payload the Pi actually got, to be reconciled against the BC status (piece 3).
+void cmd_tracker_on_interlock_msg(cmd_tracker_t *t, uint8_t addr,
+                                  const uint8_t *msg, uint16_t len);
+
+// 7b-1: read the latest cached interlock message; returns its length (0 if none),
+// copies up to cap bytes into out. *count (if non-NULL) gets the total received.
+uint16_t cmd_tracker_interlock_msg(const cmd_tracker_t *t, uint8_t addr,
+                                   uint8_t *out, uint16_t cap, uint32_t *count);
 
 // Pump every slot: send queued work on idle slots, and sweep the ACK-timeout /
 // exec-deadline timers. `now_ms` is a monotonic millisecond clock. Call often.

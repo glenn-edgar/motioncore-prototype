@@ -320,6 +320,13 @@ uint8_t  interlock_armed_count(void);
 // tripped). See samd21_interlocks.c.
 uint8_t  interlock_summary_flags(void);
 
+// Build the v2 interlock status snapshot into a plain buffer: [ver=2][nslots] +
+// per-slot {state,id,bc,tf,name[16]} + crash {pc,lr,rstsr,slot}. Returns the byte
+// count (55). Shared by CMD_INTERLOCK_STATUS (the Pi PULLs it) and the slave's
+// buffer-2 interlock-message push on a trip edge (7b piece 1, the Pi receives it).
+// out must be >= 64 bytes.
+uint16_t interlock_build_status_v2(uint8_t* out);
+
 // ---- Slot administration (slice 1 stubs) ---------------------------------
 
 // Arm a compile-time registry entry into a slot. `id` must be a valid

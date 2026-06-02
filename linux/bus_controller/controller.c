@@ -32,6 +32,7 @@
 #define OP_BUS_SLAVE_FLAGGED_    0x0017
 #define OP_BUS_CMD_ACK_          0x0018
 #define OP_BUS_CMD_NAK_          0x0019
+#define OP_BUS_INTERLOCK_MSG_    0x001A
 
 struct controller {
     link_endpoint_t  *ep;
@@ -257,6 +258,12 @@ static void on_event(void *user, const frame_meta_t *meta, const uint8_t *payloa
                                (uint16_t)payload[1] | ((uint16_t)payload[2] << 8));
         break;
 
+    case OP_BUS_INTERLOCK_MSG_:  // 7b-1: slave's async interlock message (buffer 2)
+        // The BC relayed the slave's buffer-2 push; meta->addr is the source slave,
+        // payload is the v2 status snapshot. Cache it as a received message.
+        cmd_tracker_on_interlock_msg(c->tracker, meta->addr, payload, meta->payload_len);
+        break;
+
     default:
         break;  // DBG_LOG / EVENT / NAK / etc. — later steps own these.
     }
@@ -432,4 +439,9 @@ int controller_interlock_state(const controller_t *c, uint8_t addr, uint8_t *fla
     int tripped = 0;
     if (!cmd_tracker_interlock(c->tracker, addr, &tripped, flags)) return -1;  // unknown
     return tripped ? 1 : 0;
+}
+
+uint16_t controller_interlock_msg(const controller_t *c, uint8_t addr,
+                                  uint8_t *out, uint16_t cap, uint32_t *count) {
+    return cmd_tracker_interlock_msg(c->tracker, addr, out, cap, count);
 }

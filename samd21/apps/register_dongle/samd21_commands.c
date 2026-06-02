@@ -971,43 +971,12 @@ static uint8_t cmd_test_hang(shell_reader_t* args, shell_writer_t* result) {
 
 static uint8_t cmd_interlock_status(shell_reader_t* args, shell_writer_t* result) {
     if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
-    // v2 reply: version byte then per-slot {state, id, bc, tf_state, name[16]}
-    // then crash {pc, lr, rstsr, slot}. Total = 2 + 2*20 + 13 = 55 bytes.
-    sw_u8(result, 2);                                  // reply version
-    sw_u8(result, INTERLOCK_MAX_SLOTS);
-    for (uint8_t i = 0; i < INTERLOCK_MAX_SLOTS; i++) {
-        const interlock_slot_persist_t* s = interlock_get_slot(i);
-        sw_u8(result, s->state);
-        sw_u8(result, s->id);
-        sw_u8(result, s->boot_counter);
-        // tf_state comes from the parsed il_inst_t when slot is DSL-defined.
-        uint8_t tf = 0;
-        const char* name = "";
-        extern interlock_persist_t g_interlock_persist;
-        if (s->id == INTERLOCK_ID_DSL) {
-            tf   = g_interlock_persist.inst[i].tf_state;
-            name = g_interlock_persist.inst[i].name;
-        } else if (s->id == INTERLOCK_ID_NOOP) {
-            name = "noop";
-        }
-        sw_u8(result, tf);
-        // Fixed 16-byte name field, NUL-padded.
-        uint8_t name_buf[IL_NAME_MAX];
-        for (uint8_t k = 0; k < IL_NAME_MAX; k++) {
-            name_buf[k] = (name[k] != '\0') ? (uint8_t)name[k] : 0;
-            if (name[k] == '\0') {
-                // pad remainder
-                for (uint8_t j = k + 1; j < IL_NAME_MAX; j++) name_buf[j] = 0;
-                break;
-            }
-        }
-        sw_bytes(result, name_buf, IL_NAME_MAX);
-    }
-    const interlock_crash_record_t* c = interlock_get_crash();
-    sw_u32(result, c->last_pc);
-    sw_u32(result, c->last_lr);
-    sw_u32(result, c->last_rstsr);
-    sw_u8(result, c->last_crashed_slot);
+    // v2 status: [ver][nslots] + per-slot {state,id,bc,tf,name[16]} + crash. The
+    // exact same bytes the slave pushes as its buffer-2 interlock message, so the
+    // Pi has ONE parser whether it pulls (here) or receives the async push.
+    uint8_t buf[64];
+    uint16_t n = interlock_build_status_v2(buf);
+    sw_bytes(result, buf, n);
     if (result->overflow) return SHELL_STATUS_RESULT_TOO_BIG;
     return SHELL_STATUS_OK;
 }

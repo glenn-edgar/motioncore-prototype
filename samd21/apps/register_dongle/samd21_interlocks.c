@@ -261,6 +261,44 @@ uint8_t interlock_summary_flags(void) {
     return flags;
 }
 
+uint16_t interlock_build_status_v2(uint8_t* out) {
+    uint16_t n = 0;
+    out[n++] = 2;                          // reply version
+    out[n++] = INTERLOCK_MAX_SLOTS;
+    for (uint8_t i = 0; i < INTERLOCK_MAX_SLOTS; i++) {
+        const interlock_slot_persist_t* s = interlock_get_slot(i);
+        out[n++] = s->state;
+        out[n++] = s->id;
+        out[n++] = s->boot_counter;
+        uint8_t tf = 0;
+        const char* name = "";
+        if (s->id == INTERLOCK_ID_DSL) {
+            tf   = g_interlock_persist.inst[i].tf_state;
+            name = g_interlock_persist.inst[i].name;
+        } else if (s->id == INTERLOCK_ID_NOOP) {
+            name = "noop";
+        }
+        out[n++] = tf;
+        for (uint8_t k = 0; k < IL_NAME_MAX; k++) {   // fixed 16-byte NUL-padded name
+            char ch = name[k];
+            out[n++] = (uint8_t)ch;
+            if (ch == '\0') {
+                for (uint8_t j = (uint8_t)(k + 1); j < IL_NAME_MAX; j++) out[n++] = 0;
+                break;
+            }
+        }
+    }
+    const interlock_crash_record_t* c = interlock_get_crash();
+    out[n++] = (uint8_t)(c->last_pc);        out[n++] = (uint8_t)(c->last_pc >> 8);
+    out[n++] = (uint8_t)(c->last_pc >> 16);  out[n++] = (uint8_t)(c->last_pc >> 24);
+    out[n++] = (uint8_t)(c->last_lr);        out[n++] = (uint8_t)(c->last_lr >> 8);
+    out[n++] = (uint8_t)(c->last_lr >> 16);  out[n++] = (uint8_t)(c->last_lr >> 24);
+    out[n++] = (uint8_t)(c->last_rstsr);     out[n++] = (uint8_t)(c->last_rstsr >> 8);
+    out[n++] = (uint8_t)(c->last_rstsr >> 16); out[n++] = (uint8_t)(c->last_rstsr >> 24);
+    out[n++] = c->last_crashed_slot;
+    return n;
+}
+
 uint8_t interlock_arm_slot_compiled(uint8_t slot, uint8_t id) {
     verify_persist_or_panic();
     if (slot >= INTERLOCK_MAX_SLOTS)            return SHELL_STATUS_BAD_ARGS;
