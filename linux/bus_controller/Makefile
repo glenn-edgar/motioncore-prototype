@@ -12,7 +12,7 @@ LIBCOMM := vendor/libcomm/frame.c
 
 # ---- targets ---------------------------------------------------------------
 .PHONY: all clean step0a step0b step1 step2 step3 step4 step5 step6a step6b step7a step7b1 step7b2 step7b3 capstone
-all: step0a step0b step1 step2 step3 step4 step5 step6a step6b step7a step7b1 step7b2 step7b3 capstone
+all: step0a step0b step1 step2 step3 step4 step5 step6a step6b step7a step7b1 step7b2 step7b3 capstone bench
 
 # Step 0a — link-endpoint seam + USB link manager bring-up driver.
 step0a: step0a_main.c usb_link.c $(LIBCOMM)
@@ -72,3 +72,7 @@ capstone: capstone_main.c controller.c demux.c identity.c roster.c cmd_tracker.c
 
 clean:
 	rm -f step0a step0b step1 step2 step3 step4 step5 step6a capstone
+
+# Bench — bus soak + API throughput benchmark.
+bench: bench_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)

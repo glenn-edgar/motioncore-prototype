@@ -15,3 +15,4 @@ step7b3
 capstone
 *.o
 *.log
+bench
