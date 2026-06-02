@@ -113,6 +113,9 @@ end
 
 function Bus:close() if self.c~=nil then C.bus_close(self.c); self.c=nil end end
 
+-- ev kinds (mirror ctrl_ev_kind_t): 1 CMD_DONE, 2 FLAGGED, 3 INTERLOCK, 4 LIVENESS, 5 LINK
+function Bus:set_event_handler(fn) self.on_event = fn end
+
 function Bus:poll()
   C.bus_poll(self.c)
   while C.bus_drain(self.c, self.ev) ~= 0 do
@@ -124,10 +127,13 @@ function Bus:poll()
         local data = (ev.data ~= nil and ev.data_len > 0) and ffi.string(ev.data, ev.data_len) or ""
         cb(ev.status, data)
       end
-    elseif ev.kind == 2 then        -- FLAGGED (interlock summary edge)
-      self.flagged[ev.addr] = tonumber(ev.aux)
+    else                            -- FLAGGED / INTERLOCK / LIVENESS / LINK
+      if ev.kind == 2 then self.flagged[ev.addr] = tonumber(ev.aux) end
+      if self.on_event then
+        local data = (ev.data ~= nil and ev.data_len > 0) and ffi.string(ev.data, ev.data_len) or nil
+        self.on_event(tonumber(ev.kind), tonumber(ev.addr), tonumber(ev.status), tonumber(ev.aux), data)
+      end
     end
-    -- kinds 3/4/5 (INTERLOCK/LIVENESS/LINK) are available; the test polls state directly.
   end
 end
 

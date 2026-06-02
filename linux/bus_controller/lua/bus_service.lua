@@ -28,8 +28,11 @@ local SLAVE    = 1
 -- for now; A4 will read it from the per-dongle JSON config.
 local CLASS    = os.getenv("SLAVE_CLASS")    or "samd21_hil"
 local INSTANCE = os.getenv("SLAVE_INSTANCE") or "1"
-local CMD_KEY  = CLASS .. "/" .. INSTANCE .. "/cmd"
-local CAT_KEY  = "fleet/catalog/" .. CLASS
+local CMD_KEY    = CLASS .. "/" .. INSTANCE .. "/cmd"
+local CAT_KEY    = "fleet/catalog/" .. CLASS
+local HEALTH_KEY = CLASS .. "/" .. INSTANCE .. "/health"
+local IL_KEY     = CLASS .. "/" .. INSTANCE .. "/interlock"
+local REPUB_MS   = tonumber(os.getenv("HEALTH_REPUBLISH_MS") or "3000")
 
 local bus = assert(W.Bus.open(DEV, ROSTER))
 print("[bus_service] bus up; provisioning...")
@@ -43,12 +46,36 @@ srv:start()
 local ps = zps.PubSub.new({ locators = { ROUTER }, mode = "client" })
 ps:connect()
 local catalog_json = json.encode({ schema = "bus_catalog/1", class = CLASS, commands = W.CATALOG })
-print(string.format("[bus_service] serving '%s' (token %u); catalog on '%s'; via %s",
-      CMD_KEY, zt.hash(CMD_KEY), CAT_KEY, ROUTER))
 
-local next_cat = 0   -- publish the catalog immediately, then every 5 s (late joiners)
+-- A2: presence/health + interlock leaves, driven by the wrapper's drained events.
+local g_health = { schema = "bus_health/1", class = CLASS, instance = INSTANCE, addr = SLAVE, state = "unknown" }
+local g_il     = { schema = "bus_interlock/1", class = CLASS, instance = INSTANCE, tripped = false }
+local function pub_health()    ps:publish(zt.hash(HEALTH_KEY), json.encode(g_health)) end
+local function pub_interlock() ps:publish(zt.hash(IL_KEY),     json.encode(g_il)) end
+
+bus:set_event_handler(function(kind, addr, status, aux, data)
+  if kind == 4 then            -- LIVENESS (status = is_up): found ⇄ missing
+    g_health.state = (status == 1) and "present" or "missing"
+    print(string.format("[bus_service] liveness addr=%d -> %s", addr, g_health.state))
+    pub_health()
+  elseif kind == 2 then        -- FLAGGED: interlock summary edge (aux = flags, bit0 = tripped)
+    g_il.tripped = (aux % 2) == 1; pub_interlock()
+  elseif kind == 3 then        -- INTERLOCK message (v2 status): slot0.tf @ offset 5 (byte 6)
+    if data and #data >= 6 then g_il.tf = data:byte(6) end; pub_interlock()
+  end
+end)
+
+-- the slave reached ALIVE during wait_ready (initial ALIVE is silent — no event).
+g_health.state = "present"
+
+print(string.format("[bus_service] serving '%s' (token %u); catalog '%s'; health '%s'; interlock '%s'; via %s",
+      CMD_KEY, zt.hash(CMD_KEY), CAT_KEY, HEALTH_KEY, IL_KEY, ROUTER))
+
+local next_cat, next_pub = 0, 0   -- publish catalog + health/interlock immediately, then periodically
 while true do
-  if ms() >= next_cat then ps:publish(zt.hash(CAT_KEY), catalog_json); next_cat = ms() + 5000 end
+  local now = ms()
+  if now >= next_cat then ps:publish(zt.hash(CAT_KEY), catalog_json); next_cat = now + 5000 end
+  if now >= next_pub then pub_health(); pub_interlock(); next_pub = now + REPUB_MS end
   local req = q:poll()
   if req then
     local ok, j = pcall(json.decode, req:payload())

@@ -32,22 +32,36 @@ local function check(name, ok, detail)
   if ok then pass = pass + 1 else fail = fail + 1 end
 end
 
--- ---- Phase 0: catalog discovery (pubsub) ----------------------------------
-print("\n[zclient] === Phase 0: discover the catalog (fleet/catalog/" .. CLASS .. ") ===")
+-- ---- pubsub: catalog discovery (A1) + presence/health + interlock (A2) -----
+local ps = zps.PubSub.new({ locators = { ROUTER }, mode = "client" }); ps:connect()
+local cat_sub    = ps:subscribe(zt.hash("fleet/catalog/" .. CLASS), 8)
+local health_sub = ps:subscribe(zt.hash(CLASS .. "/" .. INSTANCE .. "/health"), 16)
+local il_sub     = ps:subscribe(zt.hash(CLASS .. "/" .. INSTANCE .. "/interlock"), 16)
+local g_catalog, g_health, g_il
+local function drain_subs()
+  local m
+  m = cat_sub:poll();    while m do g_catalog = json.decode(m.payload); m = cat_sub:poll() end
+  m = health_sub:poll(); while m do g_health  = json.decode(m.payload); m = health_sub:poll() end
+  m = il_sub:poll();     while m do g_il       = json.decode(m.payload); m = il_sub:poll() end
+end
+local function wait_for(pred, timeout_ms)
+  local t0 = ms()
+  while ms() - t0 < timeout_ms do drain_subs(); if pred() then return true end; ffi.C.usleep(30000) end
+  return false
+end
+
+print("\n[zclient] === Phase 0: discovery — catalog + presence (pubsub) ===")
 do
-  local ps = zps.PubSub.new({ locators = { ROUTER }, mode = "client" }); ps:connect()
-  local sub = ps:subscribe(zt.hash("fleet/catalog/" .. CLASS), 8)
-  local catalog, t0 = nil, ms()
-  while ms() - t0 < 6000 do
-    local m = sub:poll()
-    if m then catalog = json.decode(m.payload); break end
-    ffi.C.usleep(50000)
-  end
-  local ncmd = 0; if catalog and catalog.commands then for _ in pairs(catalog.commands) do ncmd = ncmd + 1 end end
+  wait_for(function() return g_catalog ~= nil end, 6000)
+  local ncmd = 0; if g_catalog and g_catalog.commands then for _ in pairs(g_catalog.commands) do ncmd = ncmd + 1 end end
   check("catalog discovered for " .. CLASS,
-        catalog ~= nil and catalog.commands ~= nil and catalog.commands.echo ~= nil,
-        catalog and ("schema=" .. tostring(catalog.schema) .. " cmds=" .. ncmd) or "none")
-  ps:disconnect(); ps:destroy()
+        g_catalog ~= nil and g_catalog.commands and g_catalog.commands.echo ~= nil,
+        g_catalog and ("schema=" .. tostring(g_catalog.schema) .. " cmds=" .. ncmd) or "none")
+end
+do
+  wait_for(function() return g_health ~= nil and g_health.state == "present" end, 6000)
+  check("health leaf: slave present", g_health ~= nil and g_health.state == "present",
+        g_health and ("state=" .. tostring(g_health.state)) or "none")
 end
 
 -- one synchronous command RPC. admin=true uses the ungated lane (clear/diagnostic).
@@ -94,11 +108,18 @@ do rpc("dac_write", {value=512})  -- trigger
    local tf, t0 = 0, ms()
    while ms()-t0 < 3000 do tf = status_tf(); if tf==2 then break end; ffi.C.usleep(50000) end
    check("trigger -> interlock_status tripped", tf==2, "slot0.tf="..tf)
+   -- A2: the interlock LEAF (pub/sub) should reflect the trip too
+   local leaf = wait_for(function() return g_il ~= nil and g_il.tripped == true end, 3000)
+   check("interlock leaf published tripped", leaf,
+         g_il and ("tripped="..tostring(g_il.tripped).." tf="..tostring(g_il.tf)) or "none")
 end
 do rpc("dac_write", {value=0}, 1000, true)   -- recover via ungated lane
    local tf, t0 = -1, ms()
    while ms()-t0 < 3000 do tf = status_tf(); if tf==1 then break end; ffi.C.usleep(50000) end
    check("recover -> safe", tf==1, "slot0.tf="..tf)
+   local leaf = wait_for(function() return g_il ~= nil and g_il.tripped == false end, 3000)
+   check("interlock leaf cleared on recover", leaf,
+         g_il and ("tripped="..tostring(g_il.tripped)) or "none")
 end
 do local r = rpc("interlock_disarm", {slot=0}, 1000, true); check("interlock_disarm", r~=nil, nil) end
 
@@ -122,5 +143,6 @@ do
 end
 
 print(string.format("\n[zclient] RESULT: %d passed, %d failed", pass, fail))
+ps:disconnect(); ps:destroy()
 cli:disconnect(); cli:destroy()
 os.exit(fail == 0 and 0 or 1)
