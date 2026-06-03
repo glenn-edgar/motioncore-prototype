@@ -24,6 +24,7 @@
 #include "bsp/board_api.h"           // board_millis()
 #include "samd21_adc.h"              // samd21_adc_read_oneshot public API
 #include "samd21_rs485.h"            // SERCOM4 9-bit MPCM UART driver
+#include "samd21_pin_table.h"        // board-label -> AIN + reserved-pin guard (dac_follow)
 
 // ---------- pin validation -------------------------------------------------
 
@@ -214,6 +215,25 @@ static volatile struct {
 
 static bool g_tc3_initialized = false;
 
+// ADC->DAC follow mode (bench): a TC3 tick mirrors the latest hardware-averaged
+// ADC conversion on the configured channel onto the DAC (A0), then kicks the
+// next conversion. Shares TC3 + the DAC with the waveform generator (mutually
+// exclusive). The ISR step NEVER spins on the ADC, so the RS-485 ISR is
+// undisturbed; if a conversion is still in flight on a given tick the DAC simply
+// holds its last value.
+static volatile struct {
+    bool    active;
+    uint8_t adc_channel;
+} g_dac_follow;
+
+static inline void dac_follow_step(void) {
+    if (!ADC->INTFLAG.bit.RESRDY) return;          // conversion still running
+    uint16_t v = (uint16_t)ADC->RESULT.reg;        // 12-bit (ADJRES set at start)
+    ADC->INTFLAG.reg = ADC_INTFLAG_RESRDY;
+    DAC->DATA.reg = (uint16_t)(v >> 2);            // 12-bit ADC -> 10-bit DAC
+    ADC->SWTRIG.bit.START = 1;                     // begin the next averaged conversion
+}
+
 static void tc3_init_once(void) {
     if (g_tc3_initialized) return;
     PM->APBCMASK.reg |= PM_APBCMASK_TC3;
@@ -256,6 +276,7 @@ void TC3_Handler(void) {
     if (!TC3->COUNT16.INTFLAG.bit.MC0) return;
     TC3->COUNT16.INTFLAG.reg = TC_INTFLAG_MC0;
 
+    if (g_dac_follow.active) { dac_follow_step(); return; }
     if (!g_dac_wf.active) return;
 
     // Compute next sample for the current phase.
@@ -361,6 +382,7 @@ static uint8_t cmd_dac_stop(shell_reader_t* args, shell_writer_t* result) {
     (void)result;
     if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
     g_dac_wf.active = false;
+    g_dac_follow.active = false;         // stop follow too (shared TC3 + DAC)
     tc3_stop();
     return SHELL_STATUS_OK;
 }
@@ -381,9 +403,10 @@ static uint8_t cmd_dac_write(shell_reader_t* args, shell_writer_t* result) {
 
     dac_init();
 
-    // If a waveform is running, stop it — static write wins.
-    if (g_dac_wf.active) {
+    // If a waveform or follow mode is running, stop it — static write wins.
+    if (g_dac_wf.active || g_dac_follow.active) {
         g_dac_wf.active = false;
+        g_dac_follow.active = false;
         tc3_stop();
     }
 
@@ -589,6 +612,79 @@ static uint8_t cmd_adc_read(shell_reader_t* args, shell_writer_t* result) {
     uint16_t value = samd21_adc_read_oneshot(channel, oversample_exp, sample_hold_cyc);
     sw_u16(result, value);
     return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
+}
+
+// ---------- CMD_DAC_FOLLOW_START -----------------------------------------
+// Bench mode: continuously sample one ADC input (hardware-averaged) and mirror
+// it to the DAC (A0). Interrupt-driven (TC3); the ISR step is non-blocking.
+// Mutually exclusive with the DAC waveform generator (shared TC3 + DAC).
+//
+// args:   oversample_exp:u8  (0..7  -> 1..128 samples averaged, like adc_read)
+//         sample_hold_cyc:u8 (0..63)
+//         update_hz:u16      (1..10000; 0 -> default 1000)
+//         pin:str            (board label "A1".."A10" / "D1".."D10", trailing)
+// result: empty
+// status: OK / BAD_ARGS
+//
+// The input is a USER board label, validated against the pin table — A0 (DAC),
+// D4/D5 (I2C), D6/D7 (UART) are RESERVED and rejected; the label must have ADC.
+#define DAC_FOLLOW_HZ_MIN      1u
+#define DAC_FOLLOW_HZ_MAX      10000u
+#define DAC_FOLLOW_HZ_DEFAULT  1000u
+
+static uint8_t cmd_dac_follow_start(shell_reader_t* args, shell_writer_t* result) {
+    (void)result;
+    uint8_t  oversample_exp  = sr_u8(args);
+    uint8_t  sample_hold_cyc = sr_u8(args);
+    uint16_t update_hz       = sr_u16(args);
+    if (args->overflow)                           return SHELL_STATUS_BAD_ARGS;
+
+    uint16_t label_len = sr_remaining(args);
+    const char* label  = (const char*)args->p;        // trailing bytes = board label
+    if (label_len == 0u || label_len > 3u)        return SHELL_STATUS_BAD_ARGS;
+    if (oversample_exp > ADC_OVERSAMPLE_MAX)      return SHELL_STATUS_BAD_ARGS;
+    if (sample_hold_cyc > ADC_SAMPLE_HOLD_MAX)    return SHELL_STATUS_BAD_ARGS;
+    if (update_hz == 0u) update_hz = DAC_FOLLOW_HZ_DEFAULT;
+    if (update_hz < DAC_FOLLOW_HZ_MIN || update_hz > DAC_FOLLOW_HZ_MAX) return SHELL_STATUS_BAD_ARGS;
+
+    const board_pin_t* p = board_pin_lookup(label, (uint8_t)label_len);
+    if (p == NULL)                                return SHELL_STATUS_BAD_ARGS;
+    if (board_pin_is_reserved(p))                 return SHELL_STATUS_BAD_ARGS;  // A0/D4/D5/D6/D7
+    if (!(p->caps & BOARD_PIN_CAP_ADC) || p->adc_channel == BOARD_PIN_ADC_NONE)
+                                                  return SHELL_STATUS_BAD_ARGS;
+
+    uint32_t period = 48000000u / (uint32_t)update_hz;
+    if (period < 2u || period > 65535u)           return SHELL_STATUS_BAD_ARGS;
+
+    dac_init();
+    tc3_init_once();
+    adc_init();
+    (void)adc_apply_avg_hold(oversample_exp, sample_hold_cyc);
+
+    // Configure the input pad + ADC mux ONCE; the ISR then free-runs conversions.
+    ain_to_pad_t pad = g_ain_to_pad[p->adc_channel];
+    if (pad.port != 0xFFu) adc_pin_config(pad.port, pad.pin);
+    ADC->INPUTCTRL.bit.MUXPOS = p->adc_channel;
+    while (ADC->STATUS.bit.SYNCBUSY) { /* spin */ }
+    ADC->INTFLAG.reg = ADC_INTFLAG_RESRDY;
+    ADC->SWTRIG.bit.START = 1;                    // kick the first conversion
+
+    NVIC_DisableIRQ(TC3_IRQn);
+    g_dac_wf.active          = false;             // mutual exclusion with waveform
+    g_dac_follow.adc_channel = p->adc_channel;
+    g_dac_follow.active      = true;
+    tc3_start_at_period((uint16_t)period);        // re-enables the TC3 NVIC line
+    return SHELL_STATUS_OK;
+}
+
+// ---------- CMD_DAC_FOLLOW_STOP ------------------------------------------
+// args: empty   result: empty   status: OK   (DAC parks at its last value)
+static uint8_t cmd_dac_follow_stop(shell_reader_t* args, shell_writer_t* result) {
+    (void)result;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    g_dac_follow.active = false;
+    tc3_stop();
+    return SHELL_STATUS_OK;
 }
 
 // ---------- CMD_ADC_CAPTURE -----------------------------------------------
@@ -1168,6 +1264,8 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_ADC_READ,            "adc_read",           cmd_adc_read           },
     { CMD_DAC_WAVEFORM_WRITE,  "dac_waveform_write", cmd_dac_waveform_write },
     { CMD_DAC_STOP,            "dac_stop",           cmd_dac_stop           },
+    { CMD_DAC_FOLLOW_START,    "dac_follow_start",   cmd_dac_follow_start   },
+    { CMD_DAC_FOLLOW_STOP,     "dac_follow_stop",    cmd_dac_follow_stop    },
     { CMD_ADC_CAPTURE,         "adc_capture",        cmd_adc_capture        },
     { CMD_I2C_WRITE,           "i2c_write",          cmd_i2c_write          },
     { CMD_I2C_READ,            "i2c_read",           cmd_i2c_read           },

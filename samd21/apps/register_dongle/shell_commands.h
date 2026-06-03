@@ -98,7 +98,14 @@ const shell_cmd_entry_t* shell_find_cmd(uint16_t command_id);
 #define CMD_DAC_STOP          ((uint16_t)0x0106)
 #define CMD_ADC_CAPTURE       ((uint16_t)0x0107)
 
-// 0x0108..0x010E: VACATED. Previously PWM (TCC0/WO0) and pulse counter
+// 0x0108..0x0109: ADC->DAC follow mode (bench). Continuously sample one ADC
+// input (hardware-averaged) and mirror it to the DAC (A0), interrupt-driven via
+// TC3 (mutually exclusive with the DAC waveform generator). Start takes a user
+// board label for the input pin; stop tears it down.
+#define CMD_DAC_FOLLOW_START  ((uint16_t)0x0108)
+#define CMD_DAC_FOLLOW_STOP   ((uint16_t)0x0109)
+
+// 0x010A..0x010E: VACATED. Previously PWM (TCC0/WO0) and pulse counter
 // (EIC→EVSYS→TC4 COUNT32). Removed when SAMD21 narrowed to safety/IO supervisor
 // role — motor PWM is RA4M1 territory; pulse counting not part of the SAMD21
 // supervisory contract. Opcode range left RESERVED-DO-NOT-REUSE so older
