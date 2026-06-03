@@ -1,0 +1,9 @@
+{
+  "_comment": "Second dongle template. Rename to samd21-bc-2.json to activate; the supervisor brings it up SECOND (sorted glob order) once samd21-bc-1 is SERVING. Needs its own pinned device + a second bus controller on the bench (item D).",
+  "dongle_id": "samd21-bc-2",
+  "device":    "/dev/ttyACM2",
+  "class":     "samd21_hil",
+  "instance":  "2",
+  "addr":      1,
+  "roster":    "rosters/bench.conf"
+}

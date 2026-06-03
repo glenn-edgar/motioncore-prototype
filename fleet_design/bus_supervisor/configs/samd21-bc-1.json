@@ -1,0 +1,8 @@
+{
+  "dongle_id": "samd21-bc-1",
+  "device":    "/dev/ttyACM0",
+  "class":     "samd21_hil",
+  "instance":  "1",
+  "addr":      1,
+  "roster":    "rosters/bench.conf"
+}

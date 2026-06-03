@@ -39,7 +39,19 @@ int      bus_interlock_state(controller_t*, int addr);
 uint32_t bus_total_acks(controller_t*);
 ]]
 
-local C = ffi.load(os.getenv("BUS_LIB") or "./libbus_controller.so")
+-- Lazy native load: requiring this module must succeed even where the .so is
+-- absent (dev-host IR validation, unit tests, the fault_trigger tool) — the
+-- error is deferred to the first actual bus call, where it's clear and fatal.
+local C
+do
+    local ok, lib = pcall(ffi.load, os.getenv("BUS_LIB") or "./libbus_controller.so")
+    if ok then
+        C = lib
+    else
+        local err = tostring(lib)
+        C = setmetatable({}, { __index = function() error("libbus_controller not loaded: " .. err, 2) end })
+    end
+end
 
 -- ---- the SAMD21 slave catalog (hand-authored) -----------------------------
 -- types: u8 u16 u32 | str (raw bytes) | lenstr ([u16 len][bytes]) | hex (binary→hex)
@@ -157,7 +169,21 @@ function Bus:submit_admin(addr, name, args, timeout_ms, on_done)
   return self:_submit(addr, name, args, timeout_ms, true, on_done)
 end
 
+-- provision_step: ONE non-blocking pump step. Returns "ready" | "failed" |
+-- "pending". The chain_tree dongle subtree calls this from its provisioning
+-- phase each tick, so a multi-second provision never stalls the single thread
+-- (every other dongle + the RPC drain keep running). On "ready" the C-core's
+-- liveness sweep is enabled. This is the multi-tick replacement for wait_ready.
+function Bus:provision_step()
+  if self.c == nil then return "failed" end
+  self:poll()
+  if C.bus_provisioned(self.c) ~= 0 then C.bus_set_poll_enable(self.c, 1); return "ready" end
+  if C.bus_prov_failed(self.c) ~= 0 then return "failed" end
+  return "pending"
+end
+
 -- provision: pump until provisioned (sweep enabled) or failed/timeout.
+-- BLOCKING — kept for CLI/one-shot tools; the supervisor uses provision_step.
 function Bus:wait_ready(timeout_ms)
   local budget = timeout_ms or 8000
   while budget > 0 do
