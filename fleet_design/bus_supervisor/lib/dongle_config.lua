@@ -53,6 +53,15 @@ function M.load(dir)
         cfg.instance = tostring(cfg.instance or "1")
         cfg.addr     = tonumber(cfg.addr or 1)
         cfg.roster   = cfg.roster   or "rosters/bench.conf"
+        -- optional A4 pin: the BC's 32-char hex chip_uid. When set, the dongle
+        -- subtree refuses to serve a device reporting a different UID (catches a
+        -- ttyACM re-enumeration binding the wrong controller). Normalize to
+        -- lowercase, strip separators, so "AA:BB" and "aabb" compare equal.
+        if cfg.chip_uid and cfg.chip_uid ~= "" then
+            cfg.chip_uid = tostring(cfg.chip_uid):gsub("[^%x]", ""):lower()
+        else
+            cfg.chip_uid = nil
+        end
         cfg.bring_up_index = i
         out[#out + 1] = cfg
     end

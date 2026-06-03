@@ -115,7 +115,7 @@ end
 -- the next dongle. Called once on the verify→serving transition.
 local function enter_serving(handle, ns)
     local bb, rt, bus = handle.blackboard, ns.rt, ns.bus
-    rt.g_health = { schema="bus_health/1", class=rt.class, instance=rt.instance, addr=rt.addr, state="present" }
+    rt.g_health = { schema="bus_health/1", class=rt.class, instance=rt.instance, addr=rt.addr, state="present", chip_uid=ns.chip_uid }
     rt.g_il     = { schema="bus_interlock/1", class=rt.class, instance=rt.instance, tripped=false }
     bus:set_event_handler(function(kind, addr, status, aux, data)
         if kind == 4 then
@@ -172,9 +172,29 @@ M.main.DONGLE_SERVE = function(handle, bool_fn, node, event_id, event_data)
         return defs.CFL_CONTINUE
     end
 
-    -- ---- verify: one-shot transition into steady state ----
+    -- ---- verify: chip_uid identity check, then transition into steady state ----
     if ns.phase == "verify" then
-        enter_serving(handle, ns)   -- topology verified by provisioning sweep; A4 adds chip_uid
+        local cfg = cfg_of(node)
+        local id  = ns.bus:identity()               -- REGISTER v2 captured during provisioning
+        ns.chip_uid = id and id.chip_uid or nil
+        if ns.chip_uid then
+            log("IDENT  dongle %-14s — chip_uid=%s class=0x%08X inst=%d (%s)",
+                ns.dongle_id, ns.chip_uid, id.class_id or 0, id.instance_id or 0,
+                id.commissioned and "commissioned" or "uncommissioned")
+        else
+            log("IDENT  dongle %-14s — no REGISTER identity captured", ns.dongle_id)
+        end
+        -- A4 pin: refuse to serve a device whose chip_uid doesn't match the config
+        -- (a ttyACM re-enumeration that bound the wrong controller). Fail-safe:
+        -- fault → the supervisor retries the SAME pinned device, so a true mismatch
+        -- loops to BUS_GATE_DOWN rather than ever serving the wrong chip.
+        if cfg.chip_uid and ns.chip_uid ~= cfg.chip_uid then
+            log("FAULT  dongle %-14s — chip_uid mismatch: want %s got %s → CFL_DISABLE (wrong device?)",
+                ns.dongle_id, cfg.chip_uid, tostring(ns.chip_uid))
+            ns.phase = "fault"; return defs.CFL_CONTINUE
+        end
+        if cfg.chip_uid then log("IDENT  dongle %-14s — chip_uid matches pin", ns.dongle_id) end
+        enter_serving(handle, ns)   -- topology verified by provisioning sweep
         ns.phase = "serving"
         return defs.CFL_CONTINUE
     end

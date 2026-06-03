@@ -38,6 +38,14 @@ local tok = zt.hash(CLASS .. "/" .. INSTANCE .. "/cmd")
 local payload = cjson.encode({ command = COMMAND, args = args, timeout_ms = 1500 })
 print("ROUTER " .. ROUTER)
 print("REQ  -> " .. CLASS .. "/" .. INSTANCE .. "/cmd  " .. payload)
-local ok, reply = pcall(cli.call, cli, tok, payload, 4000)
+-- The FIRST query after connecting to a freshly-started router can miss while
+-- the queryable's routing interest propagates — retry once on a timeout/no-reply.
+local ok, reply
+for attempt = 1, 2 do
+    ok, reply = pcall(cli.call, cli, tok, payload, 4000)
+    local missed = (not ok) or reply == nil or tostring(reply):find('"error":"timeout"', 1, true)
+    if not missed then break end
+    if attempt == 1 then print("(cold-start miss — retrying once)") end
+end
 print("REPLY<- " .. tostring(ok and reply or ("call error: " .. tostring(reply))))
 cli:disconnect(); cli:destroy()

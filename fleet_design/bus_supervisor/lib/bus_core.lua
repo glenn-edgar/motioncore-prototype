@@ -28,6 +28,23 @@ typedef struct {
 } ctrl_event_t;
 controller_t* bus_open(const char* device, const char* roster_path);
 void     bus_close(controller_t*);
+// REGISTER v2 identity the C core already captures from the attached dongle
+// (controller.h / identity.h — exported, NOT a facade fn; called on the same
+// controller_t* bus_open returns). Struct decl matches identity.h field-for-field
+// so LuaJIT's natural alignment reproduces the C layout. A4: chip_uid pinning.
+typedef struct {
+    uint8_t  version;
+    uint32_t class_id;
+    uint32_t instance_id;
+    uint8_t  commissioning_state;
+    uint8_t  chip_uid[16];
+    uint16_t vid;
+    uint16_t pid;
+    uint32_t fw_version;
+    uint32_t build_date;
+} dongle_identity_t;
+int                      controller_has_identity(controller_t*);
+const dongle_identity_t* controller_identity(controller_t*);
 void     bus_poll(controller_t*);
 int      bus_provisioned(controller_t*);
 int      bus_prov_failed(controller_t*);
@@ -193,6 +210,25 @@ function Bus:wait_ready(timeout_ms)
     ffi.C.usleep(3000); budget = budget - 3
   end
   return false, "never provisioned"
+end
+
+-- identity: the BC's REGISTER v2 (chip_uid etc.), captured during provisioning.
+-- Returns nil until identity is learned. chip_uid is a 32-char lowercase hex
+-- string (the SAMD21 128-bit factory UID) — the stable physical pin for A4.
+function Bus:identity()
+  if self.c == nil then return nil end
+  if C.controller_has_identity(self.c) == 0 then return nil end
+  local id = C.controller_identity(self.c)
+  if id == nil then return nil end
+  local hex = {}
+  for i = 0, 15 do hex[i + 1] = string.format("%02x", id.chip_uid[i]) end
+  return {
+    chip_uid     = table.concat(hex),
+    class_id     = tonumber(id.class_id),
+    instance_id  = tonumber(id.instance_id),
+    commissioned = (id.commissioning_state ~= 0),
+    fw_version   = tonumber(id.fw_version),
+  }
 end
 
 function Bus:interlock_state(addr) return C.bus_interlock_state(self.c, addr) end
