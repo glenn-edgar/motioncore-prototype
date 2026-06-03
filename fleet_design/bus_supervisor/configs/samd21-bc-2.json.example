@@ -1,9 +1,10 @@
 {
-  "_comment": "Second dongle template. Rename to samd21-bc-2.json to activate; the supervisor brings it up SECOND (sorted glob order) once samd21-bc-1 is SERVING. Needs its own pinned device + a second bus controller on the bench (item D).",
+  "_comment": "VERIFIED bus-2 bench reference (2026-06-03, selftest 18/18): BC 43 (chip_uid C21C…) mastering a slave at RS-485 addr 2 (instance 2). Rename to samd21-bc-2.json to deploy. `device` is per-host — the Pi bench actually runs from ~/bus_sup_configs and BC 43 enumerated as ttyACM0. `roster` /app/rosters/bus2.conf is baked from linux/bus_controller/rosters/bus2.conf. `chip_uid` is the A4 pin (the supervisor refuses to serve any other BC on this device).",
   "dongle_id": "samd21-bc-2",
-  "device":    "/dev/ttyACM2",
+  "device":    "/dev/ttyACM0",
   "class":     "samd21_hil",
   "instance":  "2",
-  "addr":      1,
-  "roster":    "rosters/bench.conf"
+  "addr":      2,
+  "roster":    "/app/rosters/bus2.conf",
+  "chip_uid":  "c21cfc473432585020312e35232209ff"
 }
