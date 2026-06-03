@@ -48,13 +48,31 @@ Pi `192.168.1.66` (user pi). Image `bus_supervisor:0.2` on Pi + WSL.
   image): `docker run --rm -v <repo>/fleet_design:/fd:ro -e ROUTER=tcp/192.168.1.66:7448
   -e LUA_CPATH='/usr/local/lib/lua/5.1/?.so;;' -e LUA_PATH='/fd/vendor/lua/?.lua;;'
   --entrypoint luajit nanodatacenter/fleet-mcfarland:0.7 /fd/bus_supervisor/tools/bus_cmd.lua echo hi`
-- **Self-test suite** (`tools/selftest.lua`, same docker invocation): API smoke +
-  DAC→ADC loopback + **single-slot analog interlock** + **multi-slot analog(slot0)
-  + digital(slot1)** arm/trip/recover (all 4 trip combinations, per-slot
-  independence). PASS/FAIL per check, non-zero exit — run after a deploy/reflash.
-  **Bench requirement: two jumpers on the slave — A0(DAC)↔A1 (analog loop) and
-  D8↔D9 (digital loop).** Other tools: `bus_watch.lua` (operational/reconcile
-  leaves), `fault_trigger.lua` (inject a dongle fault to exercise the supervisor).
+- **Self-test suite** (`tools/selftest.lua`, same docker invocation) — see the
+  Test plan below. Other tools: `bus_watch.lua` (operational/reconcile leaves),
+  `fault_trigger.lua` (inject a dongle fault to exercise the supervisor).
+
+## Test plan — `tools/selftest.lua`
+Run after any deploy or slave reflash (`ROUTER=tcp/<pi>:7448 … luajit
+tools/selftest.lua`). PASS/FAIL per check, non-zero exit on any failure. **Bench
+requirement: two slave jumpers — A0(DAC)↔A1 (analog loop) and D8↔D9 (digital
+loop).** 15 checks:
+1. **API smoke** — echo, sysinfo, stack_hwm.
+2. **DAC→ADC loopback** — `dac_write {0,256,512}` → `adc_read` A1 (AIN4) ≈ 4×DAC
+   (proves the A0↔A1 jumper + the DAC/ADC path).
+3. **Single-slot analog interlock (slot 0)** — arm `A1<600`; DAC=512 → TRIPPED
+   (tf=2); DAC=0 → RECOVERED (tf=1); disarm.
+4. **Multi-slot — analog (slot 0) + digital (slot 1)** — arm both at once and
+   drive A0 (analog) + D8 (digital, → D9) to walk all four trip combinations
+   (neither / analog-only / digital-only / both / recovered), asserting per-slot
+   tf **independence**; disarm both.
+
+DSLs: analog `ana;cfg[(A1):adc];cfg[(D2):out];watch[A1:lt:600];out_ok[D2:0];out_err[D2:1]`;
+digital `dig;cfg[(D9):in,up];cfg[(D3):out];watch[D9:1];out_ok[D3:0];out_err[D3:1]`.
+Digital trips on `gpio_write D8=0` (D9 low). Per-slot tf decode: `interlock_status`
+v2, byte `5 + s*20` (hex chars `11 + s*40`); 1=safe, 2=tripped. interlock
+status/disarm/recover use the admin (ungated) lane. **Future entries** to add as
+they land: A4 chip_uid pin verify, dac_follow, N=2 multi-dongle.
 
 ## NEXT (resume path), in order
 1. **A4 auto-scan increment** (in-lane, partial test w/ 1 BC): today's pin only
@@ -69,10 +87,13 @@ Pi `192.168.1.66` (user pi). Image `bus_supervisor:0.2` on Pi + WSL.
    N=2 config builds 2 subtrees + 2 cmd queues).
 
 ## Rules / gotchas (load-bearing)
-- **Do NOT edit the other window's files**: `linux/bus_controller/*.c/.h`
-  (controller.c, ffi_facade.c, Makefile), `samd21/apps/register_dongle/**`. We
-  only *compile* / *read* / *FFI-consume* them. The other window actively changes
-  the C core + slave firmware.
+- **Ownership (corrected 2026-06-03):** there is NO separate window — `samd21/`
+  (incl. `register_dongle` firmware), `linux/bus_controller/`, and this
+  `bus_supervisor/` are all mine to edit. **Leave alone** the container/robot work
+  in `fleet_design/` (irrigation_analytics, notification_service, farm_soil,
+  server/…) and all of `cfl_avr/`. The SAMD21 firmware build/flash workflow lives
+  in memory [[samd21-build-flash-workflow-2026-06-03]] (build on the Pi, UF2 via
+  double-tap → `/dev/sdb` "Arduino" → `sudo mount` + `cp`).
 - **ttyACM enumeration swaps across power cycles** and both register_dongle USB
   devices share the placeholder serial `0123456789ABCDEF` → udev/by-id pinning is
   impossible. The bench BC is `ttyACM1` *this* session; pin by chip_uid (A4).
