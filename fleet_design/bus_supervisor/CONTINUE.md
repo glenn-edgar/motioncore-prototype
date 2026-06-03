@@ -53,6 +53,10 @@ Pi `192.168.1.66` (user pi). Image `bus_supervisor:0.2` on Pi + WSL.
   `fault_trigger.lua` (inject a dongle fault to exercise the supervisor).
 
 ## Test plan — `tools/selftest.lua`
+**Verified baseline: tag `bus-selftest-baseline-2026-06-03` (commit `cc4bd4f`) =
+18/18.** `git checkout` that tag (or diff against it) to return to the known-good
+state; the tag message records the bench config.
+
 Run after any deploy or slave reflash (`ROUTER=tcp/<pi>:7448 … luajit
 tools/selftest.lua`). PASS/FAIL per check, non-zero exit on any failure. **Bench
 requirement: two slave jumpers — A0(DAC)↔A1 (analog loop) and D8↔D9 (digital
