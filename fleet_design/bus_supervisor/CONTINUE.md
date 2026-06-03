@@ -56,7 +56,7 @@ Pi `192.168.1.66` (user pi). Image `bus_supervisor:0.2` on Pi + WSL.
 Run after any deploy or slave reflash (`ROUTER=tcp/<pi>:7448 … luajit
 tools/selftest.lua`). PASS/FAIL per check, non-zero exit on any failure. **Bench
 requirement: two slave jumpers — A0(DAC)↔A1 (analog loop) and D8↔D9 (digital
-loop).** 15 checks:
+loop).** 18 checks:
 1. **API smoke** — echo, sysinfo, stack_hwm.
 2. **DAC→ADC loopback** — `dac_write {0,256,512}` → `adc_read` A1 (AIN4) ≈ 4×DAC
    (proves the A0↔A1 jumper + the DAC/ADC path).
@@ -66,13 +66,17 @@ loop).** 15 checks:
    drive A0 (analog) + D8 (digital, → D9) to walk all four trip combinations
    (neither / analog-only / digital-only / both / recovered), asserting per-slot
    tf **independence**; disarm both.
+5. **DAC follow** — reserved pin (A0) rejected; then follow input D9 (driven
+   0/3.3 V via the D8→D9 jumper) → output A0, read back through the A0↔A1 jumper
+   (`adc_read` A1 after stop): D9 high → A0≈4095, D9 low → A0≈0.
 
 DSLs: analog `ana;cfg[(A1):adc];cfg[(D2):out];watch[A1:lt:600];out_ok[D2:0];out_err[D2:1]`;
 digital `dig;cfg[(D9):in,up];cfg[(D3):out];watch[D9:1];out_ok[D3:0];out_err[D3:1]`.
 Digital trips on `gpio_write D8=0` (D9 low). Per-slot tf decode: `interlock_status`
 v2, byte `5 + s*20` (hex chars `11 + s*40`); 1=safe, 2=tripped. interlock
-status/disarm/recover use the admin (ungated) lane. **Future entries** to add as
-they land: A4 chip_uid pin verify, dac_follow, N=2 multi-dongle.
+status/disarm/recover use the admin (ungated) lane. DAC-follow reads back via
+read-after-stop (the ISR owns the ADC while running). **Future entries** to add
+as they land: A4 chip_uid pin verify, N=2 multi-dongle.
 
 ## NEXT (resume path), in order
 1. **A4 auto-scan increment** (in-lane, partial test w/ 1 BC): today's pin only

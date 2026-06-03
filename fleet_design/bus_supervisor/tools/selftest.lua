@@ -137,6 +137,29 @@ do local s0, s1 = combo(false, false); check("multi: both recovered",        s0 
 rpc("interlock_disarm", { slot = 0 }, 1000, true); rpc("interlock_disarm", { slot = 1 }, 1000, true)
 check("multi: disarm both", true, nil)
 
+-- Phase 5 — DAC follow mode: mirror a live input onto A0 --------------------
+-- Input = D9 (driven 0/3.3V via the D8->D9 jumper); output = A0. The follow ISR
+-- owns the ADC while running, so read A0 back AFTER stopping, via the A0<->A1
+-- jumper (adc_read A1). A0 should track D9 high/low. (A1 can't be the input —
+-- it's tied to the A0 output, which would form a feedback loop.)
+rpc("interlock_disarm", { slot = 0 }, 1000, true); rpc("interlock_disarm", { slot = 1 }, 1000, true)
+rpc("gpio_config", { port = 0, pin = 7, mode = 1 }, 1000, true)              -- D8 = OUTPUT
+local function follow_readback(d8_level)
+    rpc("gpio_write", { port = 0, pin = 7, level = d8_level }, 1000, true)   -- drive D9 via jumper
+    ffi.C.usleep(20000)
+    rpc("dac_follow_start", { oversample = 4, sh = 4, update_hz = 2000, pin = "D9" }, 1000, true)
+    ffi.C.usleep(300000)                                                      -- let the ISR drive A0
+    rpc("dac_follow_stop", {}, 1000, true)                                    -- A0 parks
+    local a = rpc("adc_read", { channel = 4, oversample = 4, sh = 4 })        -- read A0 via A0<->A1
+    return a and a.value or -1
+end
+do local r = rpc("dac_follow_start", { oversample = 4, sh = 4, update_hz = 1000, pin = "A0" })
+   if r == nil then rpc("dac_follow_stop", {}, 1000, true) end
+   check("dac_follow: reserved pin A0 rejected", r == nil, r and "ACCEPTED!" or "rejected") end
+do local hi = follow_readback(1); check("dac_follow: D9 high -> A0 tracks high", hi > 3000, "A0=" .. hi) end
+do local lo = follow_readback(0); check("dac_follow: D9 low  -> A0 tracks low",  lo < 800,  "A0=" .. lo) end
+rpc("dac_write", { value = 0 }, 1000, true)                                   -- park the DAC clean
+
 print(string.format("=== RESULT: %d passed, %d failed ===", pass, fail))
 cli:disconnect(); cli:destroy()
 os.exit(fail == 0 and 0 or 1)
