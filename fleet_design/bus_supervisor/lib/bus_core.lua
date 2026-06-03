@@ -76,6 +76,10 @@ local CATALOG = {
   echo             = { id=0x0001, args={{"text","lenstr"}},                       reply={{"text","lenstr"}} },
   sysinfo          = { id=0x0002, args={},                                         reply={{"hex","hex"}} },
   stack_hwm        = { id=0x0050, args={},                                         reply={{"hwm","u16"}} },
+  -- GPIO: port (0=PA,1=PB), pin 0..31; mode 0=in,1=out,2=in_pullup,3=in_pulldown.
+  gpio_config      = { id=0x0100, args={{"port","u8"},{"pin","u8"},{"mode","u8"}},  reply={} },
+  gpio_write       = { id=0x0101, args={{"port","u8"},{"pin","u8"},{"level","u8"}}, reply={} },
+  gpio_read        = { id=0x0102, args={{"port","u8"},{"pin","u8"}},                reply={{"level","u8"}} },
   dac_write        = { id=0x0103, args={{"value","u16"}},                          reply={} },
   adc_read         = { id=0x0104, args={{"channel","u8"},{"oversample","u8"},{"sh","u8"}}, reply={{"value","u16"}} },
   -- ADC->DAC follow (bench): mirror an averaged ADC input onto the DAC (A0).

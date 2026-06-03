@@ -78,31 +78,64 @@ do
     check("dac->adc loopback (A0<->A1)", all, line)
 end
 
--- Phase 3 — analog interlock: arm / trigger / recover ----------------------
--- A1<600 = OK (D3->0); A1>=600 = tripped (D3->1). Drive via the DAC over the
--- jumper. status_tf decodes interlock_status byte 6: 1=safe, 2=tripped.
-local DSL = "cap;cfg[(A1):adc];cfg[(D3):out];watch[A1:lt:600];out_ok[D3:0];out_err[D3:1]"
-local function status_tf()
+-- Per-slot tf decode. status_v2: [ver][max_slots] then 20 B/slot
+-- (state,id,boot_counter,tf,name[16]); slot s tf is at byte (2 + s*20 + 3) =
+-- 5 + s*20, i.e. hex chars (11 + s*40)..(12 + s*40). 1=safe, 2=tripped.
+local function status_tf(slot)
     local r = rpc("interlock_status", {}, 1000, true)
-    if r and r.hex and #r.hex >= 12 then return tonumber(r.hex:sub(11, 12), 16) end
-    return -1
+    if not (r and r.hex) then return -1 end
+    local c = 11 + slot * 40
+    if #r.hex < c + 1 then return -1 end
+    return tonumber(r.hex:sub(c, c + 1), 16)
 end
-local function wait_tf(want, ms_budget)
+local function wait_tf(slot, want, ms_budget)
     local tf, t0 = -1, ms()
-    while ms() - t0 < ms_budget do tf = status_tf(); if tf == want then break end; ffi.C.usleep(50000) end
+    while ms() - t0 < ms_budget do tf = status_tf(slot); if tf == want then break end; ffi.C.usleep(50000) end
     return tf
 end
 
+-- Phase 3 — analog interlock (slot 0): arm / trigger / recover -------------
+-- A1<600 = OK (D2->0); A1>=600 = tripped. Driven by the DAC over the A0<->A1 jumper.
+local DSL_ANA = "ana;cfg[(A1):adc];cfg[(D2):out];watch[A1:lt:600];out_ok[D2:0];out_err[D2:1]"
 rpc("dac_write", { value = 0 }); rpc("interlock_disarm", { slot = 0 }, 1000, true)
-do local r, e = rpc("interlock_set", { slot = 0, dsl = DSL }, 2000)
-   check("interlock_set (arm A1<600)", r ~= nil, r and "armed" or e) end
-do rpc("dac_write", { value = 512 })                      -- A1 ~= 2048 >= 600 -> trip
-   local tf = wait_tf(2, 3000)
-   check("DAC=512 -> interlock TRIPPED", tf == 2, "slot0.tf=" .. tf .. " (2=tripped)") end
-do rpc("dac_write", { value = 0 }, 1000, true)            -- A1 ~= 0 < 600 -> recover
-   local tf = wait_tf(1, 3000)
-   check("DAC=0 -> interlock RECOVERED", tf == 1, "slot0.tf=" .. tf .. " (1=safe)") end
-do local r = rpc("interlock_disarm", { slot = 0 }, 1000, true); check("interlock_disarm", r ~= nil, nil) end
+do local r, e = rpc("interlock_set", { slot = 0, dsl = DSL_ANA }, 2000)
+   check("analog interlock_set (slot0, A1<600)", r ~= nil, r and "armed" or e) end
+do rpc("dac_write", { value = 512 })
+   check("analog: DAC=512 -> TRIPPED", wait_tf(0, 2, 3000) == 2, "slot0.tf=" .. status_tf(0)) end
+do rpc("dac_write", { value = 0 }, 1000, true)
+   check("analog: DAC=0 -> RECOVERED", wait_tf(0, 1, 3000) == 1, "slot0.tf=" .. status_tf(0)) end
+do local r = rpc("interlock_disarm", { slot = 0 }, 1000, true); check("analog interlock_disarm", r ~= nil, nil) end
+
+-- Phase 4 — MULTI-SLOT: analog (slot 0, A0<->A1) + digital (slot 1, D8->D9) -
+-- Two interlocks armed at once, triggered INDEPENDENTLY; verifies per-slot
+-- evaluation. Digital D9 (in,up) is OK when high; D8 (jumpered to D9) drives it,
+-- so gpio_write D8=0 -> D9 low -> slot1 trips. Needs BOTH jumpers: A0<->A1, D8<->D9.
+local DSL_DIG = "dig;cfg[(D9):in,up];cfg[(D3):out];watch[D9:1];out_ok[D3:0];out_err[D3:1]"
+local D8_PORT, D8_PIN = 0, 7
+local function set_inputs(ana_trip, dig_trip)    -- drive A0 and D8 to (un)trip each slot
+    rpc("dac_write", { value = ana_trip and 512 or 0 }, 1000, true)
+    rpc("gpio_write", { port = D8_PORT, pin = D8_PIN, level = dig_trip and 0 or 1 }, 1000, true)
+end
+local function combo(ana_trip, dig_trip)
+    set_inputs(ana_trip, dig_trip)
+    local s0 = wait_tf(0, ana_trip and 2 or 1, 2500)
+    local s1 = wait_tf(1, dig_trip and 2 or 1, 2500)
+    return s0, s1
+end
+
+rpc("interlock_disarm", { slot = 0 }, 1000, true); rpc("interlock_disarm", { slot = 1 }, 1000, true)
+rpc("gpio_config", { port = D8_PORT, pin = D8_PIN, mode = 1 }, 1000, true)   -- D8 = OUTPUT
+set_inputs(false, false)
+do local r0 = rpc("interlock_set", { slot = 0, dsl = DSL_ANA }, 2000)
+   local r1 = rpc("interlock_set", { slot = 1, dsl = DSL_DIG }, 2000)
+   check("multi: arm slot0 analog + slot1 digital", r0 ~= nil and r1 ~= nil, nil) end
+do local s0, s1 = combo(false, false); check("multi: neither tripped",      s0 == 1 and s1 == 1, "s0=" .. s0 .. " s1=" .. s1) end
+do local s0, s1 = combo(true,  false); check("multi: analog-only (s0 trip)", s0 == 2 and s1 == 1, "s0=" .. s0 .. " s1=" .. s1) end
+do local s0, s1 = combo(false, true ); check("multi: digital-only (s1 trip)",s0 == 1 and s1 == 2, "s0=" .. s0 .. " s1=" .. s1) end
+do local s0, s1 = combo(true,  true ); check("multi: both tripped",          s0 == 2 and s1 == 2, "s0=" .. s0 .. " s1=" .. s1) end
+do local s0, s1 = combo(false, false); check("multi: both recovered",        s0 == 1 and s1 == 1, "s0=" .. s0 .. " s1=" .. s1) end
+rpc("interlock_disarm", { slot = 0 }, 1000, true); rpc("interlock_disarm", { slot = 1 }, 1000, true)
+check("multi: disarm both", true, nil)
 
 print(string.format("=== RESULT: %d passed, %d failed ===", pass, fail))
 cli:disconnect(); cli:destroy()

@@ -49,11 +49,12 @@ Pi `192.168.1.66` (user pi). Image `bus_supervisor:0.2` on Pi + WSL.
   -e LUA_CPATH='/usr/local/lib/lua/5.1/?.so;;' -e LUA_PATH='/fd/vendor/lua/?.lua;;'
   --entrypoint luajit nanodatacenter/fleet-mcfarland:0.7 /fd/bus_supervisor/tools/bus_cmd.lua echo hi`
 - **Self-test suite** (`tools/selftest.lua`, same docker invocation): API smoke +
-  DAC→ADC loopback + **analog-interlock arm/trip/recover**. PASS/FAIL per check,
-  non-zero exit on failure — run after a deploy or slave reflash.
-  **Bench requirement: a jumper A0(DAC)↔A1(=D1, AIN4)** on the slave (closes the
-  analog loop). Other tools: `bus_watch.lua` (operational/reconcile leaves),
-  `fault_trigger.lua` (inject a dongle fault to exercise the supervisor).
+  DAC→ADC loopback + **single-slot analog interlock** + **multi-slot analog(slot0)
+  + digital(slot1)** arm/trip/recover (all 4 trip combinations, per-slot
+  independence). PASS/FAIL per check, non-zero exit — run after a deploy/reflash.
+  **Bench requirement: two jumpers on the slave — A0(DAC)↔A1 (analog loop) and
+  D8↔D9 (digital loop).** Other tools: `bus_watch.lua` (operational/reconcile
+  leaves), `fault_trigger.lua` (inject a dongle fault to exercise the supervisor).
 
 ## NEXT (resume path), in order
 1. **A4 auto-scan increment** (in-lane, partial test w/ 1 BC): today's pin only
