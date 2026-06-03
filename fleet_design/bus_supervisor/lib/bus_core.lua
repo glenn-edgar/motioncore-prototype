@@ -78,6 +78,10 @@ local CATALOG = {
   stack_hwm        = { id=0x0050, args={},                                         reply={{"hwm","u16"}} },
   dac_write        = { id=0x0103, args={{"value","u16"}},                          reply={} },
   adc_read         = { id=0x0104, args={{"channel","u8"},{"oversample","u8"},{"sh","u8"}}, reply={{"value","u16"}} },
+  -- ADC->DAC follow (bench): mirror an averaged ADC input onto the DAC (A0).
+  -- `pin` is a USER board label ("A1".."A10"/"D1".."D10"), trailing raw string.
+  dac_follow_start = { id=0x0108, args={{"oversample","u8"},{"sh","u8"},{"update_hz","u16"},{"pin","str"}}, reply={} },
+  dac_follow_stop  = { id=0x0109, args={},                                         reply={} },
   interlock_status = { id=0x0140, args={},                                         reply={{"hex","hex"}} },
   interlock_disarm = { id=0x0142, args={{"slot","u8"}},                            reply={} },
   interlock_set    = { id=0x0143, args={{"slot","u8"},{"dsl","str"}},              reply={} },
