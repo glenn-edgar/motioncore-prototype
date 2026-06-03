@@ -28,6 +28,15 @@ named-JSON commands over zenoh RPC → the portable C core (`libbus_controller.s
   `bus_core.lua` just FFI-consumes them (zero edits to the other window's C).
   Verify phase logs the BC identity (discovery) + publishes chip_uid on
   bus_health; faults on a config `chip_uid` mismatch (fail-safe).
+- **N=2 multi-dongle — HARDWARE-VERIFIED 2026-06-03** (tag
+  `bus-n2-multidongle-2026-06-03`). One `btsup` served TWO buses at once: bc-1
+  (BC42 `038C` → slave addr 1) and bc-2 (BC43 `C21C` → slave addr 2). The serial
+  gate brought them up one-then-the-other (bc-1 SERVING/gate=1, *then* bc-2 bound
+  → gate=2), each pinned by chip_uid, single-threaded; **both buses passed the
+  full self-test suite 18/18** (`SLAVE_INSTANCE=1` and `=2`). First time N=2 ran
+  on hardware (previously only structural — IR built 2 subtrees). Bench configs:
+  `~/bus_sup_configs/{samd21-bc-1,samd21-bc-2}.json` + roster mount
+  `~/bus_sup_rosters:/rosters2`; repo reference = bus-2 cfg/roster (commit 3bb27b3).
 
 ## Live bench state + how to bring it back
 Pi `192.168.1.66` (user pi). Image `bus_supervisor:0.2` on Pi + WSL.
@@ -79,8 +88,9 @@ digital `dig;cfg[(D9):in,up];cfg[(D3):out];watch[D9:1];out_ok[D3:0];out_err[D3:1
 Digital trips on `gpio_write D8=0` (D9 low). Per-slot tf decode: `interlock_status`
 v2, byte `5 + s*20` (hex chars `11 + s*40`); 1=safe, 2=tripped. interlock
 status/disarm/recover use the admin (ungated) lane. DAC-follow reads back via
-read-after-stop (the ISR owns the ADC while running). **Future entries** to add
-as they land: A4 chip_uid pin verify, N=2 multi-dongle.
+read-after-stop (the ISR owns the ADC while running). Run per-bus with
+`SLAVE_INSTANCE=N` (1 or 2). **Future entries** to add as they land: A4 chip_uid
+pin verify.
 
 ## NEXT (resume path), in order
 1. **A4 auto-scan increment** (in-lane, partial test w/ 1 BC): today's pin only
@@ -90,9 +100,12 @@ as they land: A4 chip_uid pin verify, N=2 multi-dongle.
 2. **C — RA4M1 slave WDT toolchain test** ([[ra4m1-slave-wdt-toolchain-test]]).
    **Needs the XIAO RA4M1 wired to the bench** (not connected now — only the 2
    SAMD21s on ttyACM0/1).
-3. **D — RS-485 transceivers + 2nd bus controller** → exercise the N=2 serial
-   gate / multi-dongle path on real hardware (only structurally verified so far:
-   N=2 config builds 2 subtrees + 2 cmd queues).
+3. **D — N=2 multi-dongle: DONE / hardware-verified 2026-06-03** (tag
+   `bus-n2-multidongle-2026-06-03`) — two buses under one supervisor, serial-gated,
+   chip_uid-pinned, both 18/18 (see the Done section). Remaining D-adjacent work:
+   a 3rd bus (BC44 is commissioned), proper RS-485 transceivers, and baking
+   `bus2.conf` into the image (it's in the repo now → next `build.sh` picks it up,
+   dropping the `/rosters2` runtime mount).
 
 ## Rules / gotchas (load-bearing)
 - **Ownership (corrected 2026-06-03):** there is NO separate window — `samd21/`
