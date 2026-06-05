@@ -104,6 +104,19 @@ static struct {
     int16_t       offset;
 } g_probe = { false, 0, 0, 0 };
 
+// DAC test-signal generator (A0→A1 loopback decimation test). Mutually exclusive
+// with g_probe (one DAC). Square is toggled in the 20 kHz sample ISR.
+#define DACTEST_OFF    0u
+#define DACTEST_CONST  1u
+#define DACTEST_SQUARE 2u
+static struct {
+    volatile uint8_t mode;       // DACTEST_*
+    uint16_t low, high;
+    uint16_t half_ticks;         // 20 kHz ticks per half-period
+    uint16_t counter;
+    uint8_t  level;              // 0=low, 1=high
+} g_dactest = { DACTEST_OFF, 0, 0, 0, 0, 0 };
+
 // ============================================================================
 // H-bridge helpers (register-level writes; ISR-safe).
 // ============================================================================
@@ -304,6 +317,17 @@ void control_sample_isr(void)
     }
 
     probe_emit_20k(s);
+
+    // DAC test-signal generator (square): toggle low↔high every half-period,
+    // phase-locked to the 20 kHz sample clock — for the A0→A1 decimation
+    // loopback test. (const mode is written at command time.)
+    if (g_dactest.mode == DACTEST_SQUARE) {
+        if (++g_dactest.counter >= g_dactest.half_ticks) {
+            g_dactest.counter = 0;
+            g_dactest.level ^= 1u;
+            hal_dac_write(g_dactest.level ? g_dactest.high : g_dactest.low);
+        }
+    }
 }
 
 // ============================================================================
@@ -491,6 +515,7 @@ uint32_t control_counts_per_rev(void)                  { return g_counts_per_rev
 uint8_t control_dac_probe(uint8_t source, int16_t scale, int16_t offset)
 {
     if (source >= PROBE_SOURCE_COUNT) return 1u;
+    g_dactest.mode = DACTEST_OFF;     // probe owns the DAC now
     g_probe.source = source;
     g_probe.scale  = scale;
     g_probe.offset = offset;
@@ -510,4 +535,35 @@ uint16_t control_pwm_test(uint16_t counts)
     }
     hal_pwm_set_raw(counts);
     return hal_pwm_period();
+}
+
+void control_dac_const(uint16_t value)
+{
+    g_probe.active = false;          // test owns the DAC
+    g_dactest.mode = DACTEST_CONST;
+    if (value > 4095u) value = 4095u;
+    hal_dac_write(value);            // lazy-inits the DAC
+}
+
+uint16_t control_dac_square(uint16_t freq_hz, uint16_t low, uint16_t high)
+{
+    g_probe.active = false;
+    if (freq_hz == 0u) { g_dactest.mode = DACTEST_OFF; return 0u; }
+    if (low  > 4095u) low  = 4095u;
+    if (high > 4095u) high = 4095u;
+    uint32_t half = 10000u / freq_hz;        // 20 kHz / (2·freq)
+    if (half < 1u) half = 1u;                // cap at Nyquist (~10 kHz)
+    hal_dac_write(low);                      // init + park at low
+    g_dactest.low = low; g_dactest.high = high;
+    g_dactest.half_ticks = (uint16_t)half;
+    g_dactest.counter = 0u; g_dactest.level = 0u;
+    g_dactest.mode = DACTEST_SQUARE;
+    return (uint16_t)(10000u / half);        // realized Hz
+}
+
+void control_streams(uint16_t out[9])
+{
+    out[0] = g_adc_raw[0]; out[1] = g_adc_raw[1]; out[2] = g_adc_raw[2];
+    out[3] = g_out1k[0];   out[4] = g_out1k[1];   out[5] = g_out1k[2];
+    out[6] = g_out100[0];  out[7] = g_out100[1];  out[8] = g_out100[2];
 }

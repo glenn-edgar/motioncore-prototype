@@ -72,6 +72,9 @@
 #define CMD_SET_DSP_MODE    ((uint16_t)0x0156)   // design: 0x0111
 #define CMD_MOTOR_CONFIG    ((uint16_t)0x0157)   // overcurrent + counts_per_rev
 #define CMD_PWM_TEST        ((uint16_t)0x0158)   // bench: 20 kHz PWM on D8, raw duty counts
+#define CMD_DAC_CONST       ((uint16_t)0x0159)   // bench: DAC constant level (A0)
+#define CMD_DAC_SQUARE      ((uint16_t)0x015A)   // bench: DAC square wave (A0→A1 decimation test)
+#define CMD_STREAMS_READ    ((uint16_t)0x015B)   // read the 9 decimator taps
 
 // ---- DAC waveform-generator state ------------------------------------------
 // Lives in the shared mode arena — only the workbench mode owns it. Written by
@@ -1062,6 +1065,44 @@ static uint8_t cmd_pwm_test(shell_reader_t* args, shell_writer_t* result)
     return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
 }
 
+// CMD_DAC_CONST — args: value:u16 (0..4095) ; result: empty. DAC held constant.
+static uint8_t cmd_dac_const(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    uint16_t value = sr_u16(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    if (value > 4095u)           return SHELL_STATUS_BAD_ARGS;
+    control_dac_const(value);
+    return SHELL_STATUS_OK;
+}
+
+// CMD_DAC_SQUARE — args: freq_hz:u16 low:u16 high:u16 ; result: realized_hz:u16.
+// freq_hz 0 = stop. The square is generated in the 20 kHz sample ISR, so a
+// sampling mode (MANUAL) must be active for it to toggle. For the A0→A1 loopback.
+static uint8_t cmd_dac_square(shell_reader_t* args, shell_writer_t* result)
+{
+    uint16_t freq = sr_u16(args);
+    uint16_t low  = sr_u16(args);
+    uint16_t high = sr_u16(args);
+    if (args->overflow)              return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0)     return SHELL_STATUS_BAD_ARGS;
+    if (low > 4095u || high > 4095u) return SHELL_STATUS_BAD_ARGS;
+    uint16_t realized = control_dac_square(freq, low, high);
+    sw_u16(result, realized);
+    return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
+}
+
+// CMD_STREAMS_READ — args: empty ; result: 9× u16 = [A1,A2,A3]@20k, @1k, @100.
+static uint8_t cmd_streams_read(shell_reader_t* args, shell_writer_t* result)
+{
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    uint16_t s[9];
+    control_streams(s);
+    for (uint32_t i = 0; i < 9u; i++) sw_u16(result, s[i]);
+    return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
+}
+
 // ---- chip-specific dispatch table ------------------------------------------
 
 static const shell_cmd_entry_t g_chip_commands[] = {
@@ -1105,6 +1146,9 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_ENCODER_RESET,      "encoder_reset",      cmd_encoder_reset      },
     { CMD_MOTOR_CONFIG,       "motor_config",       cmd_motor_config       },
     { CMD_PWM_TEST,           "pwm_test",           cmd_pwm_test           },
+    { CMD_DAC_CONST,          "dac_const",          cmd_dac_const          },
+    { CMD_DAC_SQUARE,         "dac_square",         cmd_dac_square         },
+    { CMD_STREAMS_READ,       "streams_read",       cmd_streams_read       },
 };
 
 const shell_cmd_entry_t* chip_commands_table(void)

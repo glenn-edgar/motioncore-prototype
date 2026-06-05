@@ -130,3 +130,16 @@ void    control_dac_probe_stop(void);
 // before any real-time code is enabled. Returns the period (= max counts = 100%
 // duty); on the scope, high-time = counts × (1/48 MHz) = counts × 20.8 ns.
 uint16_t control_pwm_test(uint16_t counts);
+
+// ---- DAC test-signal generator (A0→A1 loopback decimation test) ------------
+// Jumper A0 to A1, run a sampling mode (MANUAL), drive a known signal here, and
+// read the 20k/1k/100 taps back via control_streams() to verify the boxcar
+// decimators. Two modes (mutually exclusive with the dac_probe mux — one DAC):
+//   const  — DAC held at `value` (written directly; works any time)
+//   square — DAC toggles low↔high at freq_hz, generated in the 20 kHz sample ISR
+//            (phase-locked to sampling; requires a sampling mode active).
+void     control_dac_const(uint16_t value);
+uint16_t control_dac_square(uint16_t freq_hz, uint16_t low, uint16_t high); // → realized Hz (0=off)
+
+// Latest decimator taps: [A1,A2,A3]@20k, [A1,A2,A3]@1k, [A1,A2,A3]@100 (raw counts).
+void     control_streams(uint16_t out[9]);
