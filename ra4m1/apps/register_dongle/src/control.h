@@ -143,3 +143,18 @@ uint16_t control_dac_square(uint16_t freq_hz, uint16_t low, uint16_t high); // â
 
 // Latest decimator taps: [A1,A2,A3]@20k, [A1,A2,A3]@1k, [A1,A2,A3]@100 (raw counts).
 void     control_streams(uint16_t out[9]);
+
+// ---- offline spectral-analysis support -------------------------------------
+// The offline FFT (spectral.c) is a Tier-0 consumer of the decimated streams,
+// not its own ADC. control_analysis_start() brings the 20 kHz sample ISR +
+// decimators online with the motor IDLE (coast) for analysis; control_spectral_arm
+// selects which decimated stream the sample ISR feeds to spectral_feed(); on
+// completion spectral calls control_analysis_stop() to take the chip offline.
+#define CONTROL_RATE_20K  0u
+#define CONTROL_RATE_1K   1u
+#define CONTROL_RATE_100  2u
+
+uint8_t control_analysis_start(void);   // 0 = ok, 1 = busy (motor not IDLE)
+void    control_analysis_stop(void);    // stop sampling â†’ chip offline
+void    control_spectral_arm(uint8_t rate, uint8_t channel);  // rate=CONTROL_RATE_*, ch 0..2
+void    control_spectral_disarm(void);

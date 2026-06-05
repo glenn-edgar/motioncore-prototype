@@ -654,18 +654,17 @@ static uint8_t cmd_analog_stop(shell_reader_t* args, shell_writer_t* result)
 static uint8_t cmd_spectral_start(shell_reader_t* args, shell_writer_t* result)
 {
     (void)result;
-    uint8_t  fs_code        = sr_u8 (args);
-    uint8_t  channel        = sr_u8 (args);
-    uint16_t target_frames  = sr_u16(args);
+    uint8_t  source        = sr_u8 (args);   // CONTROL_RATE_20K(0)/_1K(1)/_100(2)
+    uint8_t  channel       = sr_u8 (args);   // 0..2 = A1/A2/A3
+    uint16_t target_frames = sr_u16(args);   // Welch averages
     if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
     if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
 
-    // Switch into MODE_SPECTRAL (mode_set runs the old mode's on_exit + new
-    // mode's on_enter). If we're already there, mode_set is a no-op.
-    if (mode_set(MODE_SPECTRAL) != 0u) return SHELL_STATUS_CMD_FAILED;
-
-    if (!spectral_start(fs_code, channel, target_frames)) {
-        return SHELL_STATUS_BAD_ARGS;
+    // Offline op: spectral_start brings sampling online, feeds itself from the
+    // selected decimated stream, and takes the chip offline on completion. No
+    // mode switch — spectral is a Tier-0 consumer now, runs with the motor IDLE.
+    if (!spectral_start(source, channel, target_frames)) {
+        return SHELL_STATUS_CMD_FAILED;      // bad args or motor busy
     }
     return SHELL_STATUS_OK;
 }
@@ -680,22 +679,12 @@ static uint8_t cmd_spectral_status(shell_reader_t* args, shell_writer_t* result)
     // Read state from the spectral module. If we're not in MODE_SPECTRAL the
     // arena bytes belong to another mode — report IDLE/zero so the host's
     // poll path doesn't misinterpret garbage.
-    uint8_t  state         = SPECTRAL_STATE_IDLE;
-    uint32_t frames_done   = 0u;
-    uint16_t frames_target = 0u;
-    uint8_t  fs_code       = 0u;
-    if (mode_get() == MODE_SPECTRAL) {
-        state         = (uint8_t)spectral_state();
-        frames_done   = spectral_frames_done();
-        frames_target = spectral_target_frames();
-        fs_code       = spectral_fs_code();
-    }
-    sw_u8 (result, state);
-    sw_u32(result, frames_done);
-    sw_u16(result, frames_target);
-    sw_u8 (result, fs_code);
-    // channel is only meaningful while we own the arena; emit 0 outside.
-    sw_u8 (result, 0u);
+    // State lives in resident RAM now — valid any time, no mode guard needed.
+    sw_u8 (result, (uint8_t)spectral_state());
+    sw_u32(result, spectral_frames_done());
+    sw_u16(result, spectral_target_frames());
+    sw_u8 (result, spectral_source());        // CONTROL_RATE_* (was fs_code)
+    sw_u8 (result, 0u);                        // reserved
     return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
 }
 
@@ -712,10 +701,7 @@ static uint8_t cmd_spectral_read(shell_reader_t* args, shell_writer_t* result)
     if (count > 30u) count = 30u;
 
     float bins[30];
-    uint16_t n = 0u;
-    if (mode_get() == MODE_SPECTRAL) {
-        n = spectral_read_bins(offset, count, bins);
-    }
+    uint16_t n = spectral_read_bins(offset, count, bins);
     sw_u16(result, n);
     for (uint32_t i = 0; i < n; i++) {
         sw_f32(result, bins[i]);
@@ -729,11 +715,7 @@ static uint8_t cmd_spectral_stop(shell_reader_t* args, shell_writer_t* result)
 {
     (void)result;
     if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
-
-    if (mode_get() == MODE_SPECTRAL) {
-        spectral_stop();
-        mode_set(MODE_WORKBENCH);
-    }
+    spectral_stop();
     return SHELL_STATUS_OK;
 }
 

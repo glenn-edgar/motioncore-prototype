@@ -21,6 +21,7 @@
 #include "control.h"
 #include "mode.h"          // mode_vector_install, mode_set, MODE_WORKBENCH
 #include "ra4m1_hal.h"     // hal_adc_scan3_*, hal_pwm_*, hal_encoder_*, hal_gpio_*
+#include "spectral.h"      // spectral_feed() — offline FFT stream consumer
 #include "bsp_api.h"       // CMSIS core (SCB, NVIC_*, PendSV_IRQn) + R_* regs
 
 // ---- H-bridge pins (Mode 1 layout: H-bridge GPIO on D4/D5) -----------------
@@ -116,6 +117,14 @@ static struct {
     uint16_t counter;
     uint8_t  level;              // 0=low, 1=high
 } g_dactest = { DACTEST_OFF, 0, 0, 0, 0, 0 };
+
+// Offline spectral feed: when armed, the sample ISR pushes the selected decimated
+// stream (rate × channel) into spectral_feed() at that rate's cadence.
+static struct {
+    volatile bool active;
+    uint8_t       rate;          // CONTROL_RATE_20K / _1K / _100
+    uint8_t       channel;       // 0..2 = A1/A2/A3
+} g_specfeed = { false, 0, 0 };
 
 // ============================================================================
 // H-bridge helpers (register-level writes; ISR-safe).
@@ -305,11 +314,17 @@ void control_sample_isr(void)
             g_acc100[i] += v;
             g_acc1k[i]   = 0;
         }
+        if (g_specfeed.active && g_specfeed.rate == CONTROL_RATE_1K) {
+            spectral_feed(g_out1k[g_specfeed.channel]);    // 1 kHz stream → FFT
+        }
         if (++g_cnt100 >= DECIM_100) {
             g_cnt100 = 0;
             for (uint32_t i = 0; i < 3; i++) {
                 g_out100[i]  = (uint16_t)(g_acc100[i] / DECIM_100);
                 g_acc100[i]  = 0;
+            }
+            if (g_specfeed.active && g_specfeed.rate == CONTROL_RATE_100) {
+                spectral_feed(g_out100[g_specfeed.channel]);   // 100 Hz stream → FFT
             }
         }
         // 1 kHz boundary → pend the control math (PendSV, lower priority).
@@ -317,6 +332,10 @@ void control_sample_isr(void)
     }
 
     probe_emit_20k(s);
+
+    if (g_specfeed.active && g_specfeed.rate == CONTROL_RATE_20K) {
+        spectral_feed(s[g_specfeed.channel]);              // 20 kHz stream → FFT
+    }
 
     // DAC test-signal generator (square): toggle low↔high every half-period,
     // phase-locked to the 20 kHz sample clock — for the A0→A1 decimation
@@ -566,4 +585,31 @@ void control_streams(uint16_t out[9])
     out[0] = g_adc_raw[0]; out[1] = g_adc_raw[1]; out[2] = g_adc_raw[2];
     out[3] = g_out1k[0];   out[4] = g_out1k[1];   out[5] = g_out1k[2];
     out[6] = g_out100[0];  out[7] = g_out100[1];  out[8] = g_out100[2];
+}
+
+// ---- offline spectral-analysis support -------------------------------------
+
+uint8_t control_analysis_start(void)
+{
+    if (g_motor_mode != MOTOR_IDLE) return 1u;    // motor owns the sampler
+    control_hw_ensure();
+    sampling_start();                             // 20 kHz ISR + decimators, motor coast
+    return 0u;
+}
+
+void control_analysis_stop(void)
+{
+    sampling_stop();                             // chip goes offline
+}
+
+void control_spectral_arm(uint8_t rate, uint8_t channel)
+{
+    g_specfeed.rate    = (rate > CONTROL_RATE_100) ? CONTROL_RATE_20K : rate;
+    g_specfeed.channel = (channel < 3u) ? channel : 0u;
+    g_specfeed.active  = true;
+}
+
+void control_spectral_disarm(void)
+{
+    g_specfeed.active = false;
 }

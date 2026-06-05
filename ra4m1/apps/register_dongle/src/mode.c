@@ -52,17 +52,16 @@ static uint32_t g_ram_vectors[VT_ENTRIES] __attribute__((aligned(256)));
 // fill their rows when those ports land — no change to the dispatch core.
 
 extern void workbench_periodic_isr(void);   // ra4m1_commands.c
-extern void spectral_on_enter   (void);     // spectral.c
-extern void spectral_on_exit    (void);     // spectral.c
-extern void spectral_periodic_isr(void);    // spectral.c — ADC sample tick
 extern void goertzel_on_enter   (void);     // goertzel.c
 extern void goertzel_on_exit    (void);     // goertzel.c
 extern void goertzel_periodic_isr(void);    // goertzel.c — ADC sample tick + recursion
 
 static const mode_descriptor_t g_modes[MODE_COUNT] = {
     [MODE_WORKBENCH] = { NULL,              NULL,             workbench_periodic_isr },
-    [MODE_SPECTRAL]  = { spectral_on_enter, spectral_on_exit, spectral_periodic_isr  },
     [MODE_GOERTZEL]  = { goertzel_on_enter, goertzel_on_exit, goertzel_periodic_isr  },
+    // [MODE_SPECTRAL] is no longer a periodic-ISR DSP mode — spectral is now a
+    // Tier-0 consumer of the control core's decimated streams (spectral.c), so
+    // its g_modes row is unused (zero-initialised).
     // [MODE_PID] / [MODE_SCURVE] — added with their ports.
 };
 
