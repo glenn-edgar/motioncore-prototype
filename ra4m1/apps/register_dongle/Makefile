@@ -50,6 +50,7 @@ SRC_C += \
   shell_commands.c \
   ra4m1_commands.c \
   ra4m1_hal.c \
+  control.c \
   mode.c \
   spectral.c \
   goertzel.c \

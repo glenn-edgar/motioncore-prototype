@@ -36,6 +36,14 @@ uint8_t hal_gpio_read  (uint8_t port, uint8_t pin);
 bool     hal_adc_channel_valid(uint8_t channel);
 uint16_t hal_adc_read(uint8_t channel);          // 14-bit result, 0..16383
 
+// ---- ADC 3-channel group scan (A1/A2/A3 = AN000/AN001/AN002) ----------------
+// The motor control core's 20 kHz feedback tap: A1 (AN000) = current-sense,
+// A2/A3 = general feedback. Setup once (claims the three pins as analog inputs,
+// selects them in ADANSA); each read does ONE software-triggered single-scan
+// (all three convert in ascending order) and fills out[0..2] from ADDR. ~2.7 µs.
+void hal_adc_scan3_setup(void);
+void hal_adc_scan3_read(uint16_t out[3]);
+
 // ---- DAC (DA0, 12-bit) — fixed pin D0/P014 ---------------------------------
 
 void hal_dac_write(uint16_t value);              // 0..4095

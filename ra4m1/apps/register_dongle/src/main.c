@@ -51,6 +51,7 @@
 #include "shell_commands.h"  // firmware_sysinfo_t
 #include "mode.h"            // multi-mode foundation (VTOR reloc + mode table)
 #include "ra4m1_hal.h"       // HIL peripheral drivers
+#include "control.h"         // motor-control core (Tier1/PendSV/two-slot motor)
 
 // Implemented in user_functions.c.
 extern void     register_dongle_load_commissioning(void);
@@ -318,6 +319,12 @@ int main(void) {
     // entries are captured into the relocated table.
     mode_init();
 
+    // Motor-control core: install the 20 kHz sample ISR into the (now relocated)
+    // vector table, set the PendSV priority, park the H-bridge safe, bring up the
+    // encoder, and enter MOTOR_IDLE. Runs as the "motor slot" alongside the
+    // mode.c DSP slot. After mode_init() (needs the RAM vector table).
+    control_init();
+
     frame_ring_init(&g_tx_ring, g_tx_ring_buf, TX_RING_SIZE);
     frame_decoder_init(&g_rx_decoder, FRAME_DIR_M2S);
 
@@ -373,6 +380,10 @@ int main(void) {
         // so the FFT does not preempt the sample-tick ISR.
         spectral_pump();
         goertzel_pump();
+
+        // Tier-0 motor-control housekeeping (pseudo-interlock event delivery
+        // lands here with MODE_SCURVE). No-op for IDLE / MANUAL.
+        control_service();
 
         // Host-reattach edge detection.
         if (tree != NULL) {

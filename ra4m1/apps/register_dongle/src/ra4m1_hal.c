@@ -174,6 +174,43 @@ uint16_t hal_adc_read(uint8_t channel)
 }
 
 // ============================================================================
+// ADC 3-channel group scan — A1/A2/A3 = AN000/AN001/AN002 (D1/D2/D3).
+//
+// The control core's 20 kHz feedback tap. Single-scan software trigger over the
+// three channels selected in ADANSA[0]; one ADST converts all three in
+// ascending channel order, then ADST self-clears. ADADC averaging is left off
+// (the control core's boxcar decimator does the averaging) — keep the per-scan
+// conversion short. A1 (AN000) is the dedicated motor current-sense.
+// ============================================================================
+
+void hal_adc_scan3_setup(void)
+{
+    adc_init();
+
+    // P000/P001/P002 -> analog input (ASEL). Idempotent.
+    pfs_unlock();
+    R_PFS->PORT[0].PIN[0].PmnPFS = PFS_ASEL;
+    R_PFS->PORT[0].PIN[1].PmnPFS = PFS_ASEL;
+    R_PFS->PORT[0].PIN[2].PmnPFS = PFS_ASEL;
+    pfs_lock();
+
+    // Select AN000/AN001/AN002 in group A; single-scan converts all three.
+    R_ADC0->ADANSA[0] = 0x0007u;
+    R_ADC0->ADANSA[1] = 0x0000u;
+}
+
+void hal_adc_scan3_read(uint16_t out[3])
+{
+    R_ADC0->ADCSR |= (1u << 15);            // ADST = 1: start single-scan
+    while ((R_ADC0->ADCSR & (1u << 15)) != 0u) {
+        // single-scan: ADST self-clears when all selected channels are done
+    }
+    out[0] = (uint16_t)(R_ADC0->ADDR[0] & 0x3FFFu);   // AN000 = A1 (current)
+    out[1] = (uint16_t)(R_ADC0->ADDR[1] & 0x3FFFu);   // AN001 = A2
+    out[2] = (uint16_t)(R_ADC0->ADDR[2] & 0x3FFFu);   // AN002 = A3
+}
+
+// ============================================================================
 // DAC — DA0, 12-bit, AVCC0 reference. Fixed pin D0/P014.
 // ============================================================================
 

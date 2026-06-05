@@ -28,6 +28,7 @@
 #include "mode.h"
 #include "spectral.h"                 // mode 2: averaged power spectrum
 #include "goertzel.h"                 // mode 4: order-tracked Goertzel bank
+#include "control.h"                  // motor slot: control core (Tier1/PendSV)
 #include "bsp/board_api.h"            // board_millis()
 
 // ---- RA4M1-specific command IDs (0x0110+: multi-mode control) --------------
@@ -53,6 +54,23 @@
 #define CMD_GOERTZEL_READ        ((uint16_t)0x011D)
 #define CMD_GOERTZEL_STOP        ((uint16_t)0x011E)
 #define CMD_GOERTZEL_INJECT_RPM  ((uint16_t)0x011F)
+
+// 0x0150..0x0157: motor-control core (the "motor slot" — see control.h).
+// NOTE: the locked design opcode map places these at 0x0108/0x0109/0x010C/
+// 0x010D/0x0110/0x0111/0x0120 — slots currently occupied on this shared HIL
+// command surface by pwm_*/counter_*/set_mode/get_mode. Increment 1 lands the
+// motor core ADDITIVELY at a fresh non-colliding block so the hardware-verified
+// workbench HIL commands keep working; renumbering to the design map (and
+// dropping the superseded pwm_*/counter_* on RA4M1) is a deliberate later
+// cleanup paired with the dongle_console.lua update. design-map slot in comments.
+#define CMD_SET_MOTOR_MODE  ((uint16_t)0x0150)   // design: 0x0110
+#define CMD_GET_STATUS      ((uint16_t)0x0151)   // design: 0x0120
+#define CMD_MOTOR_DRIVE     ((uint16_t)0x0152)   // design: 0x0109
+#define CMD_DAC_PROBE       ((uint16_t)0x0153)   // design: 0x0108
+#define CMD_ENCODER_READ    ((uint16_t)0x0154)   // design: 0x010D
+#define CMD_ENCODER_RESET   ((uint16_t)0x0155)   // design: 0x010C
+#define CMD_SET_DSP_MODE    ((uint16_t)0x0156)   // design: 0x0111
+#define CMD_MOTOR_CONFIG    ((uint16_t)0x0157)   // overcurrent + counts_per_rev
 
 // ---- DAC waveform-generator state ------------------------------------------
 // Lives in the shared mode arena — only the workbench mode owns it. Written by
@@ -528,6 +546,11 @@ void workbench_analog_poll(void)
     if (!g_analog.active) {
         return;
     }
+    // The control core owns the ADC (and drives P100/AN022 as an H-bridge line)
+    // while a motor mode runs — don't let the workbench sampler fight it.
+    if (control_get_motor_mode() != MOTOR_IDLE) {
+        return;
+    }
     uint32_t now = board_millis();
     if ((now - g_analog.last_ms) < 1u) {            // ~1 kHz cap
         return;
@@ -899,6 +922,131 @@ static uint8_t cmd_get_mode(shell_reader_t* args, shell_writer_t* result)
     return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
 }
 
+// ============================================================================
+// Motor-control core — the "motor slot" (control.h). The control core runs
+// independently of the mode.c DSP slot; these handlers are the host surface.
+// All wire integers are little-endian; signed values transfer as their bit
+// pattern through the unsigned sr_/sw_ helpers (raw-counts rule).
+// ============================================================================
+
+// CMD_SET_MOTOR_MODE — args: mode:u8 (IDLE=0/MANUAL=1/PID=2/SCURVE=3/WINDOW=4)
+// result: empty. Entering a driving mode forces the DSP slot to NONE.
+static uint8_t cmd_set_motor_mode(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    uint8_t mode = sr_u8(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    if (control_set_motor_mode((motor_mode_t)mode) != 0u)
+        return SHELL_STATUS_BAD_ARGS;
+    return SHELL_STATUS_OK;
+}
+
+// CMD_SET_DSP_MODE — args: mode:u8 (NONE=0/GOERTZEL=1/SPECTRAL=2/ANALOG=3)
+// result: empty. Rejected while a motor mode owns the ADC (motor != IDLE).
+static uint8_t cmd_set_dsp_mode(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    uint8_t mode = sr_u8(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    if (control_get_motor_mode() != MOTOR_IDLE) return SHELL_STATUS_CMD_FAILED;
+
+    device_mode_t dm;
+    switch (mode) {
+        case 0u: dm = MODE_WORKBENCH; break;   // NONE
+        case 1u: dm = MODE_GOERTZEL;  break;
+        case 2u: dm = MODE_SPECTRAL;  break;
+        case 3u: dm = MODE_WORKBENCH; break;   // ANALOG runs in workbench
+        default: return SHELL_STATUS_BAD_ARGS;
+    }
+    if (mode_set(dm) != 0u) return SHELL_STATUS_BAD_ARGS;
+    return SHELL_STATUS_OK;
+}
+
+// CMD_GET_STATUS — args: empty
+// result: motor_mode:u8 motor_state:u8 dsp_mode:u8 fault:u8
+//         speed:i32 position:i32 current:u16 duty:i16 op_token:u16  (20 bytes)
+static uint8_t cmd_get_status(shell_reader_t* args, shell_writer_t* result)
+{
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    sw_u8 (result, (uint8_t)control_get_motor_mode());
+    sw_u8 (result, (uint8_t)control_get_motor_state());
+    sw_u8 (result, (uint8_t)mode_get());
+    sw_u8 (result, control_fault());
+    sw_u32(result, (uint32_t)control_velocity());
+    sw_u32(result, (uint32_t)control_position());
+    sw_u16(result, control_current_raw());
+    sw_u16(result, (uint16_t)control_duty());
+    sw_u16(result, 0u);                         // op_token (SCURVE increment)
+    return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
+}
+
+// CMD_MOTOR_DRIVE — args: duty:i16 (-4095..4095) ; result: empty.
+// Open-loop direct drive; only valid in MOTOR_MANUAL.
+static uint8_t cmd_motor_drive(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    int16_t duty = (int16_t)sr_u16(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    if (control_motor_drive(duty) != 0u) return SHELL_STATUS_CMD_FAILED;  // not MANUAL
+    return SHELL_STATUS_OK;
+}
+
+// CMD_DAC_PROBE — args: source:u8 scale:i16 offset:i16 ; result: empty.
+// DAC(A0) mirrors one of the 9 ADC streams or a control var (control.h). Tears
+// down any running DAC waveform (one DAC). Emits only while a motor mode samples.
+static uint8_t cmd_dac_probe(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    uint8_t source = sr_u8 (args);
+    int16_t scale  = (int16_t)sr_u16(args);
+    int16_t offset = (int16_t)sr_u16(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+
+    if (WF.active) {                            // a static probe wins over a waveform
+        WF.active = false;
+        mode_periodic_stop();
+    }
+    if (control_dac_probe(source, scale, offset) != 0u) return SHELL_STATUS_BAD_ARGS;
+    return SHELL_STATUS_OK;
+}
+
+// CMD_ENCODER_READ — args: empty ; result: position:i32 velocity:i32
+static uint8_t cmd_encoder_read(shell_reader_t* args, shell_writer_t* result)
+{
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    sw_u32(result, (uint32_t)control_position());
+    sw_u32(result, (uint32_t)control_velocity());
+    return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
+}
+
+// CMD_ENCODER_RESET — args: empty ; result: empty
+static uint8_t cmd_encoder_reset(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    control_encoder_reset();
+    return SHELL_STATUS_OK;
+}
+
+// CMD_MOTOR_CONFIG — args: overcurrent_raw:u16 counts_per_rev:u32 ; result: empty.
+// overcurrent_raw = A1 raw-count fast cutout (0 = disabled). counts_per_rev
+// enables on-chip RPM / order-tracking (0 = unknown).
+static uint8_t cmd_motor_config(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    uint16_t oc  = sr_u16(args);
+    uint32_t cpr = sr_u32(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    control_set_overcurrent(oc);
+    control_set_counts_per_rev(cpr);
+    return SHELL_STATUS_OK;
+}
+
 // ---- chip-specific dispatch table ------------------------------------------
 
 static const shell_cmd_entry_t g_chip_commands[] = {
@@ -933,6 +1081,14 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_GOERTZEL_READ,       "goertzel_read",       cmd_goertzel_read       },
     { CMD_GOERTZEL_STOP,       "goertzel_stop",       cmd_goertzel_stop       },
     { CMD_GOERTZEL_INJECT_RPM, "goertzel_inject_rpm", cmd_goertzel_inject_rpm },
+    { CMD_SET_MOTOR_MODE,     "set_motor_mode",     cmd_set_motor_mode     },
+    { CMD_SET_DSP_MODE,       "set_dsp_mode",       cmd_set_dsp_mode       },
+    { CMD_GET_STATUS,         "get_status",         cmd_get_status         },
+    { CMD_MOTOR_DRIVE,        "motor_drive",        cmd_motor_drive        },
+    { CMD_DAC_PROBE,          "dac_probe",          cmd_dac_probe          },
+    { CMD_ENCODER_READ,       "encoder_read",       cmd_encoder_read       },
+    { CMD_ENCODER_RESET,      "encoder_reset",      cmd_encoder_reset      },
+    { CMD_MOTOR_CONFIG,       "motor_config",       cmd_motor_config       },
 };
 
 const shell_cmd_entry_t* chip_commands_table(void)
