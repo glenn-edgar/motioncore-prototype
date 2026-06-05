@@ -73,8 +73,9 @@ static inline void pfs_lock(void)
 }
 
 // ---- arena layout ---------------------------------------------------------
-// One overlay struct stored at the start of g_mode_arena (8-aligned). Sized at
-// ~14 KB at N=1024; static_assert below guards against arena-size regressions.
+// One overlay struct stored at the start of g_mode_arena (8-aligned). ~10.3 KB
+// at N=1024 (after dropping the 4 KB window table for on-the-fly generation);
+// the static_assert below guards against arena-size regressions.
 
 typedef struct {
     // --- control / status (volatile fields touched by ISR + foreground) ---
@@ -93,7 +94,8 @@ typedef struct {
     uint16_t          cap_buf[2][SPECTRAL_N];
 
     // --- processing buffers (f32) -----------------------------------------
-    float             window[SPECTRAL_N];        // Hamming, precomputed once
+    // (no window[] table — the Hamming window is generated on the fly by a
+    //  recursive cosine oscillator in spectral_pump, saving 4 KB of arena.)
     float             work[SPECTRAL_N];          // rfft in/out (in-place)
     float             power_sum[SPECTRAL_BINS];  // accumulator
 
@@ -153,19 +155,6 @@ static inline uint16_t spectral_adc_sample_and_kick(uint8_t an)
     uint16_t s = (uint16_t)(R_ADC0->ADDR[an] & 0x3FFFu);
     R_ADC0->ADCSR |= ADCSR_ADST;          // kick next
     return s;
-}
-
-// ---- Hamming window precompute --------------------------------------------
-// w[n] = 0.54 - 0.46·cos(2πn/(N-1)). Symmetric form; sum of squares is
-// roughly (0.54² + 0.46²/2)·N ≈ 0.3974·N (used for PSD scaling host-side
-// if desired). Called once at SPECTRAL_START.
-
-static void spectral_window_init(void)
-{
-    const float two_pi_over_nm1 = 6.28318530717958647692f / (float)(SPECTRAL_N - 1u);
-    for (uint32_t n = 0; n < SPECTRAL_N; n++) {
-        SP.window[n] = 0.54f - 0.46f * cosf(two_pi_over_nm1 * (float)n);
-    }
 }
 
 // ---- mode descriptor hooks ------------------------------------------------
@@ -239,8 +228,24 @@ void spectral_pump(void)
         sum += cap[i];                                  // max ~16.7M, fits u32
     }
     const float mean = (float)sum * (1.0f / (float)SPECTRAL_N);
-    for (uint32_t i = 0; i < SPECTRAL_N; i++) {
-        SP.work[i] = ((float)cap[i] - mean) * SP.window[i];
+    // Hamming window w[n] = 0.54 - 0.46·cos(2πn/(N-1)), generated on the fly by
+    // a recursive cosine oscillator instead of a 4 KB table:
+    //   cos(θ(n+1)) = 2cos(θ)·cos(θn) − cos(θ(n−1)),  θ = 2π/(N-1).
+    // Two cosf at frame start, then 1 mul + 1 sub per sample. Recurrence drift
+    // over N=1024 is ~1e-4 — negligible for a window shape.
+    {
+        const float theta  = 6.28318530717958647692f / (float)(SPECTRAL_N - 1u);
+        const float k      = 2.0f * cosf(theta);
+        float c_prev = 1.0f;            // cos(0)
+        float c_cur  = cosf(theta);     // cos(θ)
+        SP.work[0] = ((float)cap[0] - mean) * (0.54f - 0.46f * c_prev);
+        SP.work[1] = ((float)cap[1] - mean) * (0.54f - 0.46f * c_cur);
+        for (uint32_t i = 2u; i < SPECTRAL_N; i++) {
+            const float c_next = k * c_cur - c_prev;
+            SP.work[i] = ((float)cap[i] - mean) * (0.54f - 0.46f * c_next);
+            c_prev = c_cur;
+            c_cur  = c_next;
+        }
     }
 
     // Real FFT in place. CMSIS-DSP packed output: see header comment.
@@ -283,8 +288,6 @@ bool spectral_start(uint8_t fs_code, uint8_t channel, uint16_t target_frames)
     SP.cap_idx        = 0u;
     SP.cap_writer     = 0u;
     SP.frame_ready    = 0u;
-
-    spectral_window_init();
 
     // arm_rfft_fast_init_f32 returns ARM_MATH_ARGUMENT_ERROR for unsupported
     // lengths; SPECTRAL_N=1024 is supported in every CMSIS-DSP we'd ship.
