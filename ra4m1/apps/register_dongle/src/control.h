@@ -122,3 +122,11 @@ uint32_t control_counts_per_rev(void);
 // exclusive with dac_write / dac_waveform (one DAC). 0 = ok, 1 = bad source.
 uint8_t control_dac_probe(uint8_t source, int16_t scale, int16_t offset);
 void    control_dac_probe_stop(void);
+
+// ---- bench PWM characterization --------------------------------------------
+// Lazy-configures GPT3 at 20 kHz on D8 (period 2400 counts, ~11.2-bit) on first
+// call, then sets the duty directly in raw period counts (0..period). Decoupled
+// from the motor modes AND the ISRs — for scoping the drive output in IDLE
+// before any real-time code is enabled. Returns the period (= max counts = 100%
+// duty); on the scope, high-time = counts × (1/48 MHz) = counts × 20.8 ns.
+uint16_t control_pwm_test(uint16_t counts);

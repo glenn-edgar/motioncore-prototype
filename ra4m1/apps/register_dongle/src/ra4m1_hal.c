@@ -320,6 +320,28 @@ void hal_pwm_set(uint16_t duty12)
     R_GPT3->GTWP     = GPT_WP_LOCK;
 }
 
+// Set the duty directly in raw period counts (0..g_pwm_period) — what the timer
+// actually compares, so the scope sees pulse_width = counts / PCLKD. Clamped to
+// the period. Used by the bench pwm_test characterization command.
+void hal_pwm_set_raw(uint16_t counts)
+{
+    if (!g_pwm_initialized) {
+        return;
+    }
+    if ((uint32_t)counts > g_pwm_period) {
+        counts = (uint16_t)g_pwm_period;
+    }
+    R_GPT3->GTWP     = GPT_WP_UNLOCK;
+    R_GPT3->GTCCR[0] = counts;                      // GTCCRA (live)
+    R_GPT3->GTCCR[2] = counts;                      // GTCCRC (buffer)
+    R_GPT3->GTWP     = GPT_WP_LOCK;
+}
+
+uint16_t hal_pwm_period(void)
+{
+    return (uint16_t)g_pwm_period;
+}
+
 void hal_pwm_teardown(void)
 {
     if (!g_pwm_initialized) {

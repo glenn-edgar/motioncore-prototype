@@ -56,7 +56,9 @@ void hal_dac_write(uint16_t value);              // 0..4095
 // out-of-range frequency (period must fit the 16-bit GPT3 counter).
 
 bool hal_pwm_config(uint32_t freq_hz);
-void hal_pwm_set(uint16_t duty12);               // 0..4095
+void hal_pwm_set(uint16_t duty12);               // 0..4095 (scaled onto the period)
+void hal_pwm_set_raw(uint16_t counts);           // direct GTCCR compare, 0..period
+uint16_t hal_pwm_period(void);                   // period in counts (0 if not configured)
 void hal_pwm_teardown(void);
 bool hal_pwm_active(void);
 

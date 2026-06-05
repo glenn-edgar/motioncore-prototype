@@ -373,8 +373,28 @@ static void gpt2_stop(void)
 // Sampling lifecycle — ADC scan + decimator/speed reset + the 20 kHz tick.
 // ============================================================================
 
+// Lazy one-time bring-up of the control hardware: PendSV priority + the GPT2
+// sample-ISR vector slot + the GPT1 encoder + the H-bridge direction GPIOs.
+// Deferred out of control_init() so the firmware boots CONSOLE-ONLY — no motor
+// hardware is touched until the first motor mode is entered, so an idle dongle
+// is byte-for-byte equivalent to the baseline at boot. Idempotent.
+static bool g_hw_inited = false;
+
+static void control_hw_ensure(void)
+{
+    if (g_hw_inited) return;
+    NVIC_SetPriority(PendSV_IRQn, 3u);                       // below the sample ISR
+    mode_vector_install(CONTROL_SAMPLE_IRQ, control_sample_isr);
+    hal_encoder_setup();                                     // GPT1 x4 quadrature
+    hal_gpio_config(HB_IN1_PORT, HB_IN1_PIN, true, false);   // H-bridge dir lines
+    hal_gpio_config(HB_IN2_PORT, HB_IN2_PIN, true, false);
+    hbridge_coast();
+    g_hw_inited = true;
+}
+
 static void sampling_start(void)
 {
+    control_hw_ensure();
     hal_adc_scan3_setup();
 
     for (uint32_t i = 0; i < 3; i++) {
@@ -398,20 +418,12 @@ static void sampling_stop(void)
 
 void control_init(void)
 {
-    // PendSV below the sample ISR so torque math can't block sampling.
-    NVIC_SetPriority(PendSV_IRQn, 3u);
-
-    // Install the 20 kHz sample ISR into the relocated RAM vector table.
-    mode_vector_install(CONTROL_SAMPLE_IRQ, control_sample_isr);
-
-    // Park the H-bridge safe (outputs low → coast).
-    hal_gpio_config(HB_IN1_PORT, HB_IN1_PIN, true, false);
-    hal_gpio_config(HB_IN2_PORT, HB_IN2_PIN, true, false);
-    hbridge_coast();
-
-    // Encoder is boot-fixed (always readable, even at idle).
-    hal_encoder_setup();
-
+    // CONSOLE-ONLY at boot: touch NO motor hardware here — no NVIC/PendSV, no
+    // vector install, no GPIO, no GPT. All of it is brought up lazily on the
+    // first motor-mode entry (control_hw_ensure, via sampling_start), so an idle
+    // dongle behaves exactly like the pre-control-core baseline. This keeps the
+    // USB bring-up path clean and lets the real-time pieces be enabled one mode
+    // at a time, with the console already live to observe.
     g_motor_mode  = MOTOR_IDLE;
     g_motor_state = MOTOR_STATE_IDLE;
     g_fault       = MOTOR_FAULT_NONE;
@@ -489,4 +501,13 @@ uint8_t control_dac_probe(uint8_t source, int16_t scale, int16_t offset)
 void control_dac_probe_stop(void)
 {
     g_probe.active = false;
+}
+
+uint16_t control_pwm_test(uint16_t counts)
+{
+    if (!hal_pwm_active()) {
+        hal_pwm_config(20000u);     // GPT3 / GTIOC3A on D8: 20 kHz, period 2400
+    }
+    hal_pwm_set_raw(counts);
+    return hal_pwm_period();
 }

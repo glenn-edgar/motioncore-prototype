@@ -71,6 +71,7 @@
 #define CMD_ENCODER_RESET   ((uint16_t)0x0155)   // design: 0x010C
 #define CMD_SET_DSP_MODE    ((uint16_t)0x0156)   // design: 0x0111
 #define CMD_MOTOR_CONFIG    ((uint16_t)0x0157)   // overcurrent + counts_per_rev
+#define CMD_PWM_TEST        ((uint16_t)0x0158)   // bench: 20 kHz PWM on D8, raw duty counts
 
 // ---- DAC waveform-generator state ------------------------------------------
 // Lives in the shared mode arena — only the workbench mode owns it. Written by
@@ -1047,6 +1048,20 @@ static uint8_t cmd_motor_config(shell_reader_t* args, shell_writer_t* result)
     return SHELL_STATUS_OK;
 }
 
+// CMD_PWM_TEST — args: counts:u16 (0..period) ; result: period:u16.
+// Bench scope tool: lazy-configures GPT3 at 20 kHz on D8 and sets the duty to
+// `counts` raw timer counts. Returns the period (max counts = 100% duty).
+// Decoupled from the motor modes / ISRs — usable in IDLE.
+static uint8_t cmd_pwm_test(shell_reader_t* args, shell_writer_t* result)
+{
+    uint16_t counts = sr_u16(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    uint16_t period = control_pwm_test(counts);
+    sw_u16(result, period);
+    return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
+}
+
 // ---- chip-specific dispatch table ------------------------------------------
 
 static const shell_cmd_entry_t g_chip_commands[] = {
@@ -1089,6 +1104,7 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_ENCODER_READ,       "encoder_read",       cmd_encoder_read       },
     { CMD_ENCODER_RESET,      "encoder_reset",      cmd_encoder_reset      },
     { CMD_MOTOR_CONFIG,       "motor_config",       cmd_motor_config       },
+    { CMD_PWM_TEST,           "pwm_test",           cmd_pwm_test           },
 };
 
 const shell_cmd_entry_t* chip_commands_table(void)
