@@ -87,6 +87,7 @@ local cjson = require("cjson")
 local zps  = require("zenoh_pubsub")
 local zrpc = require("zenoh_rpc")
 local zt   = require("zenoh_token")
+local bus_core = require("bus_core")   -- for the startup UID device probe
 
 -- ---- chain_tree IR + user fns ---------------------------------------------
 local ir = ct_loader.load(script_dir .. "chains/bus_sup.json")
@@ -106,6 +107,78 @@ if #CONFIGS == 0 then
     os.exit(1)
 end
 local N_DONGLES = #CONFIGS
+
+-- ---- UID-based device auto-assignment (startup pre-pass) -------------------
+-- The BC dongles share a placeholder USB serial, so /dev/ttyACM* enumeration
+-- order is NOT stable across replug/reboot — a config's static `device` field
+-- can end up pointing at the wrong controller. Here we probe each present node
+-- for its REGISTER `chip_uid` and rebind every chip_uid-pinned config to the
+-- port that actually holds its chip. After this, the `device` field is only a
+-- fallback hint: USB port order no longer matters, and the manual device-swap
+-- workaround is unnecessary.
+--
+-- Each probe opens a node with a NO-SLAVES roster (BUS_SUP_PROBE_ROSTER) so it
+-- can never push a real roster to a wrong BC, polls until the REGISTER identity
+-- is captured (or a short deadline), reads chip_uid, and closes (releasing the
+-- flock) before the chain reopens the matched port for real.
+local PROBE_ROSTER   = os.getenv("BUS_SUP_PROBE_ROSTER") or "/app/rosters/_probe.conf"
+local PROBE_MS       = tonumber(os.getenv("BUS_SUP_PROBE_MS") or "2000")  -- per-device deadline
+
+local function list_acm()
+    local devs = {}
+    for i = 0, 15 do
+        local p = "/dev/ttyACM" .. i
+        local f = io.open(p, "r")
+        if f then f:close(); devs[#devs + 1] = p end
+    end
+    return devs
+end
+
+local function probe_uid(device)
+    local bus = bus_core.Bus.open(device, PROBE_ROSTER)
+    if not bus then return nil end
+    local uid, t0 = nil, now_ms()
+    while now_ms() - t0 < PROBE_MS do
+        bus:poll()
+        local id = bus:identity()
+        if id and id.chip_uid then uid = id.chip_uid; break end
+        ffi.C.usleep(20000)   -- 20 ms between identity polls
+    end
+    bus:close()
+    return uid
+end
+
+do
+    local any_pinned = false
+    for _, c in ipairs(CONFIGS) do if c.chip_uid then any_pinned = true end end
+    if any_pinned then
+        local uid2dev = {}
+        for _, dev in ipairs(list_acm()) do
+            local uid = probe_uid(dev)
+            io.stderr:write(string.format("BUS_SUP: probe %s -> chip_uid=%s\n",
+                dev, uid or "(none)")); io.stderr:flush()
+            if uid then uid2dev[uid] = dev end
+        end
+        for _, c in ipairs(CONFIGS) do
+            if c.chip_uid then
+                local dev = uid2dev[c.chip_uid]
+                if dev then
+                    if dev ~= c.device then
+                        io.stderr:write(string.format(
+                            "BUS_SUP: %s chip_uid=%s -> %s (config said %s; auto-remapped)\n",
+                            c.dongle_id, c.chip_uid, dev, tostring(c.device)))
+                    end
+                    c.device = dev
+                else
+                    io.stderr:write(string.format(
+                        "BUS_SUP: %s chip_uid=%s NOT found among ttyACM* — keeping %s (will fault if wrong)\n",
+                        c.dongle_id, c.chip_uid, tostring(c.device)))
+                end
+            end
+        end
+        io.stderr:flush()
+    end
+end
 
 -- ---- zenoh sessions (shared, opened once) ---------------------------------
 local ps = zps.PubSub.new({ locators = { ROUTER }, mode = "client" }); ps:connect()
