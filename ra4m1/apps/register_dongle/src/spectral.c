@@ -11,7 +11,8 @@
 //     1. read ADDR[channel] from the previous tick's conversion
 //     2. store in capture buffer at cap_idx
 //     3. kick next conversion (ADCSR.ADST = 1) so it overlaps the next 50 µs
-//     4. on buffer full: swap to the other capture, set frame_ready
+//     4. on buffer full: set frame_ready; thereafter the ISR drops samples until
+//        the pump clears it (single buffer — pump owns it while frame_ready)
 //
 //   spectral_pump() (called from main's superloop, no ISR):
 //     5. if frame_ready: window × capture → work[], arm_rfft_fast_f32 in place,
@@ -73,9 +74,10 @@ static inline void pfs_lock(void)
 }
 
 // ---- arena layout ---------------------------------------------------------
-// One overlay struct stored at the start of g_mode_arena (8-aligned). ~10.3 KB
-// at N=1024 (after dropping the 4 KB window table for on-the-fly generation);
-// the static_assert below guards against arena-size regressions.
+// One overlay struct stored at the start of g_mode_arena (8-aligned). ~8.3 KB
+// at N=1024 — after dropping the 4 KB window table (on-the-fly generation) and
+// the 2 KB capture ping-pong (single buffer); the static_assert below guards
+// against arena-size regressions.
 
 typedef struct {
     // --- control / status (volatile fields touched by ISR + foreground) ---
@@ -85,13 +87,15 @@ typedef struct {
     uint16_t          target_frames;
     volatile uint32_t frames_done;
 
-    // --- capture ping-pong (ISR fills one, pump reads the other) ----------
-    volatile uint16_t cap_idx;          // 0..N-1 within current capture
-    volatile uint8_t  cap_writer;       // 0 or 1: which cap_buf the ISR fills
-    volatile uint8_t  frame_ready;      // set by ISR when a capture completes
-    // _pad to keep arrays 4-aligned (cap arrays are u16, frame_ready is u8)
-    uint8_t           _pad0;
-    uint16_t          cap_buf[2][SPECTRAL_N];
+    // --- single capture buffer --------------------------------------------
+    // No ping-pong: the ISR pauses (drops samples) while frame_ready is set, so
+    // the pump owns the buffer exclusively during processing — clean SPSC
+    // handoff via frame_ready, no tearing, 2 KB saved. Dropped samples between
+    // frames (~20, the ~1 ms FFT) don't matter for Welch PSD averaging.
+    volatile uint16_t cap_idx;          // 0..N-1 fill index
+    volatile uint8_t  frame_ready;      // set by ISR on full; cleared by pump
+    uint8_t           _pad0;            // keep cap_buf u16-aligned
+    uint16_t          cap_buf[SPECTRAL_N];
 
     // --- processing buffers (f32) -----------------------------------------
     // (no window[] table — the Hamming window is generated on the fly by a
@@ -181,23 +185,18 @@ void spectral_periodic_isr(void)
         return;
     }
 
+    // Always read + kick (keep the ADC pipeline primed). While a completed frame
+    // awaits the pump, the pump owns cap_buf — drop this sample rather than
+    // tear the buffer. The gap (~1 ms FFT) is immaterial for Welch PSD averaging.
     const uint8_t an = SPECTRAL_PINS[SP.channel].an;
     uint16_t s = spectral_adc_sample_and_kick(an);
+    if (SP.frame_ready) {
+        return;
+    }
 
-    SP.cap_buf[SP.cap_writer][SP.cap_idx++] = s;
+    SP.cap_buf[SP.cap_idx++] = s;
     if (SP.cap_idx >= SPECTRAL_N) {
-        // Buffer full — flip; foreground pump will process the one we just
-        // finished. If the previous frame_ready is still set, foreground is
-        // behind and we'd overrun — that should not happen at our FFT-vs-tick
-        // budgets, but flag the condition by going to ERROR rather than
-        // silently corrupting the data.
-        if (SP.frame_ready) {
-            SP.state = SPECTRAL_STATE_ERROR;
-            mode_periodic_stop();
-            return;
-        }
-        SP.cap_idx    = 0u;
-        SP.cap_writer ^= 1u;
+        SP.cap_idx     = 0u;
         SP.frame_ready = 1u;
     }
 }
@@ -213,9 +212,8 @@ void spectral_pump(void)
         return;
     }
 
-    // The "reader" buffer is the one the ISR is NOT currently writing.
-    const uint8_t reader = SP.cap_writer ^ 1u;
-    const uint16_t* cap = SP.cap_buf[reader];
+    // The ISR has paused writing (frame_ready set), so we own cap_buf.
+    const uint16_t* cap = SP.cap_buf;
 
     // Two-pass DC-blank + window. cap is u16 ADC counts (0..16383, midscale
     // ~8192 for a VREF/2-biased input). Without mean-subtraction the large DC
@@ -286,7 +284,6 @@ bool spectral_start(uint8_t fs_code, uint8_t channel, uint16_t target_frames)
     SP.target_frames  = target_frames;
     SP.frames_done    = 0u;
     SP.cap_idx        = 0u;
-    SP.cap_writer     = 0u;
     SP.frame_ready    = 0u;
 
     // arm_rfft_fast_init_f32 returns ARM_MATH_ARGUMENT_ERROR for unsupported
