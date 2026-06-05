@@ -26,9 +26,16 @@
 #include <stdbool.h>
 
 #define SPECTRAL_N           1024u
-#define SPECTRAL_BINS        (SPECTRAL_N / 2u + 1u)   // 513
+#define SPECTRAL_BINS        (SPECTRAL_N / 2u + 1u)   // 513 (also quefrency bins)
 #define SPECTRAL_MAX_FRAMES  100u
 #define SPECTRAL_CHANNEL_MAX 2u    // 0..2 = A1/A2/A3 (control decimated channels)
+
+// `compute` selects the post-processing done when the Welch average completes.
+// PSD (power_sum) is always accumulated; CEPSTRUM/BOTH additionally compute the
+// real cepstrum c[n] = IDFT(log|X|) into work[] (read via cepstrum_read_bins).
+#define SPECTRAL_COMPUTE_PSD      0u   // PSD only (default)
+#define SPECTRAL_COMPUTE_CEPSTRUM 1u   // + real cepstrum
+#define SPECTRAL_COMPUTE_BOTH     2u   // + real cepstrum (PSD always available too)
 
 typedef enum {
     SPECTRAL_STATE_IDLE    = 0,
@@ -44,8 +51,10 @@ typedef enum {
 //   channel = 0..2 (A1/A2/A3)
 //   target_frames = 1..SPECTRAL_MAX_FRAMES (Welch averages)
 // Brings sampling online, captures + averages N windowed buffers, then DONE +
-// chip offline. Returns false on bad args or motor busy.
-bool spectral_start(uint8_t source, uint8_t channel, uint16_t target_frames);
+// chip offline. `compute` = SPECTRAL_COMPUTE_* (cepstrum computed on DONE).
+// Returns false on bad args or motor busy.
+bool spectral_start(uint8_t source, uint8_t channel, uint16_t target_frames,
+                    uint8_t compute);
 
 // Abort: disarm the feed, take the chip offline, state → IDLE. Idempotent.
 void spectral_stop(void);
@@ -59,6 +68,11 @@ uint8_t          spectral_source(void);
 // Copy a slice of the power accumulator (host divides by frames_done). Returns
 // floats written; 0 if IDLE/ERROR or offset past the end.
 uint16_t spectral_read_bins(uint16_t offset, uint16_t count, float* out_f32);
+
+// Copy a slice of the real cepstrum (quefrency bins 0..N/2). Valid only after
+// DONE with compute != PSD. Returns floats written; 0 otherwise. Quefrency bin n
+// corresponds to a period of n / fs_source seconds (the source stream's rate).
+uint16_t cepstrum_read_bins(uint16_t offset, uint16_t count, float* out_f32);
 
 // Called from the control 20 kHz sample ISR (when armed) with the selected
 // decimated-stream sample. Appends to the capture buffer; flags frame-ready on

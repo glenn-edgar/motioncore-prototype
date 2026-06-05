@@ -45,6 +45,7 @@
 #define CMD_SPECTRAL_STATUS ((uint16_t)0x0116)
 #define CMD_SPECTRAL_READ   ((uint16_t)0x0117)
 #define CMD_SPECTRAL_STOP   ((uint16_t)0x0118)
+#define CMD_CEPSTRUM_READ   ((uint16_t)0x0140)   // real cepstrum (quefrency bins)
 
 // 0x0119..0x011F: mode-4 Goertzel (order-tracked bin bank) — see goertzel.h.
 #define CMD_GOERTZEL_CONFIG      ((uint16_t)0x0119)
@@ -657,13 +658,15 @@ static uint8_t cmd_spectral_start(shell_reader_t* args, shell_writer_t* result)
     uint8_t  source        = sr_u8 (args);   // CONTROL_RATE_20K(0)/_1K(1)/_100(2)
     uint8_t  channel       = sr_u8 (args);   // 0..2 = A1/A2/A3
     uint16_t target_frames = sr_u16(args);   // Welch averages
+    // compute is optional (4th byte): SPECTRAL_COMPUTE_PSD/CEPSTRUM/BOTH; absent → PSD.
+    uint8_t  compute       = (sr_remaining(args) >= 1u) ? sr_u8(args) : SPECTRAL_COMPUTE_PSD;
     if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
     if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
 
     // Offline op: spectral_start brings sampling online, feeds itself from the
     // selected decimated stream, and takes the chip offline on completion. No
     // mode switch — spectral is a Tier-0 consumer now, runs with the motor IDLE.
-    if (!spectral_start(source, channel, target_frames)) {
+    if (!spectral_start(source, channel, target_frames, compute)) {
         return SHELL_STATUS_CMD_FAILED;      // bad args or motor busy
     }
     return SHELL_STATUS_OK;
@@ -717,6 +720,26 @@ static uint8_t cmd_spectral_stop(shell_reader_t* args, shell_writer_t* result)
     if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
     spectral_stop();
     return SHELL_STATUS_OK;
+}
+
+// CMD_CEPSTRUM_READ — args: offset:u16 count:u16 ; result: count:u16 q[count]:f32
+// Real cepstrum (quefrency bins 0..N/2). Valid only after a spectral run with
+// compute=CEPSTRUM|BOTH completed; returns count=0 otherwise. count caps at 30.
+static uint8_t cmd_cepstrum_read(shell_reader_t* args, shell_writer_t* result)
+{
+    uint16_t offset = sr_u16(args);
+    uint16_t count  = sr_u16(args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+
+    if (count > 30u) count = 30u;
+    float bins[30];
+    uint16_t n = cepstrum_read_bins(offset, count, bins);
+    sw_u16(result, n);
+    for (uint32_t i = 0; i < n; i++) {
+        sw_f32(result, bins[i]);
+    }
+    return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
 }
 
 // ============================================================================
@@ -1112,6 +1135,7 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_SPECTRAL_STATUS,    "spectral_status",    cmd_spectral_status    },
     { CMD_SPECTRAL_READ,      "spectral_read",      cmd_spectral_read      },
     { CMD_SPECTRAL_STOP,      "spectral_stop",      cmd_spectral_stop      },
+    { CMD_CEPSTRUM_READ,      "cepstrum_read",      cmd_cepstrum_read      },
     { CMD_GOERTZEL_CONFIG,     "goertzel_config",     cmd_goertzel_config     },
     { CMD_GOERTZEL_SET_ORDERS, "goertzel_set_orders", cmd_goertzel_set_orders },
     { CMD_GOERTZEL_START,      "goertzel_start",      cmd_goertzel_start      },

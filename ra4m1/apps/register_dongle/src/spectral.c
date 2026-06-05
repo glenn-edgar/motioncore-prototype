@@ -39,11 +39,12 @@ static struct {
     volatile spectral_state_t state;
     uint8_t           source;        // CONTROL_RATE_* (20k/1k/100)
     uint8_t           channel;       // 0..2 = A1/A2/A3
+    uint8_t           compute;       // SPECTRAL_COMPUTE_*
     uint16_t          target_frames;
     volatile uint32_t frames_done;
     volatile uint16_t cap_idx;       // 0..N-1 fill index
     volatile uint8_t  frame_ready;   // set by spectral_feed on full; cleared by pump
-} g_sp = { SPECTRAL_STATE_IDLE, 0, 0, 0, 0, 0, 0 };
+} g_sp = { SPECTRAL_STATE_IDLE, 0, 0, 0, 0, 0, 0, 0 };
 
 // ---- big buffers overlay g_mode_arena (valid only while running) -----------
 typedef struct {
@@ -70,6 +71,28 @@ void spectral_feed(uint16_t sample)
         g_sp.cap_idx     = 0u;
         g_sp.frame_ready = 1u;
     }
+}
+
+// ---- cepstrum post-process (once, on DONE) ---------------------------------
+// Real cepstrum c[n] = IDFT( log|X(f)| ). We have power_sum[k] = Σ|X[k]|², so
+// log|X[k]| = 0.5·ln(power_sum[k]). The log-power of a real signal is real+even,
+// so we build the packed real-spectrum input (imag = 0) and inverse-rFFT it in
+// place into work[] → the real cepstrum (quefrency bins 0..N/2). Reuses work[]
+// (free after the last Welch frame); power_sum is preserved (PSD stays readable).
+// A floor on the power avoids ln(0); its constant offset is harmless for peaks.
+static void compute_cepstrum(void)
+{
+    const float floor_p = 1.0f;
+    for (uint32_t k = 1u; k < SPECTRAL_N / 2u; k++) {
+        const float p = SB.power_sum[k];
+        SB.work[2u * k]      = 0.5f * logf(p > floor_p ? p : floor_p);  // real
+        SB.work[2u * k + 1u] = 0.0f;                                    // imag
+    }
+    const float p0 = SB.power_sum[0];
+    const float pN = SB.power_sum[SPECTRAL_N / 2u];
+    SB.work[0] = 0.5f * logf(p0 > floor_p ? p0 : floor_p);              // DC
+    SB.work[1] = 0.5f * logf(pN > floor_p ? pN : floor_p);              // Nyquist
+    arm_rfft_fast_f32(&SB.rfft, SB.work, SB.work, 1);                   // inverse → cepstrum
 }
 
 // ---- foreground processing -------------------------------------------------
@@ -117,25 +140,31 @@ void spectral_pump(void)
     g_sp.frames_done++;
 
     if (g_sp.frames_done >= (uint32_t)g_sp.target_frames) {
-        g_sp.state = SPECTRAL_STATE_DONE;     // "complete"
         control_spectral_disarm();
         control_analysis_stop();              // N captures done → chip offline
+        if (g_sp.compute != SPECTRAL_COMPUTE_PSD) {
+            compute_cepstrum();               // post-process the averaged PSD → work[]
+        }
+        g_sp.state = SPECTRAL_STATE_DONE;     // "complete" (set last)
     }
 }
 
 // ---- API ------------------------------------------------------------------
 
-bool spectral_start(uint8_t source, uint8_t channel, uint16_t target_frames)
+bool spectral_start(uint8_t source, uint8_t channel, uint16_t target_frames,
+                    uint8_t compute)
 {
     if (source > CONTROL_RATE_100)                                  return false;
     if (channel > SPECTRAL_CHANNEL_MAX)                            return false;
     if (target_frames == 0u || target_frames > SPECTRAL_MAX_FRAMES) return false;
+    if (compute > SPECTRAL_COMPUTE_BOTH)                           return false;
 
     // Clear the accumulator + buffers; preserve nothing from any prior run.
     memset(g_mode_arena, 0, MODE_ARENA_SIZE);
 
     g_sp.source        = source;
     g_sp.channel       = channel;
+    g_sp.compute       = compute;
     g_sp.target_frames = target_frames;
     g_sp.frames_done   = 0u;
     g_sp.cap_idx       = 0u;
@@ -179,5 +208,17 @@ uint16_t spectral_read_bins(uint16_t offset, uint16_t count, float* out_f32)
     uint16_t avail = (uint16_t)(SPECTRAL_BINS - offset);
     uint16_t n     = (count < avail) ? count : avail;
     memcpy(out_f32, &SB.power_sum[offset], (size_t)n * sizeof(float));
+    return n;
+}
+
+uint16_t cepstrum_read_bins(uint16_t offset, uint16_t count, float* out_f32)
+{
+    // Valid only after DONE with a cepstrum computed (it lives in work[]).
+    if (g_sp.state != SPECTRAL_STATE_DONE)            return 0u;
+    if (g_sp.compute == SPECTRAL_COMPUTE_PSD)         return 0u;
+    if (offset >= SPECTRAL_BINS)                      return 0u;
+    uint16_t avail = (uint16_t)(SPECTRAL_BINS - offset);
+    uint16_t n     = (count < avail) ? count : avail;
+    memcpy(out_f32, &SB.work[offset], (size_t)n * sizeof(float));
     return n;
 }
