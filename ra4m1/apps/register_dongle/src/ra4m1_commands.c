@@ -76,6 +76,7 @@
 #define CMD_DAC_CONST       ((uint16_t)0x0159)   // bench: DAC constant level (A0)
 #define CMD_DAC_SQUARE      ((uint16_t)0x015A)   // bench: DAC square wave (A0→A1 decimation test)
 #define CMD_STREAMS_READ    ((uint16_t)0x015B)   // read the 9 decimator taps
+#define CMD_ENCODER_STIM    ((uint16_t)0x015C)   // bench: Gray-code quadrature on D4/D5
 
 // ---- DAC waveform-generator state ------------------------------------------
 // Lives in the shared mode arena — only the workbench mode owns it. Written by
@@ -1108,6 +1109,20 @@ static uint8_t cmd_streams_read(shell_reader_t* args, shell_writer_t* result)
     return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
 }
 
+// CMD_ENCODER_STIM — args: rate_hz:u16 dir:u8 ; result: empty. rate_hz 0 = stop.
+// Bench encoder loopback: drives a Gray-code quadrature on D4/D5 at rate_hz
+// counts/sec. Jumper D4→D10, D5→D9; then encoder_read velocity ≈ ±rate_hz.
+static uint8_t cmd_encoder_stim(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    uint16_t rate = sr_u16(args);
+    uint8_t  dir  = sr_u8 (args);
+    if (args->overflow)          return SHELL_STATUS_BAD_ARGS;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    if (control_encoder_stim(rate, dir) != 0u) return SHELL_STATUS_CMD_FAILED;
+    return SHELL_STATUS_OK;
+}
+
 // ---- chip-specific dispatch table ------------------------------------------
 
 static const shell_cmd_entry_t g_chip_commands[] = {
@@ -1155,6 +1170,7 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_DAC_CONST,          "dac_const",          cmd_dac_const          },
     { CMD_DAC_SQUARE,         "dac_square",         cmd_dac_square         },
     { CMD_STREAMS_READ,       "streams_read",       cmd_streams_read       },
+    { CMD_ENCODER_STIM,       "encoder_stim",       cmd_encoder_stim       },
 };
 
 const shell_cmd_entry_t* chip_commands_table(void)

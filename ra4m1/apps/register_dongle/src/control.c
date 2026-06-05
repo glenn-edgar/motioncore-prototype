@@ -126,6 +126,16 @@ static struct {
     uint8_t       channel;       // 0..2 = A1/A2/A3
 } g_specfeed = { false, 0, 0 };
 
+// Encoder stimulus: software Gray-code quadrature on D4/D5 (bench self-test, no
+// motor). Advanced in the 20 kHz sample ISR every step_ticks → one count/step.
+static struct {
+    volatile bool active;
+    uint16_t      step_ticks;    // 20 kHz ticks per Gray step (= SAMPLE_RATE_HZ/rate)
+    uint16_t      counter;
+    uint8_t       idx;           // 0..3 Gray index
+    uint8_t       dir;           // 1 = forward, 0 = reverse
+} g_encstim = { false, 0, 0, 0, 1 };
+
 // ============================================================================
 // H-bridge helpers (register-level writes; ISR-safe).
 // ============================================================================
@@ -345,6 +355,19 @@ void control_sample_isr(void)
             g_dactest.counter = 0;
             g_dactest.level ^= 1u;
             hal_dac_write(g_dactest.level ? g_dactest.high : g_dactest.low);
+        }
+    }
+
+    // Encoder stimulus: advance the Gray-code quadrature on D4/D5 (one count per
+    // step) — for the D4→D10 / D5→D9 encoder loopback self-test.
+    if (g_encstim.active) {
+        if (++g_encstim.counter >= g_encstim.step_ticks) {
+            g_encstim.counter = 0;
+            g_encstim.idx = (uint8_t)((g_encstim.idx + (g_encstim.dir ? 1u : 3u)) & 3u);
+            uint8_t a = (g_encstim.idx == 1u || g_encstim.idx == 2u) ? 1u : 0u;
+            uint8_t b = (g_encstim.idx == 2u || g_encstim.idx == 3u) ? 1u : 0u;
+            hal_gpio_write(HB_IN1_PORT, HB_IN1_PIN, a != 0u);   // D4 → phase A (D10/GTIOC1A)
+            hal_gpio_write(HB_IN2_PORT, HB_IN2_PIN, b != 0u);   // D5 → phase B (D9/GTIOC1B)
         }
     }
 }
@@ -612,4 +635,24 @@ void control_spectral_arm(uint8_t rate, uint8_t channel)
 void control_spectral_disarm(void)
 {
     g_specfeed.active = false;
+}
+
+uint8_t control_encoder_stim(uint16_t rate_hz, uint8_t dir)
+{
+    if (rate_hz == 0u) {                          // stop
+        g_encstim.active = false;
+        control_analysis_stop();
+        return 0u;
+    }
+    if (g_motor_mode != MOTOR_IDLE) return 1u;    // motor owns D4/D5 + the sampler
+    uint32_t st = (uint32_t)SAMPLE_RATE_HZ / rate_hz;   // 20 kHz / rate
+    if (st < 2u)      st = 2u;                     // cap ~10 kHz counts
+    if (st > 0xFFFFu) st = 0xFFFFu;
+    g_encstim.step_ticks = (uint16_t)st;
+    g_encstim.counter    = 0u;
+    g_encstim.idx        = 0u;
+    g_encstim.dir        = (dir != 0u) ? 1u : 0u;
+    if (control_analysis_start() != 0u) return 1u; // 20 kHz ISR + GPT1 encoder + PendSV speed
+    g_encstim.active = true;
+    return 0u;
 }

@@ -158,3 +158,11 @@ uint8_t control_analysis_start(void);   // 0 = ok, 1 = busy (motor not IDLE)
 void    control_analysis_stop(void);    // stop sampling → chip offline
 void    control_spectral_arm(uint8_t rate, uint8_t channel);  // rate=CONTROL_RATE_*, ch 0..2
 void    control_spectral_disarm(void);
+
+// ---- encoder stimulus (bench self-test, no motor) --------------------------
+// Drives a software Gray-code quadrature on the H-bridge GPIOs (D4/D5) from the
+// 20 kHz sample ISR; jumper D4→D10 (phase A) and D5→D9 (phase B) so GPT1 decodes
+// it. Validates the encoder count + M-method velocity with NO motor hardware.
+// rate_hz = counts/sec (so control_velocity should read ≈ ±rate_hz). 0 = stop.
+// Uses D4/D5 (the H-bridge lines), so only valid with the motor IDLE.
+uint8_t control_encoder_stim(uint16_t rate_hz, uint8_t dir);   // 0 ok, 1 busy
