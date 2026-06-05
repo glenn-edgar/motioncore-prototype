@@ -60,7 +60,8 @@ RUN chmod +x /app/start.sh
 ENV BUS_SUP_CONFIGS=/configs \
     BUS_SUP_DSL=/app/lua_dsl/ \
     BUS_SUP_ROUTER_PORT=7448 \
-    BUS_SUP_TICK_HZ=2000 \
+    BUS_SUP_TICK_HZ=100 \
+    BUS_SUP_IDLE_HZ=50 \
     BUS_LIB=/app/libbus_controller.so
 
 # tini = PID 1 + signal forwarding; start.sh launches the router + supervisor.

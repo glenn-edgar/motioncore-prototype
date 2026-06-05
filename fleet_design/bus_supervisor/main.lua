@@ -15,7 +15,8 @@
 -- Env:
 --   ROUTER           default tcp/127.0.0.1:7447
 --   BUS_SUP_CONFIGS  default <script_dir>/configs   (per-dongle JSON glob)
---   BUS_SUP_TICK_HZ  default 2000          (tight pump; bus poll cadence)
+--   BUS_SUP_TICK_HZ  default 100, capped 100 (SERVING-state bus poll cadence)
+--   BUS_SUP_IDLE_HZ  default 50            (pump rate while nothing is serving)
 --   BUS_SUP_MAX_S    default 0 (forever)
 -- Per-dongle identity/device/roster now come from configs/*.json, NOT env.
 --
@@ -38,8 +39,40 @@ local script_dir = (arg and arg[0] and arg[0]:match("(.*/)")) or "./"
 
 local ROUTER   = os.getenv("ROUTER")          or "tcp/127.0.0.1:7447"
 local CONFIG_DIR = os.getenv("BUS_SUP_CONFIGS") or (script_dir .. "configs")
-local TICK_HZ  = tonumber(os.getenv("BUS_SUP_TICK_HZ") or "2000")
-local TICK_US  = math.floor(1e6 / TICK_HZ)
+-- BUS_SUP_TICK_HZ — the SERVING-state pump rate (Hz): the per-tick bus-poll /
+-- cmd-dequeue cadence used while >=1 dongle is SERVING. Set at container
+-- instantiation, e.g. `docker run -e BUS_SUP_TICK_HZ=<hz> ...`.
+--
+-- Default 100 Hz, HARD-CAPPED at SERVE_HZ_MAX (100 Hz). Rationale: the RS-485
+-- transaction is one-in-flight per bus with a ~45 ms round-trip, so throughput
+-- is WIRE-bound, not pump-bound. Bench data (2 dongles, 64 B echo): 100 Hz gives
+-- ~40 msg/s aggregate (~92% of the 2 kHz figure) at ~5% CPU, vs ~15% CPU at
+-- 2 kHz for the same throughput. So anything above 100 Hz only burns CPU with
+-- zero throughput gain — the cap stops a stray high value from silently wasting
+-- the Pi. (If a faster transport ever drives the round-trip well below the tick
+-- period, the bus becomes pump-bound and a higher rate would buy throughput —
+-- raise SERVE_HZ_MAX then, deliberately, not by accident.)
+local SERVE_HZ_MAX = 100
+local TICK_HZ = tonumber(os.getenv("BUS_SUP_TICK_HZ") or tostring(SERVE_HZ_MAX))
+if TICK_HZ > SERVE_HZ_MAX then
+    io.stderr:write(string.format(
+        "BUS_SUP: BUS_SUP_TICK_HZ=%d capped to %d Hz (bus is round-trip-bound; higher only wastes CPU)\n",
+        TICK_HZ, SERVE_HZ_MAX))
+    TICK_HZ = SERVE_HZ_MAX
+end
+if TICK_HZ < 1 then TICK_HZ = 1 end
+local TICK_US = math.floor(1e6 / TICK_HZ)
+
+-- BUS_SUP_IDLE_HZ — pump rate while NO dongle is serving (default 50 Hz). The
+-- serving rate is a latency budget that is wasted spinning with nothing
+-- attached, so we back off to this and ramp to TICK_HZ the moment a dongle
+-- reaches SERVING (CPU floor ~8% -> <1%). Safe because every chain delay is
+-- wall-clock (handle.timestamp), not tick-count, so bring-up backoff is
+-- unaffected. Clamped to <= TICK_HZ (idle faster than serving is nonsensical).
+local IDLE_HZ = tonumber(os.getenv("BUS_SUP_IDLE_HZ") or "50")
+if IDLE_HZ > TICK_HZ then IDLE_HZ = TICK_HZ end
+if IDLE_HZ < 1 then IDLE_HZ = 1 end
+local TICK_US_IDLE = math.floor(1e6 / IDLE_HZ)
 local MAX_S    = tonumber(os.getenv("BUS_SUP_MAX_S") or "0")
 local OP_PERIOD = 3   -- seconds between fleet/bus/operational publishes
 
@@ -111,8 +144,8 @@ handle.active_tests[KB] = true
 handle.active_test_count = 1
 
 io.stderr:write(string.format(
-    "BUS_SUP: KB '%s' up — %d dongle(s); router %s; pump @%dHz%s\n",
-    KB, N_DONGLES, ROUTER, TICK_HZ, MAX_S > 0 and (" (max " .. MAX_S .. "s)") or ""))
+    "BUS_SUP: KB '%s' up — %d dongle(s); router %s; pump @%dHz (idle %dHz)%s\n",
+    KB, N_DONGLES, ROUTER, TICK_HZ, IDLE_HZ, MAX_S > 0 and (" (max " .. MAX_S .. "s)") or ""))
 for _, c in ipairs(CONFIGS) do
     io.stderr:write(string.format("  %d. %-16s %s/%s @addr %d on %s\n",
         c.bring_up_index, c.dongle_id, c.class, c.instance, c.addr, c.device))
@@ -126,9 +159,7 @@ io.stderr:flush()
 -- latched it stays down (a dongle that exhausted its restart budget needs human
 -- attention). The publish here is the sole writer of operational in steady state.
 local bb = handle.blackboard
-local function publish_operational()
-    local serving = 0
-    for _ in pairs(bb.dongle_serving) do serving = serving + 1 end
+local function publish_operational(serving)
     local latched_down = (bb.bus_operational == false)
     local op = (not latched_down) and (serving == N_DONGLES)
     local reason
@@ -141,6 +172,7 @@ end
 -- ---- event pump -----------------------------------------------------------
 local start_ms = now_ms()
 local t_oper = -100
+local pump_fast = nil          -- adaptive-pump state (nil forces a first-tick log)
 while handle.active_test_count > 0 do
     handle.timestamp = (now_ms() - start_ms) / 1000
     if MAX_S > 0 and handle.timestamp > MAX_S then break end
@@ -156,9 +188,24 @@ while handle.active_test_count > 0 do
         ct_engine.execute_event(handle, ev.node_id, ev.event_id, ev.event_data)
     end
 
-    if handle.timestamp - t_oper >= OP_PERIOD then publish_operational(); t_oper = handle.timestamp end
+    local serving = 0
+    for _ in pairs(bb.dongle_serving) do serving = serving + 1 end
 
-    ffi.C.usleep(TICK_US)
+    if handle.timestamp - t_oper >= OP_PERIOD then publish_operational(serving); t_oper = handle.timestamp end
+
+    -- Adaptive pump: full rate only while >=1 dongle is SERVING (steady-state bus
+    -- poll needs the low latency); otherwise idle slow. Bring-up still progresses
+    -- at IDLE_HZ (backoff is wall-clock), then this ramps up on first serve. Log
+    -- only the transition.
+    local fast = serving > 0
+    if fast ~= pump_fast then
+        pump_fast = fast
+        io.stderr:write(string.format("BUS_SUP: pump %s — %d/%d serving -> %dHz\n",
+            fast and "FULL" or "IDLE", serving, N_DONGLES, fast and TICK_HZ or IDLE_HZ))
+        io.stderr:flush()
+    end
+
+    ffi.C.usleep(fast and TICK_US or TICK_US_IDLE)
 end
 
 io.stderr:write("BUS_SUP: pump exit\n")
