@@ -34,8 +34,14 @@
 // ---- RA4M1-specific command IDs (0x0110+: multi-mode control) --------------
 // 0x0100..0x010E are the shared chip commands defined in shell_commands.h.
 
+#define CMD_RESET           ((uint16_t)0x0003)   // soft reset to safe (motor off / DSP none)
+#define CMD_STACK_HWM       ((uint16_t)0x0050)   // stack size + high-water mark
 #define CMD_SET_MODE        ((uint16_t)0x0110)
 #define CMD_GET_MODE        ((uint16_t)0x0111)
+
+// Stack budget helpers (main.c).
+extern uint32_t firmware_stack_size(void);
+extern uint32_t firmware_stack_hwm(void);
 #define CMD_ANALOG_START    ((uint16_t)0x0112)
 #define CMD_ANALOG_READ     ((uint16_t)0x0113)
 #define CMD_ANALOG_STOP     ((uint16_t)0x0114)
@@ -1123,9 +1129,35 @@ static uint8_t cmd_encoder_stim(shell_reader_t* args, shell_writer_t* result)
     return SHELL_STATUS_OK;
 }
 
+// CMD_RESET — args: empty ; result: empty. Soft reset to a safe state (NOT a
+// reboot — keeps the USB link): stop bench/DSP activity, motor → IDLE (sampling
+// off, H-bridge coast), DSP slot → NONE.
+static uint8_t cmd_reset(shell_reader_t* args, shell_writer_t* result)
+{
+    (void)result;
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    control_encoder_stim(0u, 0u);          // stop stim (→ analysis off)
+    spectral_stop();                       // stop any spectral/analysis run
+    control_dac_probe_stop();
+    control_set_motor_mode(MOTOR_IDLE);    // motor off, sampling stop, coast
+    mode_set(MODE_WORKBENCH);              // DSP slot → NONE
+    return SHELL_STATUS_OK;
+}
+
+// CMD_STACK_HWM — args: empty ; result: stack_size:u32 hwm_used:u32 (host: free = size-hwm).
+static uint8_t cmd_stack_hwm(shell_reader_t* args, shell_writer_t* result)
+{
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    sw_u32(result, firmware_stack_size());
+    sw_u32(result, firmware_stack_hwm());
+    return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
+}
+
 // ---- chip-specific dispatch table ------------------------------------------
 
 static const shell_cmd_entry_t g_chip_commands[] = {
+    { CMD_RESET,              "reset",              cmd_reset              },
+    { CMD_STACK_HWM,          "stack_hwm",          cmd_stack_hwm          },
     { CMD_GPIO_CONFIG,        "gpio_config",        cmd_gpio_config        },
     { CMD_GPIO_WRITE,         "gpio_write",         cmd_gpio_write         },
     { CMD_GPIO_READ,          "gpio_read",          cmd_gpio_read          },

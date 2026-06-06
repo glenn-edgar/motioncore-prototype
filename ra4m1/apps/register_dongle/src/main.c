@@ -178,6 +178,32 @@ void firmware_get_sysinfo(firmware_sysinfo_t* out) {
     out->cpu_clock_hz     = SystemCoreClock;
 }
 
+// ----------------------------------------------------------------------------
+// Stack high-water mark (defensive baseline, mirrors the SAMD21). stack_paint()
+// fills the unused stack with a sentinel ONCE at boot; firmware_stack_hwm()
+// scans up from __StackLimit and reports the deepest the stack (incl. ISRs) has
+// reached. Exposed to the CMD_STACK_HWM handler in ra4m1_commands.c.
+// ----------------------------------------------------------------------------
+#define STACK_PAINT_WORD 0xC5C5C5C5u
+
+static void stack_paint(void) {
+    register uint32_t* sp __asm__("sp");
+    uint32_t* lo = (uint32_t*)(void*)__StackLimit;
+    uint32_t* hi = sp - 64u;                       // 256 B margin below the live frame
+    while (lo < hi) { *lo++ = STACK_PAINT_WORD; }
+}
+
+uint32_t firmware_stack_size(void) {
+    return (uint32_t)((uintptr_t)__StackTop - (uintptr_t)__StackLimit);
+}
+
+uint32_t firmware_stack_hwm(void) {                // peak bytes used
+    const uint32_t* p   = (const uint32_t*)(void*)__StackLimit;
+    const uint32_t* top = (const uint32_t*)(void*)__StackTop;
+    while (p < top && *p == STACK_PAINT_WORD) { p++; }
+    return (uint32_t)((uintptr_t)top - (uintptr_t)p);
+}
+
 // Skips the double-precision math in se_log* — board_millis() returns
 // uint32 ms directly, no __aeabi_dmul/ddiv pulled in (~3 KB flash saved).
 // We don't register a get_time (double seconds) callback at all — leaving
@@ -305,6 +331,7 @@ static void rx_drain_to_event_queue(s_expr_tree_instance_t* tree) {
 // ----------------------------------------------------------------------------
 
 int main(void) {
+    stack_paint();              // paint unused stack for the HWM scan — do first
     board_init();
 
     tusb_rhport_init_t const rhport_init = {
