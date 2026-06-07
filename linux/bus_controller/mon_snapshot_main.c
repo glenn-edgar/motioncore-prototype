@@ -16,6 +16,8 @@
 #define OP_MON_SYS       0x30
 #define OP_MON_TASKS     0x31
 #define OP_MON_MEM       0x32
+#define OP_MON_TICK      0x34
+#define OP_MON_KB        0x35
 #define OP_MON_END       0x3F
 
 static volatile int g_stop = 0;
@@ -25,7 +27,7 @@ static uint64_t mono(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &
 static unsigned r32(const uint8_t *p) { return p[0] | (p[1]<<8) | (p[2]<<16) | ((unsigned)p[3]<<24); }
 static unsigned r16(const uint8_t *p) { return p[0] | (p[1]<<8); }
 
-typedef struct { int sys, tasks, mem, end_count, ack; } ctx_t;
+typedef struct { int sys, tasks, mem, tick, kb, end_count, ack; } ctx_t;
 
 /* common report header = [batch u16][seq u8][total u8][ver u8] = 5 bytes */
 static void on_raw(void *u, uint8_t addr, uint16_t op, const uint8_t *p, uint16_t len) {
@@ -41,6 +43,15 @@ static void on_raw(void *u, uint8_t addr, uint16_t op, const uint8_t *p, uint16_
     } else if (op == OP_MON_MEM && len >= 33) { const uint8_t *f = p + 5;
         printf("  MEM heap free=%u min=%u total=%u | ct perm=%u/%u heap=%u/%u\n",
                r32(f), r32(f+4), r32(f+8), r32(f+12), r32(f+16), r32(f+20), r32(f+24)); c->mem = 1;
+    } else if (op == OP_MON_TICK && len >= 15) { const uint8_t *f = p + 5;
+        printf("  TICK hz=%.2f miss=%u max_overrun=%uus evq hi=%u/%u lo=%u/%u\n",
+               r16(f)/100.0, r16(f+2), r16(f+4), f[6], f[7], f[8], f[9]); c->tick = 1;
+    } else if (op == OP_MON_KB && len >= 6) { const uint8_t *f = p + 5; uint8_t nk = *f++;
+        printf("  KB n=%u:", nk);
+        for (uint8_t i = 0; i < nk && (f - p) + 8 <= len; i++, f += 8)
+            printf(" kb%u(active=%u,state=%u,arena=%u/%u,crash=%u)",
+                   f[0], f[1], f[2], r16(f+3), r16(f+5), f[7]);
+        printf("\n"); c->kb = 1;
     } else if (op == OP_MON_END && len >= 4) {
         c->end_count = p[2]; printf("  END count=%u status=%u\n", p[2], p[3]);
     }
@@ -74,9 +85,9 @@ int main(int argc, char **argv) {
         if (sent && (ctx.end_count > 0 || mono() > dl)) break;
         struct timespec t = { 0, 3 * 1000 * 1000 }; nanosleep(&t, NULL);
     }
-    int ok = ctx.ack == 1 && ctx.sys && ctx.tasks && ctx.mem && ctx.end_count == 3;
-    printf("\n[mon_snapshot] %s (ack=%d sys=%d tasks=%d mem=%d end_count=%d)\n",
-           ok ? "PASS" : "FAIL", ctx.ack, ctx.sys, ctx.tasks, ctx.mem, ctx.end_count);
+    int ok = ctx.ack == 1 && ctx.sys && ctx.tasks && ctx.mem && ctx.tick && ctx.kb && ctx.end_count == 5;
+    printf("\n[mon_snapshot] %s (ack=%d sys=%d tasks=%d mem=%d tick=%d kb=%d end_count=%d)\n",
+           ok ? "PASS" : "FAIL", ctx.ack, ctx.sys, ctx.tasks, ctx.mem, ctx.tick, ctx.kb, ctx.end_count);
     controller_destroy(ctrl); link_close(ep);
     return ok ? 0 : 1;
 }
