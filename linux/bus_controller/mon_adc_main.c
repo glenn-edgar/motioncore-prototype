@@ -1,11 +1,13 @@
 /* mon_adc — drive the BC to OPERATIONAL, send CMD_ADC_READ to the core1 app engine
  * (addr 0xFB), and decode the KB1 reply. The command is routed to KB1's start node;
- * kb1_on_adc reads ADC0 (GP26) and replies OP_SHELL_REPLY [req_id][status][value u16].
- * The controller matches it as the shell ack; result = [value u16].
+ * kb1_on_adc snapshots the 3 decimated channels from the central ADC service
+ * (fed by the 1 kHz FIFO ISR) and replies OP_SHELL_REPLY
+ * [req_id][status][ch0 u16][ch1 u16][ch2 u16]. The controller matches it as the
+ * shell ack; result = the 3 channel values (GP26/27/28).
  *
  *   ./mon_adc [N] [/dev/serial/by-id/usb-Raspberry_Pi_Pico_*]
  *
- * N = number of reads (default 3). PASS = every read acks OK and returns a 12-bit value.
+ * N = number of reads (default 3). PASS = every read acks OK and returns 3 values.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,16 +25,25 @@ static void on_sigint(int s) { (void)s; g_stop = 1; }
 static uint64_t mono(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
     return (uint64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000; }
 
-typedef struct { int acked; int ok; unsigned value; } ctx_t;
+#define ADC_NCH 3
+
+typedef struct { int acked; int ok; unsigned ch[ADC_NCH]; } ctx_t;
 
 static void on_ack(void *u, uint16_t rid, uint8_t st, const uint8_t *r, uint16_t len) {
     (void)rid; ctx_t *c = (ctx_t *)u;
     c->acked = 1;
-    if (st == 0 && len >= 2) { c->value = r[0] | (r[1] << 8); c->ok = 1; }
-    else c->ok = 0;
-    printf("  ack status=%u%s", st, (len >= 2) ? "" : " (no value)");
-    if (len >= 2) printf(" adc=%u (%.3f V)", c->value, c->value * 3.3 / 4095.0);
-    printf("\n");
+    if (st == 0 && len >= 2 * ADC_NCH) {
+        c->ok = 1;
+        printf("  ack status=%u", st);
+        for (int i = 0; i < ADC_NCH; i++) {
+            c->ch[i] = r[2*i] | (r[2*i+1] << 8);
+            printf("  ADC%d=%u (%.3f V)", i, c->ch[i], c->ch[i] * 3.3 / 4095.0);
+        }
+        printf("\n");
+    } else {
+        c->ok = 0;
+        printf("  ack status=%u (got %u bytes, want %u)\n", st, len, 2 * ADC_NCH);
+    }
 }
 
 int main(int argc, char **argv) {
