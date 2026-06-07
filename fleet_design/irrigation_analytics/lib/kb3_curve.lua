@@ -57,17 +57,26 @@ function M.load_baselines(db_path)
 
     local out = {}
     local n = 0
-    for r in db:nrows("SELECT bin, flow_5_15_med, n_healthy FROM baselines_eto") do
-        local ceiling = tonumber(r.flow_5_15_med)
-        if ceiling and ceiling > 0 then
-            out[M.canonicalize_key(r.bin)] = {
-                ceiling   = ceiling,
-                n_healthy = tonumber(r.n_healthy) or 0,
-            }
-            n = n + 1
+    -- Tolerate the case where KB4 hasn't migrated the schema yet (first boot
+    -- on a fresh Pi). pcall the nrows so a missing table doesn't crash the
+    -- whole robot. Returns empty table + n=0; KB3-curve will simply no-op
+    -- on every tick until kb4_clog populates the schema.
+    local query_ok, query_err = pcall(function()
+        for r in db:nrows("SELECT bin, flow_5_15_med, n_healthy FROM baselines_eto") do
+            local ceiling = tonumber(r.flow_5_15_med)
+            if ceiling and ceiling > 0 then
+                out[M.canonicalize_key(r.bin)] = {
+                    ceiling   = ceiling,
+                    n_healthy = tonumber(r.n_healthy) or 0,
+                }
+                n = n + 1
+            end
         end
-    end
+    end)
     db:close()
+    if not query_ok then
+        return {}, 0, "baselines_eto not ready: " .. tostring(query_err)
+    end
 
     return out, n, nil
 end

@@ -20,7 +20,13 @@
 local cjson         = require("cjson")
 local controller    = require("controller_client")
 local KB1           = require("kb1_overcurrent")
+local WsCommand     = require("ws_command")
 local app_heartbeat = require("app_heartbeat")
+
+-- KB1 arming: only when KB1_ARM_KILL=1 will KB1_KILL events dispatch
+-- SKIP_STATION to the controller. Default off — image is identical
+-- between WSL (disarmed) and Pi production (armed via env).
+local KB1_ARM_KILL = (os.getenv("KB1_ARM_KILL") == "1")
 
 local M = { main = {}, one_shot = {}, boolean = {} }
 
@@ -216,13 +222,31 @@ M.one_shot.KB1_TICK = function(handle, _node)
         })
         if fire_kill then
             arming.fired_kill = true
+            -- Discord first (always)
             local body = string.format(
-                "🚨 KB1 OVERCURRENT KILL — %s\nschedule=%s step=%s\nI=%.3f A > %.1f A absolute threshold\n%s",
+                "🚨 KB1 OVERCURRENT KILL — %s\nschedule=%s step=%s\nI=%.3f A > %.1f A absolute threshold\n%s\n%s",
                 arming.bin_key, tostring(arming.schedule_name),
-                tostring(arming.step), measured_I, KB1.KILL_ABSOLUTE_A, note or "")
+                tostring(arming.step), measured_I, KB1.KILL_ABSOLUTE_A,
+                note or "",
+                KB1_ARM_KILL and "ACTUATED: SKIP_STATION dispatched" or
+                                 "MONITOR-ONLY: SKIP_STATION suppressed (KB1_ARM_KILL not set)")
             local ok, err = push_notify(ps, id, body)
             if not ok then log(id, "Discord push FAILED: %s", tostring(err)) end
-            log(id, "KILL fired bin=%s I=%.3f", arming.bin_key, measured_I)
+            log(id, "KILL fired bin=%s I=%.3f armed=%s",
+                arming.bin_key, measured_I, tostring(KB1_ARM_KILL))
+            -- Actuation: dispatch SKIP_STATION to the controller only when armed.
+            -- ws_command itself has a SKIP_LIVE env safety gate; both must be on
+            -- for an actual POST. On WSL both are off → log-only end-to-end.
+            if KB1_ARM_KILL then
+                local ws_ok, ws_code, ws_err = WsCommand.post("SKIP_STATION", {
+                    schedule_name = arming.schedule_name or "",
+                    step          = tostring(arming.step or ""),
+                    run_time      = "",
+                    logger        = function(m) log(id, "[ws] %s", m) end,
+                })
+                log(id, "ws_command SKIP_STATION → ok=%s code=%s err=%s",
+                    tostring(ws_ok), tostring(ws_code), tostring(ws_err))
+            end
         elseif fire_warn then
             arming.fired_warn = true
             log(id, "WARN fired bin=%s I=%.3f exp=%.3f Δ=%+.3f (DB only)",
