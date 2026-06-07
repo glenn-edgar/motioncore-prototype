@@ -62,23 +62,47 @@ local function unsorted_io_setup(io_setup)
     return table.concat(parts, "/")
 end
 
--- Fetch the newest TIME_HISTORY entry for a bin. Tries both orderings.
--- Returns the raw run record or nil.
-local function fetch_th(opts, bin_sorted, bin_original)
-    -- Build deduped list of keys to try
-    local tried = {}
-    local function try(key)
-        if not key or tried[key] then return nil end
-        tried[key] = true
-        -- API: time_history_bin(bin_key, opts)
-        local ok, runs = pcall(controller.time_history_bin, key, opts)
-        if not ok or not runs then return nil end
-        if type(runs) == "table" and #runs > 0 then
-            return runs[#runs]
-        end
-        return nil
-    end
-    return try(bin_sorted) or try(bin_original)
+-- Fetch the newest TIME_HISTORY entry for a bin. Returns FULL record
+-- with all sensor channels (HUNTER_FLOW_METER, IRRIGATION_CURRENT, …).
+-- Auto-handles the two-key-orderings gotcha by canonical-sort comparison
+-- on the controller side (same pattern as controller_client.time_history_bin
+-- but returns the full record instead of a summary).
+local function fetch_th(opts, bin_key)
+    local TH_DB  = 4
+    local TH_KEY = "[SYSTEM:main_operations][SITE:LaCima][APPLICATION_SUPPORT:APPLICATION_SUPPORT][IRRIGIGATION_SCHEDULING_CONTROL:IRRIGIGATION_SCHEDULING_CONTROL][PACKAGE:IRRIGIGATION_SCHEDULING_CONTROL_DATA][HASH:IRRIGATION_TIME_HISTORY]"
+    local py = string.format([[
+import redis, msgpack, json, sys
+r = redis.Redis(db=%d)
+KEY = %q
+WANT = sorted(%q.split("/"))
+v = r.hget(KEY, %q)
+if v is None:
+    for field in r.hkeys(KEY):
+        f = field.decode() if isinstance(field, bytes) else field
+        if sorted(f.split("/")) == WANT:
+            v = r.hget(KEY, field); break
+if v is None:
+    sys.stdout.write(json.dumps({"_error": "bin not found"})); sys.exit(0)
+runs = msgpack.unpackb(v, raw=False)
+if not runs:
+    sys.stdout.write(json.dumps({"_error": "empty runs"})); sys.exit(0)
+sys.stdout.write(json.dumps(runs[-1], default=str))
+]], TH_DB, TH_KEY, bin_key, bin_key)
+    -- Use the SSH runner inside controller_client (private helper) via
+    -- a small wrapper: write py to a temp file and invoke ssh.
+    local tmp = os.tmpname()
+    local f = io.open(tmp, "w"); if not f then return nil end
+    f:write(py); f:close()
+    local cmd = string.format(
+        "ssh -o ConnectTimeout=%d -o BatchMode=yes %s 'python3 -' < %s 2>/dev/null",
+        opts.timeout_s or 8, opts.ssh_host or "pi@irrigation", tmp)
+    local pipe = io.popen(cmd, "r")
+    if not pipe then os.remove(tmp); return nil end
+    local raw = pipe:read("*a"); pipe:close(); os.remove(tmp)
+    if not raw or raw == "" then return nil end
+    local ok, decoded = pcall(cjson.decode, raw)
+    if not ok or not decoded or decoded._error then return nil end
+    return decoded
 end
 
 -- ----------------------------------------------------------------------
@@ -183,7 +207,7 @@ function M.one_shot.KB4_TICK(handle, params)
                     -- ETO PATH — 4 activities per kb4-eto-spec-2026-06-05.
                     n_processed = n_processed + 1
                     local bl_eto = KB4.get_baseline_eto(kb4.db, bin_sorted)
-                    local th_entry = fetch_th(opts, bin_sorted, bin_original)
+                    local th_entry = fetch_th(opts, bin_sorted)
                     if not th_entry then
                         log(id, "ETO no TH for %s", bin_sorted)
                     else
@@ -290,7 +314,7 @@ function M.one_shot.KB4_TICK(handle, params)
                         log(id, "skip phantom bin %s", bin_sorted)
                     else
                         -- Fetch TIME_HISTORY for this bin
-                        local th_entry = fetch_th(opts, bin_sorted, bin_original)
+                        local th_entry = fetch_th(opts, bin_sorted)
                         if not th_entry then
                             log(id, "no TH for %s (tried sorted+original)", bin_sorted)
                         else

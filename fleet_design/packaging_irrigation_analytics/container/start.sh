@@ -24,6 +24,9 @@ mkdir -p "$FLEET_LOG_DIR"
 # here so failures are caught at boot, not silently during fault analysis.
 mkdir -p "$FLEET_DATA_DIR/kb4"
 
+# KB2 SQLite directory — written by kb2_resistance chain at first tick.
+mkdir -p "$FLEET_DATA_DIR/kb2"
+
 # Stage SSH key/config from the read-only secrets bind mount into /root/.ssh
 # so the openssh client accepts them (strict-perm check requires
 # owner=root + mode 600). Required by controller_client.lua's

@@ -19,7 +19,7 @@ M.capabilities = {
     "irrigation_fault_detection",
 }
 
-M.app_kbs = { "monitor", "detector", "kb4_clog" }
+M.app_kbs = { "monitor", "detector", "kb4_clog", "kb2_resistance" }
 
 -- Controller config — where to fetch popup + past_actions from.
 -- Reused by lib/controller_client.lua (which wraps the SSH+python popup
@@ -63,6 +63,34 @@ M.kb4_clog = {
                        or "/app/irrigation_analytics/data/kb4_ETO_baselines.json",
     eto_valves_path  = os.getenv("ETO_VALVES_JSON")
                        or "/app/irrigation_analytics/data/eto_valves.json",
+}
+
+-- KB2 resistance trend detector. Polls IRRIGATION_VALVE_TEST hash for new
+-- valve_test cycles, computes per-valve coil R via 2-null offset method
+-- (sat_3:1 + sat_4:6, R = 15.6 V / (I_raw - offset)), classifies vs
+-- rolling-median baseline. WSL test phase: monitor-only, Discord on
+-- R_DRIFT_ALERT (sustained 3-cycle) + MASTER_RELAY_CREEP for sat_1:43.
+-- db_path lives on the writable bind mount; no static seed file — baseline
+-- is built up at runtime from the first cycle onward.
+M.kb2_resistance = {
+    ssh_host  = os.getenv("IRRIGATION_CONTROLLER_HOST") or "pi@irrigation",
+    timeout_s = 8,
+    poll_s    = tonumber(os.getenv("IRRIGATION_KB2_POLL_S") or "60"),
+    db_path   = os.getenv("KB2_DB_PATH") or "/var/fleet/kb2/kb2.db",
+}
+
+-- KB3-curve — ETO-aware live leak detector, sister to KB3 hard-kill.
+-- WSL test phase: monitor-only (no SKIP_STATION). Reads baselines_eto
+-- from kb4.db (no separate DB). LEAK at avg5 > ceiling + 5 GPM (Discord).
+-- WARN at avg5 > ceiling + 2 GPM (DB only). Sliding 5-sample average.
+-- ceiling_offset_gpm: set negative (e.g. -3) to force-fire during
+-- end-to-end path verification, then return to 0.
+M.kb3_curve = {
+    db_path             = os.getenv("KB4_DB_PATH") or "/var/fleet/kb4/kb4.db",
+    window_n            = 5,
+    leak_delta_gpm      = tonumber(os.getenv("KB3_CURVE_LEAK_DELTA_GPM") or "5.0"),
+    warn_delta_gpm      = tonumber(os.getenv("KB3_CURVE_WARN_DELTA_GPM") or "2.0"),
+    ceiling_offset_gpm  = tonumber(os.getenv("KB3_CURVE_CEILING_OFFSET_GPM") or "0.0"),
 }
 
 -- Persistence-topology declaration. Three leaves for the v1 skeleton:
