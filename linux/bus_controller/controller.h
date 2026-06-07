@@ -129,6 +129,12 @@ void controller_set_liveness_cb(controller_t *c, controller_liveness_cb cb, void
 typedef void (*controller_flagged_cb)(void *user, uint8_t addr, uint8_t flags);
 void controller_set_flagged_cb(controller_t *c, controller_flagged_cb cb, void *user);
 
+// Raw async-frame callback: fires for any async opcode the controller doesn't
+// itself handle (e.g. KB0's OP_MON_* report frames). addr = source, opcode = cmd.
+typedef void (*controller_raw_cb)(void *user, uint8_t addr, uint16_t opcode,
+                                  const uint8_t *payload, uint16_t len);
+void controller_set_raw_cb(controller_t *c, controller_raw_cb cb, void *user);
+
 // Start/stop the BC autonomous poll sweep (CMD_BUS_POLL_ENABLE). Reply ignored.
 // Returns the request_id (0xFFFF on error).
 uint16_t controller_set_poll_enable(controller_t *c, int on);

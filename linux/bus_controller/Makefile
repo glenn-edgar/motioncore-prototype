@@ -18,6 +18,11 @@ all: step0a step0b step1 step2 step3 step4 step5 step6a step6b step7a step7b1 st
 step0a: step0a_main.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
+# mon_snapshot — drive CMD_MON_SNAPSHOT to the core1 app engine (0xFB), decode the
+# KB0 OP_MON_* report set via the controller raw async-frame callback.
+mon_snapshot: mon_snapshot_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
 # Step 0b — demux reader (reply-vs-async dispatch, monotonic request_ids).
 step0b: step0b_main.c demux.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)

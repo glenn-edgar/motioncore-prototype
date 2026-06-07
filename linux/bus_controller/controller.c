@@ -67,6 +67,9 @@ struct controller {
     controller_flagged_cb  flagged_cb;
     void                  *flagged_user;
 
+    controller_raw_cb      raw_cb;        // unrecognized async frames (e.g. OP_MON_*)
+    void                  *raw_user;
+
     // Step 3: roster recall + push.
     int               have_roster;
     roster_t          roster;
@@ -337,7 +340,10 @@ static void on_event(void *user, const frame_meta_t *meta, const uint8_t *payloa
         break;
 
     default:
-        break;  // DBG_LOG / EVENT / NAK / etc. — later steps own these.
+        // Unrecognized async opcode (e.g. KB0's OP_MON_* report frames) — hand to
+        // the raw callback if one is registered, else drop.
+        if (c->raw_cb) c->raw_cb(c->raw_user, meta->addr, meta->cmd, payload, meta->payload_len);
+        break;
     }
 }
 
@@ -524,6 +530,10 @@ void controller_set_liveness_cb(controller_t *c, controller_liveness_cb cb, void
 
 void controller_set_flagged_cb(controller_t *c, controller_flagged_cb cb, void *user) {
     c->flagged_cb = cb; c->flagged_user = user;
+}
+
+void controller_set_raw_cb(controller_t *c, controller_raw_cb cb, void *user) {
+    c->raw_cb = cb; c->raw_user = user;
 }
 
 uint16_t controller_set_poll_enable(controller_t *c, int on) {
