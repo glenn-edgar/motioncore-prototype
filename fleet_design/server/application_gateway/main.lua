@@ -12,6 +12,7 @@
 local cjson = require("cjson")
 local http  = require("http_server")
 local PC    = require("persistence_client")
+local irrigation = require("irrigation_dashboard")
 
 -- Stay consistent with the persistence query server: empty Lua tables
 -- mean empty arrays in our JSON, not empty objects.
@@ -156,6 +157,9 @@ end)
 srv:route("GET", "/healthz", function(_req)
     return 200, { "Content-Type: text/plain" }, "ok\n"
 end)
+
+-- Irrigation dashboard (read views first; write views land later).
+irrigation.register_routes(srv)
 
 srv:serve()
 pc:close()

@@ -19,7 +19,8 @@ M.capabilities = {
     "irrigation_fault_detection",
 }
 
-M.app_kbs = { "monitor", "detector", "kb4_clog", "kb2_resistance" }
+M.app_kbs = { "monitor", "detector", "kb4_clog", "kb2_resistance",
+              "kb1_overcurrent", "kb2_within_run" }
 
 -- Controller config — where to fetch popup + past_actions from.
 -- Reused by lib/controller_client.lua (which wraps the SSH+python popup
@@ -77,6 +78,35 @@ M.kb2_resistance = {
     timeout_s = 8,
     poll_s    = tonumber(os.getenv("IRRIGATION_KB2_POLL_S") or "60"),
     db_path   = os.getenv("KB2_DB_PATH") or "/var/fleet/kb2/kb2.db",
+}
+
+-- KB1 overcurrent — live current monitor. Reads KB2's per-valve coil R
+-- from /var/fleet/kb2/kb2.db at boot + each STATION_START. Computes expected
+-- current per active bin as V/R_master + sum(V/R_zone) + null_offset, with
+-- empirical 0.93 wire-drop multiplier. KILL @ I > 1.8 A absolute (Discord),
+-- WARN @ I > expected + 0.3 A (DB). WSL test phase = monitor-only.
+M.kb1_overcurrent = {
+    ssh_host    = os.getenv("IRRIGATION_CONTROLLER_HOST") or "pi@irrigation",
+    timeout_s   = 8,
+    poll_s      = tonumber(os.getenv("IRRIGATION_KB1_POLL_S") or "30"),
+    db_path     = os.getenv("KB1_DB_PATH")     or "/var/fleet/kb1/kb1.db",
+    kb2_db_path = os.getenv("KB2_DB_PATH")     or "/var/fleet/kb2/kb2.db",
+}
+
+-- KB2 within-run — per-minute R analysis on ETO STEP_COMPLETE. Pulls
+-- TIME_HISTORY's IRRIGATION_CURRENT.data[], back-derives R(t) per minute
+-- via parallel-coil math (R_total includes master + n_zone coils), detects
+-- R_HEATING_DURING_RUN / R_STEP_DURING_RUN / R_END_HIGH / R_INSTABILITY.
+-- Discord push on R_STEP_DURING_RUN (intermittent dropout) +
+-- R_HEATING_DURING_RUN (predictive summer thermal failure).
+M.kb2_within_run = {
+    ssh_host    = os.getenv("IRRIGATION_CONTROLLER_HOST") or "pi@irrigation",
+    timeout_s   = 8,
+    poll_s      = tonumber(os.getenv("IRRIGATION_KB2_WR_POLL_S") or "60"),
+    -- Separate DB file to avoid SQLite lock contention with kb2_resistance
+    db_path     = os.getenv("KB2_WR_DB_PATH") or "/var/fleet/kb2_wr/kb2_wr.db",
+    -- Read-only reference to kb2_resistance's baseline DB
+    kb2_db_path = os.getenv("KB2_DB_PATH")    or "/var/fleet/kb2/kb2.db",
 }
 
 -- KB3-curve — ETO-aware live leak detector, sister to KB3 hard-kill.

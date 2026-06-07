@@ -24,8 +24,14 @@ mkdir -p "$FLEET_LOG_DIR"
 # here so failures are caught at boot, not silently during fault analysis.
 mkdir -p "$FLEET_DATA_DIR/kb4"
 
-# KB2 SQLite directory — written by kb2_resistance chain at first tick.
+# KB2 SQLite directory — written by kb2_resistance chain.
 mkdir -p "$FLEET_DATA_DIR/kb2"
+
+# KB2-within-run SQLite directory — separate to avoid lock contention with kb2.
+mkdir -p "$FLEET_DATA_DIR/kb2_wr"
+
+# KB1 SQLite directory — written by kb1_overcurrent chain.
+mkdir -p "$FLEET_DATA_DIR/kb1"
 
 # Stage SSH key/config from the read-only secrets bind mount into /root/.ssh
 # so the openssh client accepts them (strict-perm check requires

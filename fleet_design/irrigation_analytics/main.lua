@@ -73,9 +73,12 @@ local monitor_fns  = require("monitor_user_functions")
 local detector_fns = require("detector_user_functions")
 local kb4_clog_fns = require("kb4_clog_user_functions")
 local kb2_resistance_fns = require("kb2_resistance_user_functions")
+local kb1_overcurrent_fns = require("kb1_overcurrent_user_functions")
+local kb2_within_run_fns = require("kb2_within_run_user_functions")
 fn_registry.register_functions(ir, builtins,
     conn_fns.registry, monitor_fns.registry, detector_fns.registry,
-    kb4_clog_fns.registry, kb2_resistance_fns.registry)
+    kb4_clog_fns.registry, kb2_resistance_fns.registry,
+    kb1_overcurrent_fns.registry, kb2_within_run_fns.registry)
 
 local ok, missing = fn_registry.validate(ir)
 if not ok then

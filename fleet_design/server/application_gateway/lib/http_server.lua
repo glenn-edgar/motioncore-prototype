@@ -1,9 +1,13 @@
 -- server/application_gateway/lib/http_server.lua
 --
--- Minimal HTTP/1.1 GET-only server on top of LuaSocket. Single-process,
+-- Minimal HTTP/1.1 server (GET + POST) on top of LuaSocket. Single-process,
 -- serial request handling: fine for a small dashboard with one or two
 -- viewers; not for production load. Keeps the dependency surface tiny
 -- (no framework, no async runtime).
+--
+-- POST bodies: if Content-Length is set, the body is read into req.body
+-- (raw bytes). If Content-Type is application/x-www-form-urlencoded,
+-- the body is parsed into req.form (table of decoded fields).
 --
 -- Usage:
 --   local http = require("http_server")
@@ -23,9 +27,12 @@ M.__index = M
 local STATUS_TEXT = {
     [200] = "OK",
     [204] = "No Content",
+    [302] = "Found",
+    [303] = "See Other",
     [400] = "Bad Request",
     [404] = "Not Found",
     [405] = "Method Not Allowed",
+    [413] = "Payload Too Large",
     [500] = "Internal Server Error",
 }
 
@@ -107,13 +114,26 @@ local function read_request(client)
         local k, v = line:match("^([^:]+):%s*(.*)$")
         if k then headers[k:lower()] = v end
     end
-    -- (Body unused for GET-only; if a Content-Length is set the caller
-    -- can read it from the socket later. We don't right now.)
+    -- Read POST/PUT body if Content-Length is present.
+    local body, form = nil, nil
+    local cl = tonumber(headers["content-length"] or "")
+    if cl and cl > 0 then
+        if cl > 1024 * 1024 then return nil, "body too large" end
+        local b, berr = client:receive(cl)
+        if not b then return nil, "body read: " .. tostring(berr) end
+        body = b
+        local ct = (headers["content-type"] or ""):lower()
+        if ct:find("application/x%-www%-form%-urlencoded") then
+            form = parse_query(body)
+        end
+    end
     return {
         method  = method,
         path    = path,
         query   = parse_query(qs),
         headers = headers,
+        body    = body,
+        form    = form,
     }
 end
 
