@@ -36,7 +36,7 @@
 #define IL_TF_TRUE      1     // watches satisfied (safe)
 #define IL_TF_FALSE     2     // a watch failed (tripped / ERR-veto)
 
-#define SLAVE_ADDR      1
+static uint8_t g_slave_addr = 1;   // slave RS-485 addr (low byte of instance_id); 3rd arg overrides
 #define A1_AIN_CHANNEL  4      // D1/A1 = PA04 = AIN[4]
 
 static volatile sig_atomic_t g_stop = 0;
@@ -64,7 +64,7 @@ static void on_reply(void *user, uint16_t rid, uint8_t status,
 // -1 on send failure. The firmware shell status lands in out->status.
 static int call(controller_t *c, uint16_t cmd, const uint8_t *args, uint16_t alen, reply_t *out) {
     g_reply.done = 0;
-    uint16_t rid = controller_send_shell_to(c, SLAVE_ADDR, cmd, args, alen, on_reply, &g_reply);
+    uint16_t rid = controller_send_shell_to(c, g_slave_addr, cmd, args, alen, on_reply, &g_reply);
     if (rid == 0xFFFF) return -1;
     uint64_t deadline = mono_ms() + 4000;
     while (!g_reply.done && mono_ms() < deadline && !g_stop) {
@@ -226,6 +226,7 @@ int main(int argc, char **argv) {
     signal(SIGINT, on_sigint);
     const char *device = (argc > 1 && argv[1][0] != '-') ? argv[1] : NULL;
     const char *rpath  = (argc > 2) ? argv[2] : "rosters/one_slave.conf";
+    if (argc > 3) g_slave_addr = (uint8_t)atoi(argv[3]);   // slave addr override
 
     roster_t roster; char err[128] = {0};
     if (roster_load_file(rpath, &roster, err, sizeof err) != 0) {
