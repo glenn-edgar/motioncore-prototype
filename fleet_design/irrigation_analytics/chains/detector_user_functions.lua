@@ -308,12 +308,41 @@ M.one_shot.DETECTOR_TICK = function(handle, _node)
         irr_window_n         = irr_window_n,
     }) or {}
 
+    -- 8/8b prologue — fetch the LIVE per-minute HUNTER_FLOW_METER reading
+    -- from IRRIGATION_MARK_DATA. This is in correct GPM units that match
+    -- the baseline ceilings. popup.FILTERED_HUNTER_VALVE is the WRONG
+    -- source — its value is ~2-3× lower than per-minute binned HUNTER
+    -- (different scale/encoding); using it caused KB3 / KB3-curve to
+    -- silently miss the 2026-06-08 sat_3:15 16 GPM spike + sustained
+    -- 10-13 GPM over baseline 10.8. Bug found 2026-06-08 PM.
+    --
+    -- Falls back to popup.FILTERED_HUNTER_VALVE if MARK_DATA fetch fails
+    -- (defensive — better stale fallback than no signal).
+    local live_hunter_gpm = nil
+    if state == SM.states.ACTIVE_RUN and st.arming and st.arming.bin_key then
+        local md, mderr = controller.mark_hunter_latest(st.arming.bin_key, {
+            ssh_host  = ctrl.ssh_host,
+            timeout_s = ctrl.timeout_s,
+        })
+        if md and md.value then
+            live_hunter_gpm = tonumber(md.value)
+        else
+            -- Fallback only (and log once per run that we're degraded).
+            if not st.arming.mark_fallback_logged then
+                log(id, "mark_hunter unavailable (%s) — falling back to popup FILTERED_HUNTER_VALVE",
+                    tostring(mderr))
+                st.arming.mark_fallback_logged = true
+            end
+            live_hunter_gpm = tonumber(popup.FILTERED_HUNTER_VALVE)
+        end
+    end
+
     -- 8) KB3 LIVE — only during ACTIVE_RUN, only when baselines available
     if state == SM.states.ACTIVE_RUN
        and st.arming and st.arming.bin_key
        and baselines then
         local bl   = Baselines.lookup(baselines, st.arming.bin_key)
-        local filt = tonumber(popup.FILTERED_HUNTER_VALVE)
+        local filt = live_hunter_gpm
         local step = tonumber(popup.STEP)
         if bl and filt and step then
             local res = KB3Live.update(bl, st.arming.kb3, filt, step)
@@ -326,7 +355,7 @@ M.one_shot.DETECTOR_TICK = function(handle, _node)
         end
     end
 
-    -- 8b) KB3 CURVE — ETO-aware live leak detector (WSL test, monitor-only).
+    -- 8b) KB3 CURVE — ETO-aware live leak detector.
     -- Only fires on ETO bins (those with a baselines_eto row). Non-ETO short
     -- runs fall through silently — no flat-ref fallback by design.
     local kb3c_baselines = bb._kb3_curve_baselines
@@ -335,7 +364,7 @@ M.one_shot.DETECTOR_TICK = function(handle, _node)
        and st.arming and st.arming.bin_key
        and kb3c_baselines then
         local entry = KB3Curve.lookup(kb3c_baselines, st.arming.bin_key)
-        local filt  = tonumber(popup.FILTERED_HUNTER_VALVE)
+        local filt  = live_hunter_gpm
         local step  = tonumber(popup.STEP)
         if entry and filt then
             local res = KB3Curve.update(entry, st.arming.kb3_curve, filt, step, kb3c_cfg)
@@ -352,8 +381,8 @@ M.one_shot.DETECTOR_TICK = function(handle, _node)
                 end
                 -- Every-tick math log (helps verify the path on healthy runs).
                 if res.win_n >= KB3Curve.WINDOW_N then
-                    log(id, "kb3_curve [%s]: avg5=%.2f ceil=%.2f Δ=%+.2f step=%s",
-                        st.arming.bin_key, res.avg5, res.eff_ceiling,
+                    log(id, "kb3_curve [%s]: sample=%.1f avg5=%.2f ceil=%.2f Δ=%+.2f step=%s",
+                        st.arming.bin_key, filt, res.avg5, res.eff_ceiling,
                         res.avg5 - res.eff_ceiling, tostring(res.step))
                 end
             end

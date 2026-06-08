@@ -227,4 +227,57 @@ sys.stdout.write(json.dumps(out, default=str))
     return decoded
 end
 
+-- mark_hunter_latest(bin_key, opts) — newest per-minute HUNTER_FLOW_METER
+-- reading from the controller's IRRIGATION_MARK_DATA hash (the in-progress
+-- run's binned data). This is the CORRECT GPM unit that matches the baseline
+-- ceiling — popup.FILTERED_HUNTER_VALVE is a different scale (~2-3× lower
+-- than the per-minute binned reading) and was causing KB3 / KB3-curve to
+-- silently miss real over-baseline events on 2026-06-08 sat_3:15 (16 GPM
+-- spike + 30+ min sustained 10-13 GPM never triggered any fire).
+--
+-- Returns { value = GPM_last_minute, n = sample_count } on success, or
+-- (nil, err) on failure. Tries permutations of the bin_key to handle the
+-- two-key-orderings gotcha [[two-key-orderings-2026-05-27]].
+local MARK_DATA_DB  = 4
+local MARK_DATA_KEY =
+    "[SYSTEM:main_operations][SITE:LaCima][APPLICATION_SUPPORT:APPLICATION_SUPPORT]" ..
+    "[IRRIGIGATION_SCHEDULING_CONTROL:IRRIGIGATION_SCHEDULING_CONTROL]" ..
+    "[PACKAGE:IRRIGIGATION_SCHEDULING_CONTROL_DATA][HASH:IRRIGATION_MARK_DATA]"
+
+function M.mark_hunter_latest(bin_key, opts)
+    if not bin_key or bin_key == "" then return nil, "bin_key empty" end
+    opts = opts or {}
+    local ssh_host  = opts.ssh_host  or DEFAULT_SSH_HOST
+    local timeout_s = opts.timeout_s or DEFAULT_SSH_TIMEOUT
+    local py = string.format([[
+import redis, msgpack, json, sys
+r = redis.Redis(db=%d)
+KEY = %q
+WANT = sorted(%q.split("/"))
+v = r.hget(KEY, %q)
+if v is None:
+    for field in r.hkeys(KEY):
+        f = field.decode() if isinstance(field, bytes) else field
+        if sorted(f.split("/")) == WANT:
+            v = r.hget(KEY, field); break
+if v is None:
+    sys.stdout.write(json.dumps({"_error": "bin not in mark_data"})); sys.exit(0)
+d = msgpack.unpackb(v, raw=False)
+hf = (d.get("HUNTER_FLOW_METER") or {}).get("data") or []
+sys.stdout.write(json.dumps({"value": hf[-1] if hf else None, "n": len(hf)}))
+]], MARK_DATA_DB, MARK_DATA_KEY, bin_key, bin_key)
+    local raw = run_remote_python(ssh_host, timeout_s, py)
+    if not raw or raw == "" then
+        return nil, "controller_client: mark_hunter empty"
+    end
+    local ok, decoded = pcall(cjson.decode, raw)
+    if not ok then
+        return nil, "controller_client: mark_hunter decode failed: " .. raw:sub(1, 200)
+    end
+    if decoded._error then
+        return nil, "controller_client: " .. tostring(decoded._error)
+    end
+    return decoded
+end
+
 return M
