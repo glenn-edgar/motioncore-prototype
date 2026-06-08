@@ -47,6 +47,14 @@ mon_gpio: mon_gpio_main.c controller.c demux.c identity.c roster.c cmd_tracker.c
 mon_servo: mon_servo_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
+# mon_pwm — verify GP14 PWM duty via ADC0 mean (GP14->GP26 jumper).
+mon_pwm: mon_pwm_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+# mon_quad — verify GP17/18 quad decoder with a software fake encoder (GP2->GP17, GP3->GP18).
+mon_quad: mon_quad_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
 # Step 0b — demux reader (reply-vs-async dispatch, monotonic request_ids).
 step0b: step0b_main.c demux.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
