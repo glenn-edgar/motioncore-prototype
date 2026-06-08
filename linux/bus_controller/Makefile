@@ -35,6 +35,10 @@ mon_adc: mon_adc_main.c controller.c demux.c identity.c roster.c cmd_tracker.c u
 dac_adc_xcheck: dac_adc_xcheck_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
+# mon_adc_stats — sweep slave DAC, read the Pico 10 Hz mean/max/rms streams (CMD_ADC_STATS).
+mon_adc_stats: mon_adc_stats_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
 # Step 0b — demux reader (reply-vs-async dispatch, monotonic request_ids).
 step0b: step0b_main.c demux.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
