@@ -25,6 +25,7 @@
 #define CMD_GPIO_READ    0x0102
 #define CMD_PULSE_READ   0x0107
 #define CMD_PULSE_CLEAR  0x0108
+#define CMD_SERVO_STOP   0x0110
 
 #define MODE_OUTPUT          1
 #define MODE_INPUT_PULLDOWN  3
@@ -118,6 +119,7 @@ int main(int argc, char **argv) {
 
     int pass = 1;
     reply_t r;
+    call_to(ctrl, APPCORE, CMD_SERVO_STOP, NULL, 0, &r);   // defensive: free GP2/GP3 if a prior run claimed servos
 
     /* ---- Test 1: GPIO digital loopback ---- */
     printf("[1] GPIO loopback (GP%u=OUTPUT, GP%u=INPUT_PULLDOWN)\n", DRIVE_PIN, SENSE_PIN);

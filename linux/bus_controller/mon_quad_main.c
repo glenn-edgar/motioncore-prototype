@@ -21,6 +21,7 @@
 #define CMD_GPIO_WRITE   0x0101
 #define CMD_QUAD_READ    0x010A
 #define CMD_QUAD_CLEAR   0x010B
+#define CMD_SERVO_STOP   0x0110
 #define MODE_OUTPUT      1
 #define PIN_A  2     /* GP2 -> GP17 */
 #define PIN_B  3     /* GP3 -> GP18 */
@@ -89,6 +90,7 @@ int main(int argc, char **argv) {
     printf("[quad] OPERATIONAL; GP2->GP17(A), GP3->GP18(B); %d cycles each way\n\n", K);
 
     int pass = 1; reply_t r;
+    call_to(ctrl, APPCORE, CMD_SERVO_STOP, NULL, 0, &r);   // defensive: free GP2/GP3 if a prior run claimed servos
     uint8_t cfgA[3] = { 0, PIN_A, MODE_OUTPUT }, cfgB[3] = { 0, PIN_B, MODE_OUTPUT };
     if (call_to(ctrl, APPCORE, CMD_GPIO_CONFIG, cfgA, 3, &r) != 0 || r.status != 0) pass = 0;
     if (call_to(ctrl, APPCORE, CMD_GPIO_CONFIG, cfgB, 3, &r) != 0 || r.status != 0) pass = 0;

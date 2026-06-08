@@ -55,6 +55,14 @@ mon_pwm: mon_pwm_main.c controller.c demux.c identity.c roster.c cmd_tracker.c u
 mon_quad: mon_quad_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
+# mon_i2c — scan the I2C manager bus + optional register read (i2c1 GP10/11).
+mon_i2c: mon_i2c_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+# mon_servo_stop — verify servo mode terminates and the pin returns to GPIO (no jumper).
+mon_servo_stop: mon_servo_stop_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
 # Step 0b — demux reader (reply-vs-async dispatch, monotonic request_ids).
 step0b: step0b_main.c demux.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
