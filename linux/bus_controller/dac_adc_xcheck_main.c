@@ -55,6 +55,9 @@ int main(int argc, char **argv) {
     const char *dev   = (argc > 1 && argv[1][0] != '-') ? argv[1] : NULL;
     const char *rpath = (argc > 2) ? argv[2] : "rosters/slave3.conf";
     uint8_t slave     = (argc > 3) ? (uint8_t)atoi(argv[3]) : 3;
+    unsigned sc       = (argc > 4) ? (unsigned)atoi(argv[4]) : 0;   // ADC channel to score (0/1/2)
+    if (sc > 2) sc = 2;
+    const char *pinname[] = { "GP26/pin31", "GP27/pin32", "GP28/pin34" };
 
     roster_t roster; char err[128] = {0};
     if (roster_load_file(rpath, &roster, err, sizeof err) != 0) {
@@ -80,7 +83,8 @@ int main(int argc, char **argv) {
         struct timespec t = { 0, 3 * 1000 * 1000 }; nanosleep(&t, NULL);
     }
     if (!enabled) { fprintf(stderr, "[xcheck] never reached OPERATIONAL\n"); link_close(ep); return 1; }
-    printf("[xcheck] OPERATIONAL; slave=%u DAC(A0) -> Pico ADC0 (GP26)\n\n", slave);
+    printf("[xcheck] OPERATIONAL; slave=%u DAC(A0) -> scoring Pico ADC%u (%s)\n\n",
+           slave, sc, pinname[sc]);
 
     const uint16_t pts[] = { 0, 128, 256, 384, 512, 640, 768, 896, 1023 };
     reply_t r; int pass = 1, n_ok = 0, n_tot = 0;
@@ -94,14 +98,16 @@ int main(int argc, char **argv) {
         if (call_to(ctrl, APPCORE, CMD_ADC_READ, NULL, 0, &r) != 0 || r.status != 0 || r.len < 2) {
             printf("  DAC=%4u  ADC read FAIL (status=%u len=%u)\n", v, r.status, r.len); pass = 0; continue;
         }
-        uint16_t a0 = rd_u16(r.buf);
-        uint16_t a1 = (r.len >= 4) ? rd_u16(r.buf + 2) : 0;
-        uint16_t a2 = (r.len >= 6) ? rd_u16(r.buf + 4) : 0;
+        uint16_t a[3] = { rd_u16(r.buf),
+                          (r.len >= 4) ? rd_u16(r.buf + 2) : 0,
+                          (r.len >= 6) ? rd_u16(r.buf + 4) : 0 };
+        uint16_t as = a[sc];
         uint16_t exp = (uint16_t)(4u * v);
-        int near = (a0 + 250 >= exp) && (exp + 250 >= a0);   // ~5% + offset tolerance
+        int near = (as + 250 >= exp) && (exp + 250 >= as);   // ~5% + offset tolerance
         n_tot++; if (near) n_ok++; else pass = 0;
-        printf("  DAC=%4u (%.3fV)  ADC0=%4u (%.3fV)  exp~%4u  %s   [ADC1=%4u ADC2=%4u]\n",
-               v, v * 3.3 / 1023.0, a0, a0 * 3.3 / 4095.0, exp, near ? "ok" : "OFF", a1, a2);
+        printf("  DAC=%4u (%.3fV)  ADC%u=%4u (%.3fV)  exp~%4u  %s   [ADC0=%4u ADC1=%4u ADC2=%4u]\n",
+               v, v * 3.3 / 1023.0, sc, as, as * 3.3 / 4095.0, exp, near ? "ok" : "OFF",
+               a[0], a[1], a[2]);
     }
     printf("\n[dac_adc_xcheck] %s (%d/%d points within tolerance)\n",
            pass ? "PASS" : "FAIL", n_ok, n_tot);
