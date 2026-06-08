@@ -31,6 +31,10 @@ mon_stream: mon_stream_main.c controller.c demux.c identity.c roster.c cmd_track
 mon_adc: mon_adc_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
+# dac_adc_xcheck — sweep the slave DAC (A0) and read it on the Pico ADC0 (jumpered).
+dac_adc_xcheck: dac_adc_xcheck_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
 # Step 0b — demux reader (reply-vs-async dispatch, monotonic request_ids).
 step0b: step0b_main.c demux.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
