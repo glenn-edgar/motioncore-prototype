@@ -98,6 +98,9 @@ COPY irrigation_analytics/data/kb4_nonETO_baselines.json /app/irrigation_analyti
 COPY irrigation_analytics/data/kb4_ETO_baselines.json    /app/irrigation_analytics/data/kb4_ETO_baselines.json
 COPY irrigation_analytics/data/eto_valves.json           /app/irrigation_analytics/data/eto_valves.json
 
+# KB2 topology — per-valve branch + expected_coil_R for cohort analysis.
+COPY irrigation_analytics/data/kb2_topology.json         /app/irrigation_analytics/data/kb2_topology.json
+
 # ---- Container init + router config + supervisor ---------------------------
 COPY packaging_irrigation_analytics/container/start.sh     /app/start.sh
 COPY packaging_irrigation_analytics/container/zenohd.json5 /etc/zenohd.json5

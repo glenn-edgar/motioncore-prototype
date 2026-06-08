@@ -141,6 +141,15 @@ M.one_shot.KB2_TICK = function(handle, _node)
         end
         st.db = db
         log(id, "db ready at %s", db_path)
+        -- Load topology JSON for branch / coil_R cohort analysis.
+        local topology_path = cfg.topology_path
+            or "/app/irrigation_analytics/data/kb2_topology.json"
+        local n_topo, topo_err = KB2.load_topology(topology_path)
+        if n_topo > 0 then
+            log(id, "loaded %d topology entries from %s", n_topo, topology_path)
+        else
+            log(id, "topology load skipped/failed: %s", tostring(topo_err))
+        end
     end
     local db = st.db
 
@@ -207,10 +216,31 @@ M.one_shot.KB2_TICK = function(handle, _node)
 
     local notify_lines = {}
 
+    -- ===== Cohort pre-pass: compute R per valve, then wire R per branch =====
+    -- This is the new 2026-06-08 cohort analysis layer. We do TWO passes:
+    --   1. Compute R for every valve (no classify yet) — build R_table.
+    --   2. From R_table + topology, compute wire_R per branch.
+    --   3. Per-valve loop now has access to coil_R and branch medians.
+    local R_table = {}
     for _, valve in ipairs(KB2.VALVE_LIST) do
         local I_raw = latest[valve]
         if I_raw then
             local R = KB2.compute_R(I_raw, offset)
+            if R then R_table[valve] = R end
+        end
+    end
+    local wire_R_branch = KB2.compute_wire_R_per_branch(R_table)
+    -- Compute coil_R per valve, then per-branch median coil_R
+    local coil_R_table = {}
+    for valve, R in pairs(R_table) do
+        coil_R_table[valve] = KB2.compute_coil_R(valve, R, wire_R_branch)
+    end
+    local branch_median_coil = KB2.compute_branch_median_coil(coil_R_table)
+
+    for _, valve in ipairs(KB2.VALVE_LIST) do
+        local I_raw = latest[valve]
+        if I_raw then
+            local R = R_table[valve]
             local baseline = KB2.load_baseline(db, valve)
             local baseline_med = baseline and baseline.R_med or nil
             local prev_R       = baseline and baseline.last_R or nil
@@ -222,21 +252,59 @@ M.one_shot.KB2_TICK = function(handle, _node)
             local cls, sev, d_base, d_step, note =
                 KB2.classify(R, baseline_med, prev_R, valve)
 
+            -- Cohort classification (independent of baseline drift)
+            local topo = KB2.TOPOLOGY[valve] or {}
+            local branch = topo.branch
+            local coil_R = coil_R_table[valve]
+            local bm_coil = branch and branch_median_coil[branch] or nil
+            local coil_cls, _coil_sev, cohort_dev, _coil_note =
+                KB2.classify_coil_vs_cohort(valve, coil_R, bm_coil)
+
             KB2.insert_run(db, valve, {
-                ts_ms          = cycle_ms,
-                cycle_id       = cycle_id,
-                I_raw          = I_raw,
-                offset_used    = offset,
-                R_calc         = R,
-                baseline_used  = baseline_med,
-                prev_R         = prev_R,
-                delta_baseline = d_base,
-                delta_step     = d_step,
-                cls            = cls,
-                severity       = sev,
-                note           = note,
+                ts_ms              = cycle_ms,
+                cycle_id           = cycle_id,
+                I_raw              = I_raw,
+                offset_used        = offset,
+                R_calc             = R,
+                baseline_used      = baseline_med,
+                prev_R             = prev_R,
+                delta_baseline     = d_base,
+                delta_step         = d_step,
+                cls                = cls,
+                severity           = sev,
+                note               = note,
+                -- cohort fields (2026-06-08)
+                branch             = branch,
+                wire_R_branch      = branch and wire_R_branch[branch] or nil,
+                coil_R             = coil_R,
+                branch_median_coil = bm_coil,
+                cohort_deviation   = cohort_dev,
+                coil_cls           = coil_cls,
             })
             processed = processed + 1
+
+            -- Coil cohort flagging: log + Discord-elevation
+            if coil_cls == "COIL_DRIFT_WARN" then
+                flagged_warn = flagged_warn + 1
+            elseif coil_cls == "COIL_DRIFT_ALERT_CANDIDATE" then
+                -- Combine with baseline-drift signal: if BOTH the per-cycle
+                -- baseline drift AND the cohort deviation point the same way,
+                -- elevate to Discord. This is the "two independent sources
+                -- agree" promotion you wanted.
+                local baseline_dir = d_base and direction_of(d_base)
+                local cohort_dir = direction_of(cohort_dev)
+                local joint = (baseline_dir and baseline_dir == cohort_dir)
+                if joint or (cohort_dev and math.abs(cohort_dev) > 8) then
+                    flagged_alert = flagged_alert + 1
+                    notify_lines[#notify_lines+1] = string.format(
+                        "COIL_ALERT %s (%s) — coil_R=%.1f, branch_med=%.1f, dev=%+.1f%s",
+                        valve, tostring(branch),
+                        coil_R or 0, bm_coil or 0, cohort_dev or 0,
+                        joint and " [confirmed by baseline drift]" or " [|dev|>8]")
+                else
+                    flagged_warn = flagged_warn + 1
+                end
+            end
 
             -- Update baseline rolling median on OK / R_STEP_NOTED. Both contribute.
             if R and (cls == "OK" or cls == "R_STEP_NOTED") then
@@ -315,6 +383,15 @@ M.one_shot.KB2_TICK = function(handle, _node)
 
     log(id, "cycle %d processed: %d valves, %d warn, %d alert, offset=%.4f A",
         cycle_id, processed, flagged_warn, flagged_alert, offset)
+    -- Per-branch wire R summary
+    local branch_summary = {}
+    for branch, wr in pairs(wire_R_branch) do
+        branch_summary[#branch_summary+1] = string.format("%s=%.1f", branch, wr)
+    end
+    table.sort(branch_summary)
+    if #branch_summary > 0 then
+        log(id, "wire_R per branch: %s", table.concat(branch_summary, ", "))
+    end
     app_heartbeat.stamp(handle, "kb2_resistance", "ok",
         string.format("cycle=%d processed=%d warn=%d alert=%d offset=%.3f",
             cycle_id, processed, flagged_warn, flagged_alert, offset),

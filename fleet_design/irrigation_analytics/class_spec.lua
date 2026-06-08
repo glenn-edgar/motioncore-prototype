@@ -74,10 +74,12 @@ M.kb4_clog = {
 -- db_path lives on the writable bind mount; no static seed file — baseline
 -- is built up at runtime from the first cycle onward.
 M.kb2_resistance = {
-    ssh_host  = os.getenv("IRRIGATION_CONTROLLER_HOST") or "pi@irrigation",
-    timeout_s = 8,
-    poll_s    = tonumber(os.getenv("IRRIGATION_KB2_POLL_S") or "60"),
-    db_path   = os.getenv("KB2_DB_PATH") or "/var/fleet/kb2/kb2.db",
+    ssh_host       = os.getenv("IRRIGATION_CONTROLLER_HOST") or "pi@irrigation",
+    timeout_s      = 8,
+    poll_s         = tonumber(os.getenv("IRRIGATION_KB2_POLL_S") or "60"),
+    db_path        = os.getenv("KB2_DB_PATH") or "/var/fleet/kb2/kb2.db",
+    topology_path  = os.getenv("KB2_TOPOLOGY_JSON")
+                     or "/app/irrigation_analytics/data/kb2_topology.json",
 }
 
 -- KB1 overcurrent — live current monitor. Reads KB2's per-valve coil R

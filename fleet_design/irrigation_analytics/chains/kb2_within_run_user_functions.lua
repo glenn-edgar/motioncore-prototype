@@ -252,6 +252,23 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
                         result.R_end or 0,
                         result.slope_ohm_per_min or 0,
                         result.cls)
+                    -- Cross-correlate with KB2 baseline R (per-cycle valve_test value).
+                    -- For single-zone bins (most ETO bins), the implied within-run
+                    -- coil R can be compared to KB2's latest baseline_R for that
+                    -- valve. Log the comparison; future logic can elevate to Discord
+                    -- when both sources flag the same valve same direction.
+                    if #valves == 1 then
+                        local zone_valve = valves[1]
+                        local kb2_R = st.kb2_R and st.kb2_R[zone_valve]
+                        if kb2_R and result.R_med then
+                            local delta_kb2 = result.R_med - kb2_R
+                            if math.abs(delta_kb2) > 3 then
+                                log(id, "CROSS-CORR %s: within-run R_med=%.1f vs KB2 baseline %.1f Δ=%+.1f Ω%s",
+                                    zone_valve, result.R_med, kb2_R, delta_kb2,
+                                    math.abs(delta_kb2) > 5 and " [notable]" or "")
+                            end
+                        end
+                    end
                     if result.severity == "alert" or result.cls == "R_HEATING_DURING_RUN" then
                         flagged = flagged + 1
                         local body = string.format(

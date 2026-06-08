@@ -41,6 +41,7 @@ M.NEAR_NULL_REJECT_COUNT   = 8      -- >N near-null readings → reject cycle va
 M.NULL_VALVES = { "satellite_3:1", "satellite_4:6" }
 
 -- Per-valve topology metadata. Anything not listed uses defaults.
+-- Loaded at boot from data/kb2_topology.json — see M.load_topology().
 M.TOPOLOGY = {
     ["satellite_1:43"] = {
         is_master = true,
@@ -51,6 +52,10 @@ M.TOPOLOGY = {
         note = "two ~46 Ω coils in parallel = 23 Ω; half-coil failure → R doubles to ~46",
     },
 }
+
+-- Coil-vs-cohort detection thresholds.
+M.COIL_DRIFT_WARN_OHM  = 3.0  -- coil R deviates from branch median by > 3 Ω → DB warn
+M.COIL_DRIFT_ALERT_OHM = 5.0  -- > 5 Ω AND streak ≥ 3 cycles → Discord
 
 -- 43 driven valves (excludes the 2 nulls used for offset).
 M.VALVE_LIST = {
@@ -70,6 +75,28 @@ M.VALVE_LIST = {
 -- =========================================================================
 -- Math
 -- =========================================================================
+
+-- Load topology JSON at boot. Merges into M.TOPOLOGY (preserving any
+-- defaults already there). Returns count loaded.
+function M.load_topology(path)
+    local cjson = require("cjson")
+    local fh = io.open(path, "r")
+    if not fh then return 0, "cannot open " .. tostring(path) end
+    local raw = fh:read("*a"); fh:close()
+    if not raw or raw == "" then return 0, "empty file" end
+    local ok, decoded = pcall(cjson.decode, raw)
+    if not ok or type(decoded) ~= "table" then
+        return 0, "decode failed: " .. tostring(decoded)
+    end
+    local valves = decoded.valves or {}
+    local n = 0
+    for v, t in pairs(valves) do
+        M.TOPOLOGY[v] = M.TOPOLOGY[v] or {}
+        for k, val in pairs(t) do M.TOPOLOGY[v][k] = val end
+        n = n + 1
+    end
+    return n, nil
+end
 
 function M.compute_offset_2null(currents)
     local n31 = currents[M.NULL_VALVES[1]]
@@ -107,6 +134,108 @@ function M.push_ring(ring, value, cap)
     ring[#ring+1] = value
     while #ring > cap do table.remove(ring, 1) end
     return ring
+end
+
+-- =========================================================================
+-- Branch / cohort math (the "wire R per branch" decomposition)
+-- =========================================================================
+--
+-- Given:
+--   R_table     = { ["satellite_X:Y"] = R_calc this cycle, ... }
+--   topology    = M.TOPOLOGY (with branch + expected_coil_R per valve)
+--
+-- Per branch:
+--   wire_R = median over branch members of (R_calc - expected_coil_R)
+--
+-- Then per valve:
+--   coil_R         = R_calc - wire_R[branch]
+--   branch_median  = median coil_R over branch members
+--   cohort_dev     = coil_R - branch_median
+--
+-- Null channels (is_null) and master (is_master) are EXCLUDED from cohort
+-- median calculations — their R doesn't represent the branch's standard
+-- coil. They still get coil_R computed, just don't contribute to the median.
+
+-- Returns { branch_name = wire_R }, list of branches seen.
+function M.compute_wire_R_per_branch(R_table)
+    local by_branch = {}  -- branch -> list of (R - expected_coil_R)
+    for valve, R in pairs(R_table) do
+        local topo = M.TOPOLOGY[valve]
+        if topo and topo.branch and topo.expected_coil_R then
+            -- Skip nulls and master + parallel/special for wire R derivation —
+            -- their expected_coil_R isn't the branch standard
+            if not topo.is_null and not topo.is_master
+               and not topo.parallel_valves then
+                by_branch[topo.branch] = by_branch[topo.branch] or {}
+                table.insert(by_branch[topo.branch], R - topo.expected_coil_R)
+            end
+        end
+    end
+    local out = {}
+    for branch, deltas in pairs(by_branch) do
+        out[branch] = M.median(deltas)
+    end
+    return out
+end
+
+-- Returns coil_R for valve given the branch's wire R.
+function M.compute_coil_R(valve, R_total, wire_R_table)
+    local topo = M.TOPOLOGY[valve]
+    if not topo or not topo.branch then return R_total end
+    local wire_R = wire_R_table[topo.branch] or 0
+    return R_total - wire_R
+end
+
+-- Per-branch median COIL R (post-wire-subtraction). Skips nulls/master.
+-- Returns { branch = median_coil_R }
+function M.compute_branch_median_coil(coil_R_table)
+    local by_branch = {}
+    for valve, coil_R in pairs(coil_R_table) do
+        local topo = M.TOPOLOGY[valve]
+        if topo and topo.branch
+           and not topo.is_null and not topo.is_master
+           and not topo.parallel_valves then
+            by_branch[topo.branch] = by_branch[topo.branch] or {}
+            table.insert(by_branch[topo.branch], coil_R)
+        end
+    end
+    local out = {}
+    for branch, list in pairs(by_branch) do
+        out[branch] = M.median(list)
+    end
+    return out
+end
+
+-- Classify a valve's coil R against its branch cohort.
+-- Returns (coil_cls, severity, deviation, note).
+function M.classify_coil_vs_cohort(valve, coil_R, branch_median)
+    if not coil_R or not branch_median then
+        return "COIL_OK", "ok", 0, nil
+    end
+    local topo = M.TOPOLOGY[valve]
+    -- Master / null / parallel: skip cohort comparison; use absolute expected
+    if topo and (topo.is_master or topo.is_null or topo.parallel_valves) then
+        local expected = (topo and topo.expected_coil_R) or coil_R
+        local d = coil_R - expected
+        if math.abs(d) > M.COIL_DRIFT_ALERT_OHM then
+            return "COIL_DRIFT_ALERT_CANDIDATE", "alert", d,
+                string.format("special-role |coil_R - expected|=%.1f Ω", math.abs(d))
+        elseif math.abs(d) > M.COIL_DRIFT_WARN_OHM then
+            return "COIL_DRIFT_WARN", "warn", d,
+                string.format("special-role coil_R %+.1f Ω vs expected", d)
+        end
+        return "COIL_OK", "ok", d, nil
+    end
+    -- Standard valves: compare to branch median
+    local d = coil_R - branch_median
+    if math.abs(d) > M.COIL_DRIFT_ALERT_OHM then
+        return "COIL_DRIFT_ALERT_CANDIDATE", "alert", d,
+            string.format("coil_R %+.1f Ω vs branch median %.1f", d, branch_median)
+    elseif math.abs(d) > M.COIL_DRIFT_WARN_OHM then
+        return "COIL_DRIFT_WARN", "warn", d,
+            string.format("coil_R %+.1f Ω vs branch median %.1f", d, branch_median)
+    end
+    return "COIL_OK", "ok", d, nil
 end
 
 -- =========================================================================
@@ -181,20 +310,27 @@ end
 
 local SCHEMA = [[
 CREATE TABLE IF NOT EXISTS runs_kb2 (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts_ms           INTEGER NOT NULL,
-    cycle_id        INTEGER,
-    valve           TEXT NOT NULL,
-    I_raw           REAL,
-    offset_used     REAL,
-    R_calc          REAL,
-    baseline_used   REAL,
-    prev_R          REAL,
-    delta_baseline  REAL,
-    delta_step      REAL,
-    cls             TEXT,
-    severity        TEXT,
-    note            TEXT,
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_ms               INTEGER NOT NULL,
+    cycle_id            INTEGER,
+    valve               TEXT NOT NULL,
+    I_raw               REAL,
+    offset_used         REAL,
+    R_calc              REAL,
+    baseline_used       REAL,
+    prev_R              REAL,
+    delta_baseline      REAL,
+    delta_step          REAL,
+    cls                 TEXT,
+    severity            TEXT,
+    note                TEXT,
+    -- cohort analysis columns (added 2026-06-08)
+    branch              TEXT,
+    wire_R_branch       REAL,
+    coil_R              REAL,
+    branch_median_coil  REAL,
+    cohort_deviation    REAL,
+    coil_cls            TEXT,
     UNIQUE(cycle_id, valve)
 );
 CREATE INDEX IF NOT EXISTS idx_runs_kb2_valve ON runs_kb2(valve);
@@ -226,6 +362,25 @@ CREATE TABLE IF NOT EXISTS cycle_state_kb2 (
 );
 ]]
 
+-- Additive ALTER for existing DBs: each column added in a separate pcall'd
+-- ALTER TABLE so re-runs are idempotent (SQLite errors on duplicate column,
+-- which is the safe outcome — we just continue).
+local function ensure_cohort_columns(db)
+    local cols = {
+        { "branch",             "TEXT" },
+        { "wire_R_branch",      "REAL" },
+        { "coil_R",             "REAL" },
+        { "branch_median_coil", "REAL" },
+        { "cohort_deviation",   "REAL" },
+        { "coil_cls",           "TEXT" },
+    }
+    for _, c in ipairs(cols) do
+        local sql = string.format(
+            "ALTER TABLE runs_kb2 ADD COLUMN %s %s", c[1], c[2])
+        pcall(function() db:exec(sql) end)
+    end
+end
+
 function M.open_db(path)
     local mod, err = ensure_lsqlite3()
     if not mod then return nil, err end
@@ -240,6 +395,7 @@ function M.open_db(path)
         db:close()
         return nil, "schema migration failed: " .. tostring(msg)
     end
+    ensure_cohort_columns(db)
     return db
 end
 
@@ -295,15 +451,19 @@ function M.insert_run(db, valve, fields)
         INSERT OR IGNORE INTO runs_kb2(
             ts_ms, cycle_id, valve, I_raw, offset_used,
             R_calc, baseline_used, prev_R, delta_baseline, delta_step,
-            cls, severity, note)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            cls, severity, note,
+            branch, wire_R_branch, coil_R,
+            branch_median_coil, cohort_deviation, coil_cls)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ]])
     if not stmt then return nil, db:errmsg() end
     stmt:bind_values(fields.ts_ms, fields.cycle_id, valve,
         fields.I_raw, fields.offset_used,
         fields.R_calc, fields.baseline_used, fields.prev_R,
         fields.delta_baseline, fields.delta_step,
-        fields.cls, fields.severity, fields.note)
+        fields.cls, fields.severity, fields.note,
+        fields.branch, fields.wire_R_branch, fields.coil_R,
+        fields.branch_median_coil, fields.cohort_deviation, fields.coil_cls)
     stmt:step()
     stmt:finalize()
     return true
