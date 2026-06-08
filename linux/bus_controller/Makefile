@@ -43,6 +43,10 @@ mon_adc_stats: mon_adc_stats_main.c controller.c demux.c identity.c roster.c cmd
 mon_gpio: mon_gpio_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
+# mon_servo — drive the servo bank; verify the 50 Hz frame rate via GP3 counter (GP2->GP3).
+mon_servo: mon_servo_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
 # Step 0b — demux reader (reply-vs-async dispatch, monotonic request_ids).
 step0b: step0b_main.c demux.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
