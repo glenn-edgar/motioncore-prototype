@@ -39,6 +39,10 @@ dac_adc_xcheck: dac_adc_xcheck_main.c controller.c demux.c identity.c roster.c c
 mon_adc_stats: mon_adc_stats_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
+# mon_gpio — GPIO loopback + 1 kHz pulse-count test on the Pico BC (GP2->GP3 jumper).
+mon_gpio: mon_gpio_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
 # Step 0b — demux reader (reply-vs-async dispatch, monotonic request_ids).
 step0b: step0b_main.c demux.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
