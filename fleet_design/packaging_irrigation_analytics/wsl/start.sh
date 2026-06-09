@@ -98,5 +98,6 @@ exec docker run -d \
     -e KB3_CURVE_LEAK_DELTA_GPM="${KB3_CURVE_LEAK_DELTA_GPM:-5.0}" \
     -e KB3_CURVE_WARN_DELTA_GPM="${KB3_CURVE_WARN_DELTA_GPM:-2.0}" \
     -e KB1_ARM_KILL="${KB1_ARM_KILL:-0}" \
+    -e KB3_ARM_KILL="${KB3_ARM_KILL:-0}" \
     -e SKIP_LIVE="${SKIP_LIVE:-0}" \
     "$IMAGE_TAG"
