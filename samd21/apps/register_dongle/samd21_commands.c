@@ -1371,6 +1371,36 @@ static void adc_sample_tick(void) {
     }
 }
 
+// ADC-b: latch the DAC sub-state (constant / sine / square) from MODE+LEVEL+FREQ.
+// Reuses the TC3 waveform engine; sine/square are centered at mid-scale (offset
+// 512) with peak-to-peak swing = LEVEL, so the jumpered ADC captures the wave.
+static void adc_dac_apply(void) {
+    if (g_dac_level > 1023u) g_dac_level = 1023u;
+    if (g_dac_mode == 0u) {                                  // constant
+        NVIC_DisableIRQ(TC3_IRQn);
+        g_dac_wf.active = false;
+        tc3_stop();
+        DAC->DATA.reg = g_dac_level;
+        return;
+    }
+    uint32_t freq = g_dac_freq;                              // sine (1) / square (2)
+    if (freq < DAC_WF_FREQ_MIN) freq = DAC_WF_FREQ_MIN;
+    if (freq > DAC_WF_FREQ_MAX) freq = DAC_WF_FREQ_MAX;
+    uint32_t period = 48000000u / (freq * DAC_WF_PHASE_STEPS);
+    if (period < 2u) period = 2u;
+    if (period > 65535u) period = 65535u;
+    dac_init();
+    tc3_init_once();
+    NVIC_DisableIRQ(TC3_IRQn);
+    g_dac_wf.active         = true;
+    g_dac_wf.waveform_type  = (g_dac_mode == 2u) ? DAC_WF_TYPE_SQUARE : DAC_WF_TYPE_SINE;
+    g_dac_wf.amplitude      = g_dac_level;                   // peak-to-peak swing
+    g_dac_wf.offset         = 512u;                          // centered at mid-scale
+    g_dac_wf.isrs_remaining = 0u;                            // infinite
+    g_dac_wf.phase          = 0u;
+    tc3_start_at_period((uint16_t)period);                   // re-enables NVIC
+}
+
 // ADC mode-bank register access (0x10-0x25), dispatched only while MODE_ADC.
 static uint8_t adc_reg_read(uint8_t reg) {
     if (reg >= REG_ADC_SEQ && reg <= REG_ADC_RMS + 1u
@@ -1401,10 +1431,7 @@ static void adc_reg_write(uint8_t reg, uint8_t val) {
     case REG_DAC_LEVEL+1u: g_dac_level = (uint16_t)((g_dac_level & 0x00FFu) | ((uint16_t)val << 8)); break;
     case REG_DAC_FREQ:     g_dac_freq  = (uint16_t)((g_dac_freq  & 0xFF00u) | val); break;
     case REG_DAC_FREQ+1u:  g_dac_freq  = (uint16_t)((g_dac_freq  & 0x00FFu) | ((uint16_t)val << 8)); break;
-    case REG_DAC_APPLY:
-        if (g_dac_level > 1023u) g_dac_level = 1023u;
-        if (g_dac_mode == 0u) DAC->DATA.reg = g_dac_level;   // constant (sine/square in ADC-b)
-        break;
+    case REG_DAC_APPLY:   adc_dac_apply(); break;            // constant / sine / square
     default: break;
     }
 }
@@ -1457,6 +1484,10 @@ static void i2c_reg_write(uint8_t reg, uint8_t val) {
                 pio_safe_all();                            // pins safe (inputs)
                 DAC->CTRLB.bit.EOEN = 1;                   // restore DAC output buffer on PA02
                 while (DAC->STATUS.bit.SYNCBUSY) { /* spin */ }
+            } else if (g_mode == MODE_ADC) {               // leaving ADC
+                NVIC_DisableIRQ(TC3_IRQn);                 // stop the DAC waveform generator
+                g_dac_wf.active = false;
+                tc3_stop();
             }
             g_mode = val;
             if (val == MODE_PIO) {                         // entering PIO

@@ -56,10 +56,17 @@ static int read_block(controller_t *c, uint16_t *seq, uint16_t *mn, uint16_t *mx
     *seq=(uint16_t)(b[0]|(b[1]<<8)); *mn=(uint16_t)(b[2]|(b[3]<<8)); *mx=(uint16_t)(b[4]|(b[5]<<8));
     *avg=(uint16_t)(b[6]|(b[7]<<8)); *rms=(uint16_t)(b[8]|(b[9]<<8)); return 0;
 }
+#define REG_DAC_FREQ 0x23
 static int dac_set(controller_t *c, uint16_t lvl){
     if(reg_write(c,REG_DAC_MODE,0)!=0) return -1;
     if(reg_write(c,REG_DAC_LVL,(uint8_t)lvl)!=0) return -1;
     if(reg_write(c,REG_DAC_LVL+1,(uint8_t)(lvl>>8))!=0) return -1;
+    return reg_write(c,REG_DAC_APPLY,1);
+}
+static int dac_wave(controller_t *c, uint8_t mode, uint16_t amp, uint16_t freq){
+    if(reg_write(c,REG_DAC_MODE,mode)!=0) return -1;
+    if(reg_write(c,REG_DAC_LVL,(uint8_t)amp)!=0||reg_write(c,REG_DAC_LVL+1,(uint8_t)(amp>>8))!=0) return -1;
+    if(reg_write(c,REG_DAC_FREQ,(uint8_t)freq)!=0||reg_write(c,REG_DAC_FREQ+1,(uint8_t)(freq>>8))!=0) return -1;
     return reg_write(c,REG_DAC_APPLY,1);
 }
 
@@ -113,6 +120,22 @@ int main(int argc, char **argv){
                lv[i], av, exp, (int)av-exp, mn, mx, rms, ok?"ok":"CHECK");
         if(!ok) pass=0;
     }
+
+    /* ADC-b: DAC sine/square captured on CH0. amp=800pp@512 -> ADC ~448..3648, avg~2048.
+       AC-rms distinguishes: sine ~ pp_adc/(2*sqrt2) ~1131; square ~ pp_adc/2 ~1600. */
+    printf("\n  DAC waveform (CH0 captures it, amp=800 @100Hz):\n");
+    struct { uint8_t mode; const char *nm; int rlo, rhi; } wv[] = {
+        { 1, "sine  ", 950, 1300 }, { 2, "square", 1380, 1750 } };
+    for(unsigned i=0;i<2 && !g_stop;i++){
+        dac_wave(ctrl, wv[i].mode, 800, 100); nap_ms(400);
+        uint16_t seq; if(read_block(ctrl,&seq,&mn,&mx,&av,&rms)!=0){ printf("    %s block FAIL\n",wv[i].nm); pass=0; continue; }
+        int amp_ok = (mn<700)&&(mx>3400)&&(av>1850&&av<2250);   /* peaks + centered */
+        int rms_ok = (rms>=wv[i].rlo && rms<=wv[i].rhi);
+        printf("    %s  min=%4u max=%4u avg=%4u rms=%4u  %s\n",
+               wv[i].nm, mn, mx, av, rms, (amp_ok&&rms_ok)?"ok":"CHECK");
+        if(!(amp_ok&&rms_ok)) pass=0;
+    }
+    dac_set(ctrl, 0);   /* park DAC */
 
     printf("\n[mon_adc_mode] %s\n", pass?"PASS":"FAIL");
     controller_destroy(ctrl); link_close(ep);
