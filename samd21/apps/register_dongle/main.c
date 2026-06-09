@@ -1196,6 +1196,10 @@ int main(void) {
             rx_drain_to_event_queue(tree);
         }
 
+#ifdef I2C_CLIENT
+        i2c_store_service();   // M2b: do any pending config-store flash commit (~ms, off the I2C ISR)
+#endif
+
         // RS-485 service, by role: slave answers tunneled shell-exec frames;
         // bus_controller relays the in-flight bridge reply; dongle sniffs frames
         // up to the host (passthrough diagnostics).

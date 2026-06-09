@@ -56,6 +56,29 @@ static int reg_write(controller_t *c, uint8_t reg, uint8_t val) {
     reply_t r; return (call_to(c, APPCORE, CMD_I2C_WRITE, a, 3, &r) != 0 || r.status != 0) ? -1 : 0;
 }
 
+/* config store (window regs 0x40 SEL / 0x41 LEN / 0x43 DATA / 0x44 CTRL / 0x45 STAT) */
+#define REG_REC_SEL 0x40
+#define REG_REC_LEN 0x41
+#define REG_REC_DATA 0x43
+#define REG_REC_CTRL 0x44
+#define REG_STORE_STAT 0x45
+static int store_write(controller_t *c, uint8_t rec, const uint8_t *data, uint8_t len) {
+    if (reg_write(c, REG_REC_SEL, rec) != 0) return -1;        /* select record, off->0 */
+    if (reg_write(c, REG_REC_LEN, len) != 0) return -1;        /* set length */
+    uint8_t a[2+64]; a[0]=g_addr; a[1]=REG_REC_DATA;           /* burst-write the data port */
+    if (len>64) len=64; memcpy(&a[2], data, len);
+    reply_t r; if (call_to(c, APPCORE, CMD_I2C_WRITE, a, (uint16_t)(2+len), &r)!=0 || r.status!=0) return -1;
+    if (reg_write(c, REG_REC_CTRL, 0xC0) != 0) return -1;      /* commit */
+    for (int i=0;i<200;i++){ uint8_t st; if (reg_read(c,REG_STORE_STAT,&st,1)==0 && !(st&0x01)) return (st&0x02)?-2:0; nap_ms(5); }
+    return -3;
+}
+static int store_read(controller_t *c, uint8_t rec, uint8_t *dst, uint8_t len) {
+    if (reg_write(c, REG_REC_SEL, rec) != 0) return -1;        /* select record, off->0 */
+    uint8_t a[3] = { g_addr, len, REG_REC_DATA };             /* write reg 0x43, read len (data port) */
+    reply_t r; if (call_to(c, APPCORE, CMD_I2C_WRITE_READ, a, 3, &r)!=0 || r.status!=0 || r.len<len) return -1;
+    memcpy(dst, r.buf, len); return 0;
+}
+
 int main(int argc, char **argv) {
     signal(SIGINT, on_sigint);
     const char *dev   = (argc>1 && argv[1][0]!='-') ? argv[1] : NULL;
@@ -98,6 +121,25 @@ int main(int argc, char **argv) {
     nap_ms(20);
     if (reg_read(ctrl, REG_MODE, &mode, 1)==0) { int ok=(mode==MODE_ADC); printf("  MODE <- %u, read %u  %s\n", MODE_ADC, mode, ok?"ok":"FAIL"); if(!ok)pass=0; }
     else { printf("  MODE re-read FAIL\n"); pass=0; }
+
+    /* M2b: config store round-trip + flash persistence across a reset */
+    printf("\n  --- config store (M2b) ---\n");
+    const uint8_t pat[8] = { 0xDE,0xAD,0xBE,0xEF,0x01,0x02,0x03,0x04 };
+    uint8_t rb[8];
+    int sw = store_write(ctrl, 5 /*calibration*/, pat, 8);
+    printf("  write+commit calibration: %s\n", sw==0?"ok":(sw==-2?"FAIL(store-err)":"FAIL"));
+    if (sw!=0) pass=0;
+    if (store_read(ctrl, 5, rb, 8)==0) { int ok=!memcmp(rb,pat,8);
+        printf("  read back (RAM)  : %02X%02X%02X%02X%02X%02X%02X%02X %s\n", rb[0],rb[1],rb[2],rb[3],rb[4],rb[5],rb[6],rb[7], ok?"ok":"FAIL"); if(!ok)pass=0; }
+    else { printf("  read back FAIL\n"); pass=0; }
+
+    printf("  resetting SAMD21 (RESET reg) for persistence check...\n");
+    reg_write(ctrl, 0x0E, 0xA5);     /* deferred soft-reset; may NACK as it drops */
+    nap_ms(2500);                    /* wait for reboot */
+    int got=0; for(int i=0;i<12 && !got && !g_stop;i++){ if(store_read(ctrl,5,rb,8)==0) got=1; else nap_ms(400); }
+    if (got) { int ok=!memcmp(rb,pat,8);
+        printf("  read back (FLASH): %02X%02X%02X%02X%02X%02X%02X%02X %s\n", rb[0],rb[1],rb[2],rb[3],rb[4],rb[5],rb[6],rb[7], ok?"ok PERSISTED":"FAIL"); if(!ok)pass=0; }
+    else { printf("  read back after reset FAIL (no response)\n"); pass=0; }
 
     printf("\n[mon_samd21] %s\n", pass?"PASS":"FAIL");
     controller_destroy(ctrl); link_close(ep);

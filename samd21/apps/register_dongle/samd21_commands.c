@@ -896,6 +896,168 @@ static void i2c_read_unique_id(void) {
     g_unique_id[6] = (uint8_t)(w1 >> 16); g_unique_id[7] = (uint8_t)(w1 >> 24);
 }
 
+// ---- M2b: log-structured, wear-leveled config store ------------------------
+// 32 rows (8 KB) just below the commission A/B slots (0x3FE00). Each commit
+// appends a 256-B entry to a round-robin NON-LIVE row; latest seq per record
+// wins on read; CRC-8 guards torn writes (power-safe). RAM-shadowed; the flash
+// write (~ms) is deferred to the main loop (i2c_store_service) so the I2C ISR
+// stays fast. Write-coalescing skips a commit whose bytes are unchanged.
+extern uint8_t crc8_autosar_update(uint8_t crc, uint8_t byte);   // libcomm
+
+#define STORE_ROWS        32u
+#define STORE_ROW_SIZE    256u
+#define STORE_PAGE_SIZE   64u
+#define STORE_BASE        (0x3FE00u - STORE_ROWS * STORE_ROW_SIZE)  // 0x3DE00
+#define STORE_ENTRY_MAGIC 0x10C0FFEEu
+#define REC_COUNT         6u
+#define REC_DATA_MAX      244u
+
+// record ids (REG_REC_SEL)
+enum { REC_IDENTITY = 0, REC_CLASS_INSTANCE, REC_BUS_ROSTER,
+       REC_HW_CONFIG, REC_INTERLOCK_CFG, REC_CALIBRATION };
+
+// store-window register addresses
+#define REG_REC_SEL    0x40u
+#define REG_REC_LEN    0x41u
+#define REG_REC_OFF    0x42u
+#define REG_REC_DATA   0x43u
+#define REG_REC_CTRL   0x44u
+#define REG_STORE_STAT 0x45u
+
+typedef struct {
+    uint32_t magic;      // STORE_ENTRY_MAGIC
+    uint32_t seq;        // monotonic; highest per rec_id wins
+    uint8_t  rec_id;
+    uint8_t  len;
+    uint8_t  crc;        // crc8_autosar(rec_id, len, data[len])
+    uint8_t  pad;
+    uint8_t  data[REC_DATA_MAX];
+} store_entry_t;         // 256 B = 1 flash row
+
+static uint8_t  g_rec_data[REC_COUNT][REC_DATA_MAX];  // working / shadow copies
+static uint8_t  g_rec_len[REC_COUNT];
+static uint32_t g_rec_seq[REC_COUNT];                  // 0 = none committed
+static int16_t  g_rec_row[REC_COUNT];                  // flash row of current entry, -1 none
+static bool     g_rec_dirty[REC_COUNT];
+static uint16_t g_store_wr_cursor;                     // round-robin write cursor
+static volatile int8_t g_commit_pending = -1;          // rec id to commit (ISR -> main loop)
+static volatile bool   g_reset_pending;                // soft-reset request (ISR -> main loop)
+static uint8_t  g_store_rec_sel;
+static uint8_t  g_store_rec_off;
+
+// NVM primitives (PAGE=64, ROW=256, ADDR = byte/2). Mirrors flash_storage.c.
+static void cs_nvm_wait(void) { while (NVMCTRL->INTFLAG.bit.READY == 0) { /* spin */ } }
+static void cs_nvm_erase_row(uint32_t addr) {
+    cs_nvm_wait();
+    NVMCTRL->ADDR.reg = addr / 2u;
+    NVMCTRL->CTRLA.reg = NVMCTRL_CTRLA_CMD_ER | NVMCTRL_CTRLA_CMDEX_KEY;
+    cs_nvm_wait();
+}
+static void cs_nvm_write_page(uint32_t addr, const void *data, uint32_t bytes) {
+    cs_nvm_wait();
+    NVMCTRL->CTRLA.reg = NVMCTRL_CTRLA_CMD_PBC | NVMCTRL_CTRLA_CMDEX_KEY;
+    cs_nvm_wait();
+    NVMCTRL->CTRLB.bit.MANW = 1;
+    volatile uint32_t *dst = (volatile uint32_t *)(uintptr_t)addr;
+    const uint8_t *src = (const uint8_t *)data;
+    uint32_t words = (bytes + 3u) / 4u;
+    if (words * 4u > STORE_PAGE_SIZE) words = STORE_PAGE_SIZE / 4u;
+    for (uint32_t i = 0; i < words; i++) { uint32_t w; memcpy(&w, &src[i*4u], 4u); dst[i] = w; }
+    NVMCTRL->ADDR.reg = addr / 2u;
+    NVMCTRL->CTRLA.reg = NVMCTRL_CTRLA_CMD_WP | NVMCTRL_CTRLA_CMDEX_KEY;
+    cs_nvm_wait();
+}
+
+static const store_entry_t *store_row(uint16_t row) {
+    return (const store_entry_t *)(uintptr_t)(STORE_BASE + (uint32_t)row * STORE_ROW_SIZE);
+}
+static uint8_t store_crc(uint8_t rec_id, uint8_t len, const uint8_t *data) {
+    uint8_t c = crc8_autosar_update(0xFFu, rec_id);
+    c = crc8_autosar_update(c, len);
+    for (uint8_t i = 0; i < len; i++) c = crc8_autosar_update(c, data[i]);
+    return (uint8_t)(c ^ 0xFFu);
+}
+static bool store_entry_valid(const store_entry_t *e) {
+    return e->magic == STORE_ENTRY_MAGIC && e->rec_id < REC_COUNT && e->len <= REC_DATA_MAX
+        && store_crc(e->rec_id, e->len, e->data) == e->crc;
+}
+
+// Boot scan: load the latest valid entry per record into RAM.
+static void store_load(void) {
+    for (uint8_t i = 0; i < REC_COUNT; i++) {
+        g_rec_seq[i] = 0; g_rec_len[i] = 0; g_rec_row[i] = -1; g_rec_dirty[i] = false;
+    }
+    for (uint16_t r = 0; r < STORE_ROWS; r++) {
+        const store_entry_t *e = store_row(r);
+        if (!store_entry_valid(e)) continue;
+        if (e->seq > g_rec_seq[e->rec_id]) {
+            g_rec_seq[e->rec_id] = e->seq;
+            g_rec_len[e->rec_id] = e->len;
+            g_rec_row[e->rec_id] = (int16_t)r;
+            memcpy(g_rec_data[e->rec_id], e->data, e->len);
+        }
+    }
+    g_store_wr_cursor = 0;
+}
+
+static bool store_row_live(uint16_t r) {
+    for (uint8_t i = 0; i < REC_COUNT; i++) if (g_rec_row[i] == (int16_t)r) return true;
+    return false;
+}
+
+// Append record `id`'s working copy to flash (round-robin non-live row).
+static bool store_commit(uint8_t id) {
+    if (id >= REC_COUNT) return false;
+    // coalesce: identical to the live entry -> skip the flash write.
+    if (g_rec_row[id] >= 0) {
+        const store_entry_t *cur = store_row((uint16_t)g_rec_row[id]);
+        if (cur->len == g_rec_len[id] && memcmp(cur->data, g_rec_data[id], g_rec_len[id]) == 0) {
+            g_rec_dirty[id] = false; return true;
+        }
+    }
+    uint16_t picked = 0xFFFFu;
+    for (uint16_t n = 0; n < STORE_ROWS; n++) {
+        uint16_t rr = (uint16_t)((g_store_wr_cursor + n) % STORE_ROWS);
+        if (!store_row_live(rr)) { picked = rr; break; }
+    }
+    if (picked == 0xFFFFu) return false;   // impossible: rows > records
+    g_store_wr_cursor = (uint16_t)((picked + 1u) % STORE_ROWS);
+
+    store_entry_t e;
+    memset(&e, 0xFF, sizeof e);
+    e.magic  = STORE_ENTRY_MAGIC;
+    e.seq    = g_rec_seq[id] + 1u;
+    e.rec_id = id;
+    e.len    = g_rec_len[id];
+    e.crc    = store_crc(id, e.len, g_rec_data[id]);
+    memcpy(e.data, g_rec_data[id], e.len);
+
+    uint32_t addr = STORE_BASE + (uint32_t)picked * STORE_ROW_SIZE;
+    cs_nvm_erase_row(addr);
+    for (uint32_t p = 0; p < STORE_ROW_SIZE; p += STORE_PAGE_SIZE)
+        cs_nvm_write_page(addr + p, (const uint8_t *)&e + p, STORE_PAGE_SIZE);
+
+    const store_entry_t *chk = store_row(picked);
+    if (!store_entry_valid(chk) || chk->seq != e.seq || chk->rec_id != id) return false;
+    g_rec_seq[id] = e.seq;
+    g_rec_row[id] = (int16_t)picked;
+    g_rec_dirty[id] = false;
+    return true;
+}
+
+// Called from the main superloop: service a pending commit (flash write ~ms) or
+// a deferred soft reset (so the master's RESET write is ACKed before we drop).
+void i2c_store_service(void) {
+    if (g_commit_pending >= 0) {
+        g_status |= 0x01u;                 // flash-busy
+        bool ok = store_commit((uint8_t)g_commit_pending);
+        if (!ok) g_status |= 0x02u;        // store-err (sticky until reload)
+        g_status &= (uint8_t)~0x01u;       // clear busy
+        g_commit_pending = -1;
+    }
+    if (g_reset_pending) NVIC_SystemReset();
+}
+
 // Register read dispatch (control bank). Out-of-range -> 0xFF.
 static uint8_t i2c_reg_read(uint8_t reg) {
     switch (reg) {
@@ -908,6 +1070,17 @@ static uint8_t i2c_reg_read(uint8_t reg) {
     case 0x06: case 0x07: case 0x08: case 0x09:
     case 0x0A: case 0x0B: case 0x0C: case 0x0D:
         return g_unique_id[reg - 0x06u];
+    case REG_REC_SEL:  return g_store_rec_sel;
+    case REG_REC_LEN:  return (g_store_rec_sel < REC_COUNT) ? g_rec_len[g_store_rec_sel] : 0u;
+    case REG_REC_OFF:  return g_store_rec_off;
+    case REG_REC_DATA: {                              // data port: advances OFFSET, not reg ptr
+        uint8_t v = 0xFFu;
+        if (g_store_rec_sel < REC_COUNT && g_store_rec_off < REC_DATA_MAX)
+            v = g_rec_data[g_store_rec_sel][g_store_rec_off];
+        if (g_store_rec_off < REC_DATA_MAX) g_store_rec_off++;
+        return v;
+    }
+    case REG_STORE_STAT: return g_status;
     default:   return 0xFFu;
     }
 }
@@ -917,12 +1090,30 @@ static void i2c_reg_write(uint8_t reg, uint8_t val) {
     switch (reg) {
     case 0x02: if (val <= MODE_MAX) g_mode = val; break;  // MODE (switch stubbed in M2a)
     case 0x04: g_int_flags &= (uint8_t)~val; break;       // INT_FLAGS: write-1-to-clear
+    case 0x0E: if (val == 0xA5u) g_reset_pending = true; break;  // RESET (magic 0xA5; deferred)
+    case REG_REC_SEL: if (val < REC_COUNT) { g_store_rec_sel = val; g_store_rec_off = 0u; } break;
+    case REG_REC_LEN: if (g_store_rec_sel < REC_COUNT && val <= REC_DATA_MAX) g_rec_len[g_store_rec_sel] = val; break;
+    case REG_REC_OFF: g_store_rec_off = val; break;
+    case REG_REC_DATA:                                    // data port: write byte, grow len, advance offset
+        if (g_store_rec_sel < REC_COUNT && g_store_rec_off < REC_DATA_MAX) {
+            g_rec_data[g_store_rec_sel][g_store_rec_off] = val;
+            if ((uint16_t)g_store_rec_off + 1u > g_rec_len[g_store_rec_sel])
+                g_rec_len[g_store_rec_sel] = (uint8_t)(g_store_rec_off + 1u);
+            g_rec_dirty[g_store_rec_sel] = true;
+        }
+        if (g_store_rec_off < REC_DATA_MAX) g_store_rec_off++;
+        break;
+    case REG_REC_CTRL:                                    // 0xC0 = commit selected, 0x5E = reload all
+        if (val == 0xC0u && g_store_rec_sel < REC_COUNT) g_commit_pending = (int8_t)g_store_rec_sel;
+        else if (val == 0x5Eu) store_load();
+        break;
     default:   break;
     }
 }
 
 static void i2c_slave_init(void) {
     i2c_read_unique_id();   // for commissioning identification (UNIQUE_ID regs)
+    store_load();           // scan the config log -> RAM shadow of each record
 
     // 1. Bus clock.
     PM->APBCMASK.reg |= PM_APBCMASK_SERCOM2;
@@ -986,7 +1177,8 @@ void SERCOM2_Handler(void) {
     if (s->INTFLAG.bit.AMATCH) {
         i2c_reg_ptr_known = false;
         if (s->STATUS.bit.DIR) {                        // master read -> pre-load 1st tx byte
-            s->DATA.reg = i2c_reg_read(i2c_reg_ptr++);  // else the stale addr byte goes out first
+            s->DATA.reg = i2c_reg_read(i2c_reg_ptr);    // else the stale addr byte goes out first
+            if (i2c_reg_ptr != REG_REC_DATA) i2c_reg_ptr++;  // data port advances OFFSET, not reg ptr
         }
         s->CTRLB.bit.ACKACT = 0;
         s->CTRLB.bit.CMD = 0x3;                         // ACK the address (smart mode)
@@ -996,11 +1188,12 @@ void SERCOM2_Handler(void) {
     // Data ready.
     if (s->INTFLAG.bit.DRDY) {
         if (s->STATUS.bit.DIR) {                        // master read -> slave transmit
-            s->DATA.reg = i2c_reg_read(i2c_reg_ptr++);  // smart mode sends it
+            s->DATA.reg = i2c_reg_read(i2c_reg_ptr);    // smart mode sends it
+            if (i2c_reg_ptr != REG_REC_DATA) i2c_reg_ptr++;
         } else {                                        // master write -> slave receive
             uint8_t b = (uint8_t)s->DATA.reg;           // smart mode ACKs it
             if (!i2c_reg_ptr_known) { i2c_reg_ptr = b; i2c_reg_ptr_known = true; }
-            else { i2c_reg_write(i2c_reg_ptr++, b); }
+            else { uint8_t reg = i2c_reg_ptr; i2c_reg_write(reg, b); if (reg != REG_REC_DATA) i2c_reg_ptr++; }
         }
         return;
     }

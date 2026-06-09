@@ -52,3 +52,7 @@ uint8_t hal_get_reset_cause(void);       // returns the captured snapshot
 // guards.
 
 void samd21_peripherals_init(void);
+
+#ifdef I2C_CLIENT
+void i2c_store_service(void);   // M2b: service a pending config-store flash commit
+#endif
