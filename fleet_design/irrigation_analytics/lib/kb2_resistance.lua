@@ -99,10 +99,19 @@ function M.load_topology(path)
 end
 
 function M.compute_offset_2null(currents)
-    local n31 = currents[M.NULL_VALVES[1]]
-    local n46 = currents[M.NULL_VALVES[2]]
-    if not n31 or not n46 then return nil end
-    return (n31 + n46) / 2.0
+    -- DISABLED 2026-06-09 PM: the controller's valve_resistance_check_py3
+    -- was rewritten to subtract sensor offset BEFORE storing each per-valve
+    -- reading. The null channels (sat_3:1, sat_4:6) are not in the
+    -- controller's test queue, so their values in IRRIGATION_VALVE_TEST
+    -- remain stale (~0.17 A from the old code's raw ACS712 readings).
+    -- Computing the 2-null offset from those stale values and subtracting
+    -- from the already-corrected per-valve values would double-correct,
+    -- making R = ~2x too high. Returning 0 means KB2 treats the stored
+    -- currents as the true coil currents — which is what they are now.
+    --
+    -- If the controller is ever rolled back to the pre-2026-06-09 code,
+    -- revert this function to the original 2-null math.
+    return 0
 end
 
 -- Derive the operative calibration for this cycle. Returns a table:
