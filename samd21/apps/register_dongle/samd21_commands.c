@@ -855,6 +855,110 @@ static void i2c_init(void) {
     while (I2C_SERCOM->I2CM.SYNCBUSY.bit.SYSOP) { /* spin */ }
 }
 
+#ifdef I2C_CLIENT
+// ============================================================================
+// I2C CLIENT (slave) mode — SERCOM2 reconfigured as an I2C slave so the Pico
+// I2C master can talk to this dongle. Same pins (PA08/PA09 = D4/D5), same GCLK0
+// as the master path; -DI2C_CLIENT selects slave instead of master at boot.
+//
+// M1: a 16-byte register file (reg[0] = 0x5A device id) — proof of life that the
+// master can scan + read us, like the Pico loopback's 0x42. M2 will layer the
+// shell-command transport (shell_dispatch_payload) over the same RX/TX.
+//
+// Smart mode OFF: we drive CTRLB.CMD/ACKACT explicitly (matches i2c_init style).
+// Register-pointer protocol: a write of 1 byte sets the pointer; further write
+// bytes store from there; a read returns bytes from the pointer (auto-increment).
+// ============================================================================
+#define I2C_CLIENT_ADDR  0x55u            // 7-bit slave address
+
+static volatile uint8_t i2c_slv_reg[16] = { 0x5A }; // reg[0] = device id
+static volatile uint8_t i2c_slv_idx;                // register pointer
+static volatile bool    i2c_slv_idx_known;          // first write byte = the pointer
+
+static void i2c_slave_init(void) {
+    // 1. Bus clock.
+    PM->APBCMASK.reg |= PM_APBCMASK_SERCOM2;
+
+    // 2. SERCOM2 core + slow clocks -> GCLK0 (48 MHz).
+    GCLK->CLKCTRL.reg = (uint16_t)(GCLK_CLKCTRL_ID(I2C_GCLK_ID_CORE)
+                                 | GCLK_CLKCTRL_GEN_GCLK0 | GCLK_CLKCTRL_CLKEN);
+    while (GCLK->STATUS.bit.SYNCBUSY) { /* spin */ }
+    GCLK->CLKCTRL.reg = (uint16_t)(GCLK_CLKCTRL_ID(I2C_GCLK_ID_SLOW)
+                                 | GCLK_CLKCTRL_GEN_GCLK0 | GCLK_CLKCTRL_CLKEN);
+    while (GCLK->STATUS.bit.SYNCBUSY) { /* spin */ }
+
+    // 3. Reset SERCOM2.
+    I2C_SERCOM->I2CS.CTRLA.bit.SWRST = 1;
+    while (I2C_SERCOM->I2CS.SYNCBUSY.bit.SWRST) { /* spin */ }
+
+    // 4. I2C slave mode, 300 ns SDA hold, SCLSM = stretch SCL after the ACK bit
+    //    (gives the ISR time to load the read byte — required for slave transmit).
+    I2C_SERCOM->I2CS.CTRLA.reg =
+        SERCOM_I2CS_CTRLA_MODE_I2C_SLAVE |
+        SERCOM_I2CS_CTRLA_SDAHOLD(2) |
+        SERCOM_I2CS_CTRLA_SCLSM;
+
+    // 4b. Smart mode: a DATA access auto-handles the ACK/byte protocol (SCLSM
+    //     requires it). This is what makes the transmit actually drive the byte.
+    I2C_SERCOM->I2CS.CTRLB.reg = SERCOM_I2CS_CTRLB_SMEN;
+
+    // 5. 7-bit address (placed in ADDR[7:1] by the macro), exact match.
+    I2C_SERCOM->I2CS.ADDR.reg = SERCOM_I2CS_ADDR_ADDR(I2C_CLIENT_ADDR);
+
+    // 6. PMUX PA08/PA09 -> function D (SERCOM2 PAD[0]/[1]).
+    PORT->Group[0].PINCFG[8].bit.PMUXEN = 1;
+    PORT->Group[0].PMUX[4].bit.PMUXE    = PORT_PMUX_PMUXE_D_Val;
+    PORT->Group[0].PINCFG[9].bit.PMUXEN = 1;
+    PORT->Group[0].PMUX[4].bit.PMUXO    = PORT_PMUX_PMUXO_D_Val;
+
+    // 7. Interrupts: address match, data ready, stop received.
+    I2C_SERCOM->I2CS.INTENSET.reg =
+        SERCOM_I2CS_INTENSET_AMATCH |
+        SERCOM_I2CS_INTENSET_DRDY |
+        SERCOM_I2CS_INTENSET_PREC;
+    NVIC_EnableIRQ(SERCOM2_IRQn);
+
+    // 8. Enable.
+    I2C_SERCOM->I2CS.CTRLA.bit.ENABLE = 1;
+    while (I2C_SERCOM->I2CS.SYNCBUSY.bit.ENABLE) { /* spin */ }
+}
+
+void SERCOM2_Handler(void) {
+    SercomI2cs *s = &I2C_SERCOM->I2CS;
+
+    // Stop received -> end of transaction; next AMATCH starts fresh.
+    if (s->INTFLAG.bit.PREC) {
+        s->INTFLAG.reg = SERCOM_I2CS_INTFLAG_PREC;
+        i2c_slv_idx_known = false;
+        return;
+    }
+
+    // Address match -> ACK (CMD=0x3 also clears AMATCH). Sync the CMD before
+    // returning so it commits before the first DRDY (esp. on a read).
+    if (s->INTFLAG.bit.AMATCH) {
+        i2c_slv_idx_known = false;
+        if (s->STATUS.bit.DIR) {                        // master read -> pre-load 1st tx byte
+            s->DATA.reg = i2c_slv_reg[i2c_slv_idx++ & 0x0Fu];  // else the stale addr byte goes out first
+        }
+        s->CTRLB.bit.ACKACT = 0;
+        s->CTRLB.bit.CMD = 0x3;                         // ACK the address (smart mode)
+        return;
+    }
+
+    // Data ready.
+    if (s->INTFLAG.bit.DRDY) {
+        if (s->STATUS.bit.DIR) {                        // master read -> slave transmit
+            s->DATA.reg = i2c_slv_reg[i2c_slv_idx++ & 0x0Fu];   // smart mode sends it
+        } else {                                        // master write -> slave receive
+            uint8_t b = (uint8_t)s->DATA.reg;           // smart mode ACKs it
+            if (!i2c_slv_idx_known) { i2c_slv_idx = b & 0x0Fu; i2c_slv_idx_known = true; }
+            else { i2c_slv_reg[i2c_slv_idx++ & 0x0Fu] = b; }
+        }
+        return;
+    }
+}
+#endif // I2C_CLIENT
+
 // --- low-level helpers --------------------------------------------------
 
 // Wait for either MB (master TX done) or SB (slave reply ready). No timeout
@@ -1311,7 +1415,11 @@ uint8_t chip_commands_count(void) {
 void samd21_peripherals_init(void) {
     dac_init();
     adc_init();
-    i2c_init();
+#ifdef I2C_CLIENT
+    i2c_slave_init();   // SERCOM2 = I2C slave to the Pico master (D4/D5)
+#else
+    i2c_init();         // SERCOM2 = I2C master for the dongle's own devices
+#endif
     rs485_init();
 #if defined(ROLE_BUS_CONTROLLER)
     bus_roster_init();   // RAM roster starts empty; the Pi registers slaves

@@ -57,12 +57,19 @@ else
   $(error ROLE must be one of: dongle, bus_controller, slave (got '$(ROLE)'))
 endif
 
+# I2C_CLIENT=1 makes SERCOM2 an I2C SLAVE (to a Pico I2C master) instead of the
+# dongle's own I2C master. Orthogonal to ROLE (run-clean: `make clean` to switch).
+ifdef I2C_CLIENT
+  CLIENT_DEF := -DI2C_CLIENT=1
+endif
+
 DEFS := \
   -D__SAMD21G18A__ \
   -DCFG_TUSB_MCU=OPT_MCU_SAMD21 \
   -DCONF_DFLL_OVERWRITE_CALIBRATION=0 \
   -DMODULE_IS_64BIT=0 \
-  $(ROLE_DEF)
+  $(ROLE_DEF) \
+  $(CLIENT_DEF)
 
 WARN := -Wall -Wextra -Wno-unused-parameter -Wno-unused-function
 
