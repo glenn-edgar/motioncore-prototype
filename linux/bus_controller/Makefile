@@ -138,3 +138,7 @@ evtest: evtest_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb
 SOLIB_SRC := ffi_facade.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 libbus_controller.so: $(SOLIB_SRC)
 	$(CC) $(CFLAGS) -fPIC -shared $^ -o $@ $(LDFLAGS)
+
+# mon_pio_b — exercise SAMD21 PIO-mode gpio interlock (DSL trip + INT + manual reset).
+mon_pio_b: mon_pio_b_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)

@@ -25,6 +25,7 @@
 #include "samd21_adc.h"              // samd21_adc_read_oneshot public API
 #include "samd21_rs485.h"            // SERCOM4 9-bit MPCM UART driver
 #include "samd21_pin_table.h"        // board-label -> AIN + reserved-pin guard (dac_follow)
+#include "samd21_interlocks.h"       // il_parse + il_inst_t (reused by PIO-b gpio interlock)
 
 // ---------- pin validation -------------------------------------------------
 
@@ -1051,6 +1052,8 @@ static bool store_commit(uint8_t id) {
 
 // Called from the main superloop: service a pending commit (flash write ~ms) or
 // a deferred soft reset (so the master's RESET write is ACKed before we drop).
+static void pio_il_tick(void);             // PIO-b gpio interlock eval (defined below)
+
 void i2c_store_service(void) {
     if (g_commit_pending >= 0) {
         g_status |= 0x01u;                 // flash-busy
@@ -1060,6 +1063,7 @@ void i2c_store_service(void) {
         g_commit_pending = -1;
     }
     if (g_reset_pending) NVIC_SystemReset();
+    pio_il_tick();                         // evaluate the gpio interlock (no-op unless armed in PIO)
 }
 
 // ---- PIO mode (PIO-a): 8-bit GPIO expander, CH0..CH7 = D0-D3, D6-D9 ---------
@@ -1125,6 +1129,97 @@ static uint8_t pio_read_gpio(void) {
     return (uint8_t)(v ^ g_pio_ipol);                   // input polarity invert
 }
 
+// ---- PIO mode (PIO-b): gpio interlock layered on the expander -----------------
+// The interlock_cfg record holds a DSL string (reuses il_parse from the RS-485
+// interlock engine). Entering PIO parses it; a tick run from i2c_store_service
+// (superloop) evaluates the watches against the channel pins. On trip it LATCHES:
+// drives the out_err pins to their safe value (overriding the master's OLAT) and
+// asserts INT on D10 (PA06). The master sees the trip in INT_FLAGS (0x04) and
+// clears it with a write-1 — that write IS the manual reset: if the fault has
+// cleared the interlock re-arms, otherwise the next tick re-trips.
+#define REG_PIO_ILSTAT  0x15u           // RO: last il_parse status (0 = OK/armed, 0xFF = no record)
+#define REG_PIO_ILSTATE 0x16u           // RO: bit0=tripped bit1=condition-ok bit2=valid/armed
+#define PIO_INT_GROUP  0u
+#define PIO_INT_PIN    6u               // INT = D10 = PA06 (not one of the 8 channels)
+
+static il_inst_t g_pio_il;
+static bool      g_pio_il_valid;        // a DSL parsed OK and has >=1 watch
+static bool      g_pio_il_tripped;      // latched trip state
+static uint8_t   g_pio_il_pstat = 0xFFu; // il_parse_status_t (0xFF = no record yet)
+static volatile uint8_t g_pio_il_state;  // tick snapshot: bit0 tripped, bit1 cond-ok, bit2 valid
+
+static uint8_t pio_phys_read(uint8_t phys) {
+    return (PORT->Group[phys >> 5].IN.reg & (1u << (phys & 0x1Fu))) ? 1u : 0u;
+}
+static void pio_phys_drive(uint8_t phys, uint8_t v) {
+    uint32_t m = 1u << (phys & 0x1Fu);
+    if (v) PORT->Group[phys >> 5].OUTSET.reg = m;
+    else   PORT->Group[phys >> 5].OUTCLR.reg = m;
+}
+static void pio_int_assert(bool on) { pio_phys_drive((PIO_INT_GROUP << 5) | PIO_INT_PIN, on ? 1u : 0u); }
+
+static bool pio_watch_pass(const il_watch_t* w) {
+    uint16_t v = pio_phys_read(g_pio_il.inputs[w->input_idx].phys_id);   // digital 0/1
+    switch (w->op) {
+    case IL_OP_EQ: return v == w->threshold;
+    case IL_OP_NE: return v != w->threshold;
+    case IL_OP_LT: return v <  w->threshold;
+    case IL_OP_GT: return v >  w->threshold;
+    case IL_OP_LE: return v <= w->threshold;
+    case IL_OP_GE: return v >= w->threshold;
+    default:       return true;
+    }
+}
+static void pio_il_drive_safe(void) {                   // force out_err pins to the safe value
+    for (uint8_t i = 0; i < g_pio_il.output_count; i++)
+        pio_phys_drive(g_pio_il.outputs[i].phys_id, g_pio_il.outputs[i].err_value);
+}
+// Arm from the interlock_cfg record; set up INT pin (D10 output, deasserted).
+static void pio_il_arm(void) {
+    g_pio_il_valid = false; g_pio_il_tripped = false;
+    PORT->Group[PIO_INT_GROUP].OUTCLR.reg = (1u << PIO_INT_PIN);
+    PORT->Group[PIO_INT_GROUP].PINCFG[PIO_INT_PIN].reg = PORT_PINCFG_INEN;
+    PORT->Group[PIO_INT_GROUP].DIRSET.reg = (1u << PIO_INT_PIN);
+    g_pio_il_state = 0u;
+    if (g_rec_len[REC_INTERLOCK_CFG] > 0u) {
+        g_pio_il_pstat = (uint8_t)il_parse((const char*)g_rec_data[REC_INTERLOCK_CFG],
+                                           g_rec_len[REC_INTERLOCK_CFG], &g_pio_il, NULL);
+        if (g_pio_il_pstat == (uint8_t)IL_PARSE_OK && g_pio_il.watch_count > 0u)
+            g_pio_il_valid = true;
+    } else {
+        g_pio_il_pstat = 0xFFu;             // no interlock_cfg record present
+    }
+}
+static void pio_il_disarm(void) {           // leaving PIO mode
+    g_pio_il_valid = false; g_pio_il_tripped = false;
+    pio_int_assert(false);
+}
+static void pio_il_tick(void) {             // run from i2c_store_service (superloop)
+    if (g_mode != MODE_PIO || !g_pio_il_valid) return;
+    bool all_pass = true;
+    for (uint8_t i = 0; i < g_pio_il.watch_count; i++)
+        if (!pio_watch_pass(&g_pio_il.watches[i])) { all_pass = false; break; }
+    g_pio_il_state = (uint8_t)((g_pio_il_tripped ? 1u : 0u) | (all_pass ? 2u : 0u) | 4u);
+    if (!g_pio_il_tripped) {
+        if (!all_pass) {                                     // a watch failed -> TRIP (latched)
+            g_pio_il_tripped = true;
+            g_int_flags |= 0x01u;
+            pio_il_drive_safe();
+            pio_int_assert(true);
+        }
+    } else {
+        pio_il_drive_safe();                // hold the safe outputs each tick (override OLAT)
+    }
+}
+// Master cleared the trip bit in INT_FLAGS -> manual reset. Re-arm; if the fault
+// persists the next tick re-trips, otherwise the master's OLAT resumes driving.
+static void pio_il_manual_reset(void) {
+    if (!g_pio_il_tripped) return;
+    g_pio_il_tripped = false;
+    pio_int_assert(false);
+    pio_update_outputs();                   // restore master OLAT on the freed output pins
+}
+
 // Register read dispatch (control bank). Out-of-range -> 0xFF.
 static uint8_t i2c_reg_read(uint8_t reg) {
     switch (reg) {
@@ -1142,6 +1237,8 @@ static uint8_t i2c_reg_read(uint8_t reg) {
     case REG_PIO_IPOL:  return g_pio_ipol;
     case REG_PIO_GPIO:  return pio_read_gpio();
     case REG_PIO_OLAT:  return g_pio_olat;
+    case REG_PIO_ILSTAT:  return g_pio_il_pstat;         // PIO-b: il_parse status (0=OK/armed)
+    case REG_PIO_ILSTATE: return g_pio_il_state;         // PIO-b: bit0 tripped, bit1 cond-ok, bit2 valid
     case REG_REC_SEL:  return g_store_rec_sel;
     case REG_REC_LEN:  return (g_store_rec_sel < REC_COUNT) ? g_rec_len[g_store_rec_sel] : 0u;
     case REG_REC_OFF:  return g_store_rec_off;
@@ -1164,6 +1261,7 @@ static void i2c_reg_write(uint8_t reg, uint8_t val) {
     case 0x02:                                            // MODE — apply the switch
         if (val <= MODE_MAX && val != g_mode) {
             if (g_mode == MODE_PIO) {                      // leaving PIO
+                pio_il_disarm();                           // deassert INT, drop the latch
                 pio_safe_all();                            // pins safe (inputs)
                 DAC->CTRLB.bit.EOEN = 1;                   // restore DAC output buffer on PA02
                 while (DAC->STATUS.bit.SYNCBUSY) { /* spin */ }
@@ -1173,10 +1271,14 @@ static void i2c_reg_write(uint8_t reg, uint8_t val) {
                 DAC->CTRLB.bit.EOEN = 0;                   // free CH0=PA02 from the DAC (else it pins CH0 low)
                 while (DAC->STATUS.bit.SYNCBUSY) { /* spin */ }
                 pio_apply_all();                           // claim + configure the 8 channels
+                pio_il_arm();                              // parse interlock_cfg, set up INT pin
             }
         }
         break;
-    case 0x04: g_int_flags &= (uint8_t)~val; break;       // INT_FLAGS: write-1-to-clear
+    case 0x04:                                            // INT_FLAGS: write-1-to-clear
+        g_int_flags &= (uint8_t)~val;
+        if (val & 0x01u) pio_il_manual_reset();           // acking the trip bit == manual reset
+        break;
     case 0x0E: if (val == 0xA5u) g_reset_pending = true; break;  // RESET (magic 0xA5; deferred)
     case REG_PIO_IODIR: g_pio_iodir = val; if (g_mode == MODE_PIO) pio_apply_all(); break;
     case REG_PIO_GPPU:  g_pio_gppu  = val; if (g_mode == MODE_PIO) pio_apply_all(); break;
