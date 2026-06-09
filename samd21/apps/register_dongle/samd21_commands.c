@@ -1062,6 +1062,69 @@ void i2c_store_service(void) {
     if (g_reset_pending) NVIC_SystemReset();
 }
 
+// ---- PIO mode (PIO-a): 8-bit GPIO expander, CH0..CH7 = D0-D3, D6-D9 ---------
+// MCP23008-style IODIR/GPPU/IPOL/OLAT/GPIO. Pins are claimed only while MODE=PIO
+// (entering overrides DAC/SERCOM4 on those pads; leaving sets them safe=inputs).
+// Outputs keep INEN on so GPIO-read returns the driven level (no jumper needed).
+// PIO-b will layer the gpio interlock (INT on D10 + safe-drive) on top.
+#define REG_PIO_IODIR  0x10u
+#define REG_PIO_GPPU   0x11u
+#define REG_PIO_IPOL   0x12u
+#define REG_PIO_GPIO   0x13u
+#define REG_PIO_OLAT   0x14u
+
+static const struct { uint8_t group, pin; } g_pio_ch[8] = {
+    {0, 2}, {0, 4}, {0, 10}, {0, 11},   // CH0..3 = D0 D1 D2 D3
+    {1, 8}, {1, 9}, {0,  7}, {0,  5},   // CH4..7 = D6 D7 D8 D9
+};
+static uint8_t g_pio_iodir = 0xFFu;   // power-on default: all inputs (safe)
+static uint8_t g_pio_gppu;
+static uint8_t g_pio_ipol;
+static uint8_t g_pio_olat;
+
+static void pio_apply_ch(uint8_t ch) {
+    uint8_t g = g_pio_ch[ch].group, p = g_pio_ch[ch].pin, bit = (uint8_t)(1u << ch);
+    if (g_pio_iodir & bit) {                            // input
+        PORT->Group[g].DIRCLR.reg = (1u << p);
+        if (g_pio_gppu & bit) {                         // input + pull-up
+            PORT->Group[g].OUTSET.reg = (1u << p);      // OUT=1 selects pull-up direction
+            PORT->Group[g].PINCFG[p].reg = PORT_PINCFG_INEN | PORT_PINCFG_PULLEN;
+        } else {
+            PORT->Group[g].PINCFG[p].reg = PORT_PINCFG_INEN;
+        }
+    } else {                                            // output (INEN kept for read-back)
+        if (g_pio_olat & bit) PORT->Group[g].OUTSET.reg = (1u << p);
+        else                  PORT->Group[g].OUTCLR.reg = (1u << p);
+        PORT->Group[g].PINCFG[p].reg = PORT_PINCFG_INEN;
+        PORT->Group[g].DIRSET.reg = (1u << p);
+    }
+}
+static void pio_apply_all(void) { for (uint8_t i = 0; i < 8; i++) pio_apply_ch(i); }
+static void pio_update_outputs(void) {                  // OLAT change: just the output pins
+    for (uint8_t i = 0; i < 8; i++) {
+        if (g_pio_iodir & (1u << i)) continue;
+        uint8_t g = g_pio_ch[i].group, p = g_pio_ch[i].pin;
+        if (g_pio_olat & (1u << i)) PORT->Group[g].OUTSET.reg = (1u << p);
+        else                        PORT->Group[g].OUTCLR.reg = (1u << p);
+    }
+}
+static void pio_safe_all(void) {                        // leaving PIO: all inputs, no pull
+    g_pio_iodir = 0xFFu; g_pio_olat = 0u;
+    for (uint8_t i = 0; i < 8; i++) {
+        uint8_t g = g_pio_ch[i].group, p = g_pio_ch[i].pin;
+        PORT->Group[g].DIRCLR.reg = (1u << p);
+        PORT->Group[g].PINCFG[p].reg = PORT_PINCFG_INEN;
+    }
+}
+static uint8_t pio_read_gpio(void) {
+    uint8_t v = 0u;
+    for (uint8_t i = 0; i < 8; i++) {
+        uint8_t g = g_pio_ch[i].group, p = g_pio_ch[i].pin;
+        if (PORT->Group[g].IN.reg & (1u << p)) v |= (uint8_t)(1u << i);
+    }
+    return (uint8_t)(v ^ g_pio_ipol);                   // input polarity invert
+}
+
 // Register read dispatch (control bank). Out-of-range -> 0xFF.
 static uint8_t i2c_reg_read(uint8_t reg) {
     switch (reg) {
@@ -1074,6 +1137,11 @@ static uint8_t i2c_reg_read(uint8_t reg) {
     case 0x06: case 0x07: case 0x08: case 0x09:
     case 0x0A: case 0x0B: case 0x0C: case 0x0D:
         return g_unique_id[reg - 0x06u];
+    case REG_PIO_IODIR: return g_pio_iodir;
+    case REG_PIO_GPPU:  return g_pio_gppu;
+    case REG_PIO_IPOL:  return g_pio_ipol;
+    case REG_PIO_GPIO:  return pio_read_gpio();
+    case REG_PIO_OLAT:  return g_pio_olat;
     case REG_REC_SEL:  return g_store_rec_sel;
     case REG_REC_LEN:  return (g_store_rec_sel < REC_COUNT) ? g_rec_len[g_store_rec_sel] : 0u;
     case REG_REC_OFF:  return g_store_rec_off;
@@ -1093,9 +1161,28 @@ static uint8_t i2c_reg_read(uint8_t reg) {
 // Register write dispatch. Read-only / unimplemented regs are ignored.
 static void i2c_reg_write(uint8_t reg, uint8_t val) {
     switch (reg) {
-    case 0x02: if (val <= MODE_MAX) g_mode = val; break;  // MODE (switch stubbed in M2a)
+    case 0x02:                                            // MODE — apply the switch
+        if (val <= MODE_MAX && val != g_mode) {
+            if (g_mode == MODE_PIO) {                      // leaving PIO
+                pio_safe_all();                            // pins safe (inputs)
+                DAC->CTRLB.bit.EOEN = 1;                   // restore DAC output buffer on PA02
+                while (DAC->STATUS.bit.SYNCBUSY) { /* spin */ }
+            }
+            g_mode = val;
+            if (val == MODE_PIO) {                         // entering PIO
+                DAC->CTRLB.bit.EOEN = 0;                   // free CH0=PA02 from the DAC (else it pins CH0 low)
+                while (DAC->STATUS.bit.SYNCBUSY) { /* spin */ }
+                pio_apply_all();                           // claim + configure the 8 channels
+            }
+        }
+        break;
     case 0x04: g_int_flags &= (uint8_t)~val; break;       // INT_FLAGS: write-1-to-clear
     case 0x0E: if (val == 0xA5u) g_reset_pending = true; break;  // RESET (magic 0xA5; deferred)
+    case REG_PIO_IODIR: g_pio_iodir = val; if (g_mode == MODE_PIO) pio_apply_all(); break;
+    case REG_PIO_GPPU:  g_pio_gppu  = val; if (g_mode == MODE_PIO) pio_apply_all(); break;
+    case REG_PIO_IPOL:  g_pio_ipol  = val; break;
+    case REG_PIO_GPIO:                                     // GPIO write == OLAT (MCP-style)
+    case REG_PIO_OLAT:  g_pio_olat  = val; if (g_mode == MODE_PIO) pio_update_outputs(); break;
     case REG_REC_SEL: if (val < REC_COUNT) { g_store_rec_sel = val; g_store_rec_off = 0u; } break;
     case REG_REC_LEN: if (g_store_rec_sel < REC_COUNT && val <= REC_DATA_MAX) g_rec_len[g_store_rec_sel] = val; break;
     case REG_REC_OFF: g_store_rec_off = val; break;

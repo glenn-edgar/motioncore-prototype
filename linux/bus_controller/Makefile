@@ -67,6 +67,10 @@ mon_servo_stop: mon_servo_stop_main.c controller.c demux.c identity.c roster.c c
 mon_samd21: mon_samd21_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
+# mon_pio — exercise SAMD21 PIO mode (8-bit GPIO expander: IODIR/OLAT/GPIO).
+mon_pio: mon_pio_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
 # Step 0b — demux reader (reply-vs-async dispatch, monotonic request_ids).
 step0b: step0b_main.c demux.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
