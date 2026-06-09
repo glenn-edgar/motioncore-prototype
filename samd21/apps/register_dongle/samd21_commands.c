@@ -1053,6 +1053,7 @@ static bool store_commit(uint8_t id) {
 // Called from the main superloop: service a pending commit (flash write ~ms) or
 // a deferred soft reset (so the master's RESET write is ACKed before we drop).
 static void pio_il_tick(void);             // PIO-b gpio interlock eval (defined below)
+static void adc_sample_tick(void);         // ADC-a sampler (defined below)
 
 void i2c_store_service(void) {
     if (g_commit_pending >= 0) {
@@ -1064,6 +1065,7 @@ void i2c_store_service(void) {
     }
     if (g_reset_pending) NVIC_SystemReset();
     pio_il_tick();                         // evaluate the gpio interlock (no-op unless armed in PIO)
+    adc_sample_tick();                     // 1 kHz ADC sweep + window stats (no-op unless MODE_ADC)
 }
 
 // ---- PIO mode (PIO-a): 8-bit GPIO expander, CH0..CH7 = D0-D3, D6-D9 ---------
@@ -1220,8 +1222,200 @@ static void pio_il_manual_reset(void) {
     pio_update_outputs();                   // restore master OLAT on the freed output pins
 }
 
+// PIO mode-bank register access (0x10-0x16), dispatched only while MODE_PIO.
+static uint8_t pio_reg_read(uint8_t reg) {
+    switch (reg) {
+    case REG_PIO_IODIR:   return g_pio_iodir;
+    case REG_PIO_GPPU:    return g_pio_gppu;
+    case REG_PIO_IPOL:    return g_pio_ipol;
+    case REG_PIO_GPIO:    return pio_read_gpio();
+    case REG_PIO_OLAT:    return g_pio_olat;
+    case REG_PIO_ILSTAT:  return g_pio_il_pstat;
+    case REG_PIO_ILSTATE: return g_pio_il_state;
+    default:              return 0xFFu;
+    }
+}
+static void pio_reg_write(uint8_t reg, uint8_t val) {
+    switch (reg) {
+    case REG_PIO_IODIR: g_pio_iodir = val; pio_apply_all(); break;
+    case REG_PIO_GPPU:  g_pio_gppu  = val; pio_apply_all(); break;
+    case REG_PIO_IPOL:  g_pio_ipol  = val; break;
+    case REG_PIO_GPIO:                                     // GPIO write == OLAT (MCP-style)
+    case REG_PIO_OLAT:  g_pio_olat  = val; pio_update_outputs(); break;
+    default: break;
+    }
+}
+
+// ---- ADC mode (ADC-a): free-running 8-ch sampler + tumbling-window stats ------
+// DIV16 (3 MHz) ADC, 16x hardware oversample, swept at 1 kHz from the superloop.
+// Per channel, three tumbling windows (10/1/0.1 Hz = 100/1000/10000 samples) keep
+// running min/max/sum/sumsq; on window-fill they snapshot min/max/avg/AC-rms into
+// a readable block and bump a per-window seq id (freshness + seqlock). Selector +
+// block register access. DAC sub-state is constant-only here; ADC-b adds waves.
+#define ADC_NCH   8u
+#define ADC_NWIN  3u
+#define REG_ADC_CH_SEL  0x10u            // w: channel 0..7
+#define REG_ADC_WIN_SEL 0x11u            // w: window 0=10Hz 1=1Hz 2=0.1Hz
+#define REG_ADC_SEQ     0x12u            // r: u16 window snapshot counter
+#define REG_ADC_MIN     0x14u            // r: u16  (block 0x12..0x1B = seq,min,max,avg,rms)
+#define REG_ADC_MAX     0x16u
+#define REG_ADC_AVG     0x18u
+#define REG_ADC_RMS     0x1Au
+#define REG_DAC_MODE    0x20u            // w: 0=constant (1=sine 2=square in ADC-b)
+#define REG_DAC_LEVEL   0x21u            // w: u16 level/amplitude 0..1023
+#define REG_DAC_FREQ    0x23u            // w: u16 Hz
+#define REG_DAC_APPLY   0x25u            // w: latch MODE+LEVEL+FREQ
+
+static const uint8_t  g_adc_ain[ADC_NCH]     = { 4u, 18u, 19u, 2u, 3u, 7u, 5u, 6u }; // D1,D2,D3,D6,D7,D8,D9,D10
+static const uint16_t g_adc_win_len[ADC_NWIN] = { 100u, 1000u, 10000u };             // 10/1/0.1 Hz @ 1 kHz
+
+typedef struct { uint16_t min, max; uint32_t sum; uint64_t sumsq; uint16_t count; } adc_accum_t;
+typedef struct { uint16_t min, max, avg, rms; } adc_stat_t;
+static adc_accum_t g_adc_acc[ADC_NCH][ADC_NWIN];
+static adc_stat_t  g_adc_stat[ADC_NCH][ADC_NWIN];
+static volatile uint16_t g_adc_seq[ADC_NWIN];
+static uint8_t   g_adc_ch_sel, g_adc_win_sel;
+static uint32_t  g_adc_next_ms;
+static uint8_t   g_dac_mode;             // 0=constant
+static uint16_t  g_dac_level;            // 0..1023
+static uint16_t  g_dac_freq;
+
+static uint32_t isqrt32(uint32_t x) {    // integer sqrt for AC-rms
+    uint32_t r = 0u, b = 1u << 30;
+    while (b > x) b >>= 2;
+    while (b) { if (x >= r + b) { x -= r + b; r = (r >> 1) + b; } else { r >>= 1; } b >>= 2; }
+    return r;
+}
+
+static void adc_mode_setup(void) {
+    adc_init();                                              // idempotent (leaves DIV256)
+    ADC->CTRLB.reg = ADC_CTRLB_PRESCALER_DIV16 | ADC_CTRLB_RESSEL_16BIT;   // 3 MHz + averaging mode
+    while (ADC->STATUS.bit.SYNCBUSY) { }
+    ADC->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_16 | ADC_AVGCTRL_ADJRES(4);   // 16x, ADJRES quirk
+    ADC->SAMPCTRL.reg = 3u;                                 // short sample-hold (low-Z sources)
+    while (ADC->STATUS.bit.SYNCBUSY) { }
+    for (uint8_t ch = 0; ch < ADC_NCH; ch++) {
+        ain_to_pad_t pad = g_ain_to_pad[g_adc_ain[ch]];
+        if (pad.port != 0xFFu) adc_pin_config(pad.port, pad.pin);
+    }
+    memset(g_adc_acc, 0, sizeof g_adc_acc);
+    memset(g_adc_stat, 0, sizeof g_adc_stat);
+    for (uint8_t w = 0; w < ADC_NWIN; w++) g_adc_seq[w] = 0u;
+    dac_init();                                             // D0 = DAC out (constant)
+    PORT->Group[0].PINCFG[2].bit.PMUXEN = 1;                // re-route PA02 to the DAC (PIO mode may
+    PORT->Group[0].PMUX[1].bit.PMUXE    = PORT_PMUX_PMUXE_B_Val;  // have left it a GPIO; dac_init is 1-shot)
+    DAC->CTRLB.bit.EOEN = 1;
+    while (DAC->STATUS.bit.SYNCBUSY) { }
+    DAC->DATA.reg = g_dac_level;
+    g_adc_next_ms = board_millis();
+}
+
+static uint16_t adc_convert(uint8_t ain) {
+    ADC->INPUTCTRL.bit.MUXPOS = ain;
+    while (ADC->STATUS.bit.SYNCBUSY) { }
+    // Throwaway conversion: after a mux switch the sample cap still holds the
+    // previous (possibly floating) channel; the first averaged result is
+    // contaminated. Discard it so the real read settles on the new channel.
+    ADC->INTFLAG.reg = ADC_INTFLAG_RESRDY;
+    ADC->SWTRIG.bit.START = 1;
+    while (!ADC->INTFLAG.bit.RESRDY) { }
+    (void)ADC->RESULT.reg;
+    ADC->INTFLAG.reg = ADC_INTFLAG_RESRDY;
+    // Real averaged conversion.
+    ADC->SWTRIG.bit.START = 1;
+    while (!ADC->INTFLAG.bit.RESRDY) { }
+    uint16_t v = (uint16_t)ADC->RESULT.reg;
+    ADC->INTFLAG.reg = ADC_INTFLAG_RESRDY;
+    return v;
+}
+
+static void adc_sample_tick(void) {
+    if (g_mode != MODE_ADC) return;
+    uint32_t now = board_millis();
+    if ((int32_t)(now - g_adc_next_ms) < 0) return;          // 1 kHz gate (1 ms)
+    g_adc_next_ms = now + 1u;
+    for (uint8_t ch = 0; ch < ADC_NCH; ch++) {
+        uint16_t v = adc_convert(g_adc_ain[ch]);
+        if (v > 4095u) v = 4095u;
+        for (uint8_t w = 0; w < ADC_NWIN; w++) {
+            adc_accum_t *a = &g_adc_acc[ch][w];
+            if (a->count == 0u) { a->min = v; a->max = v; }
+            else { if (v < a->min) a->min = v; if (v > a->max) a->max = v; }
+            a->sum   += v;
+            a->sumsq += (uint32_t)v * (uint32_t)v;
+            a->count++;
+        }
+    }
+    for (uint8_t w = 0; w < ADC_NWIN; w++) {
+        if (g_adc_acc[0][w].count >= g_adc_win_len[w]) {     // window full -> snapshot all channels
+            for (uint8_t ch = 0; ch < ADC_NCH; ch++) {
+                adc_accum_t *a = &g_adc_acc[ch][w];
+                uint16_t n = a->count;
+                uint32_t avg = n ? (uint32_t)(a->sum / n) : 0u;
+                // AC-rms = sqrt(var); var = (n*sumsq - sum^2) / n^2, computed in u64
+                // from the raw sums so avg truncation doesn't pollute it.
+                uint32_t var = 0u;
+                if (n) {
+                    uint64_t nss = (uint64_t)n * a->sumsq;
+                    uint64_t ss  = (uint64_t)a->sum * a->sum;
+                    if (nss > ss) var = (uint32_t)((nss - ss) / ((uint64_t)n * n));
+                }
+                g_adc_stat[ch][w].min = a->min;
+                g_adc_stat[ch][w].max = a->max;
+                g_adc_stat[ch][w].avg = (uint16_t)avg;
+                g_adc_stat[ch][w].rms = (uint16_t)isqrt32(var);
+                a->min = 0u; a->max = 0u; a->count = 0u; a->sum = 0u; a->sumsq = 0u;
+            }
+            g_adc_seq[w]++;
+        }
+    }
+}
+
+// ADC mode-bank register access (0x10-0x25), dispatched only while MODE_ADC.
+static uint8_t adc_reg_read(uint8_t reg) {
+    if (reg >= REG_ADC_SEQ && reg <= REG_ADC_RMS + 1u
+        && g_adc_ch_sel < ADC_NCH && g_adc_win_sel < ADC_NWIN) {
+        uint8_t off = (uint8_t)(reg - REG_ADC_SEQ);          // 0..9 -> seq,min,max,avg,rms (5x u16)
+        const adc_stat_t *st = &g_adc_stat[g_adc_ch_sel][g_adc_win_sel];
+        uint16_t blk[5] = { g_adc_seq[g_adc_win_sel], st->min, st->max, st->avg, st->rms };
+        uint16_t v = blk[off >> 1];
+        return (off & 1u) ? (uint8_t)(v >> 8) : (uint8_t)v;
+    }
+    switch (reg) {
+    case REG_ADC_CH_SEL:  return g_adc_ch_sel;
+    case REG_ADC_WIN_SEL: return g_adc_win_sel;
+    case REG_DAC_MODE:     return g_dac_mode;
+    case REG_DAC_LEVEL:    return (uint8_t)g_dac_level;
+    case REG_DAC_LEVEL+1u: return (uint8_t)(g_dac_level >> 8);
+    case REG_DAC_FREQ:     return (uint8_t)g_dac_freq;
+    case REG_DAC_FREQ+1u:  return (uint8_t)(g_dac_freq >> 8);
+    default:               return 0xFFu;
+    }
+}
+static void adc_reg_write(uint8_t reg, uint8_t val) {
+    switch (reg) {
+    case REG_ADC_CH_SEL:  if (val < ADC_NCH)  g_adc_ch_sel  = val; break;
+    case REG_ADC_WIN_SEL: if (val < ADC_NWIN) g_adc_win_sel = val; break;
+    case REG_DAC_MODE:     g_dac_mode  = val; break;
+    case REG_DAC_LEVEL:    g_dac_level = (uint16_t)((g_dac_level & 0xFF00u) | val); break;
+    case REG_DAC_LEVEL+1u: g_dac_level = (uint16_t)((g_dac_level & 0x00FFu) | ((uint16_t)val << 8)); break;
+    case REG_DAC_FREQ:     g_dac_freq  = (uint16_t)((g_dac_freq  & 0xFF00u) | val); break;
+    case REG_DAC_FREQ+1u:  g_dac_freq  = (uint16_t)((g_dac_freq  & 0x00FFu) | ((uint16_t)val << 8)); break;
+    case REG_DAC_APPLY:
+        if (g_dac_level > 1023u) g_dac_level = 1023u;
+        if (g_dac_mode == 0u) DAC->DATA.reg = g_dac_level;   // constant (sine/square in ADC-b)
+        break;
+    default: break;
+    }
+}
+
 // Register read dispatch (control bank). Out-of-range -> 0xFF.
 static uint8_t i2c_reg_read(uint8_t reg) {
+    if (reg >= 0x10u && reg <= 0x3Fu) {                  // mode bank — interpreted per active mode
+        if (g_mode == MODE_PIO) return pio_reg_read(reg);
+        if (g_mode == MODE_ADC) return adc_reg_read(reg);
+        return 0xFFu;
+    }
     switch (reg) {
     case 0x00: return I2C_CLIENT_WHOAMI;
     case 0x01: return I2C_CLIENT_VERSION;
@@ -1232,13 +1426,6 @@ static uint8_t i2c_reg_read(uint8_t reg) {
     case 0x06: case 0x07: case 0x08: case 0x09:
     case 0x0A: case 0x0B: case 0x0C: case 0x0D:
         return g_unique_id[reg - 0x06u];
-    case REG_PIO_IODIR: return g_pio_iodir;
-    case REG_PIO_GPPU:  return g_pio_gppu;
-    case REG_PIO_IPOL:  return g_pio_ipol;
-    case REG_PIO_GPIO:  return pio_read_gpio();
-    case REG_PIO_OLAT:  return g_pio_olat;
-    case REG_PIO_ILSTAT:  return g_pio_il_pstat;         // PIO-b: il_parse status (0=OK/armed)
-    case REG_PIO_ILSTATE: return g_pio_il_state;         // PIO-b: bit0 tripped, bit1 cond-ok, bit2 valid
     case REG_REC_SEL:  return g_store_rec_sel;
     case REG_REC_LEN:  return (g_store_rec_sel < REC_COUNT) ? g_rec_len[g_store_rec_sel] : 0u;
     case REG_REC_OFF:  return g_store_rec_off;
@@ -1257,6 +1444,11 @@ static uint8_t i2c_reg_read(uint8_t reg) {
 
 // Register write dispatch. Read-only / unimplemented regs are ignored.
 static void i2c_reg_write(uint8_t reg, uint8_t val) {
+    if (reg >= 0x10u && reg <= 0x3Fu) {                  // mode bank — interpreted per active mode
+        if (g_mode == MODE_PIO) pio_reg_write(reg, val);
+        else if (g_mode == MODE_ADC) adc_reg_write(reg, val);
+        return;
+    }
     switch (reg) {
     case 0x02:                                            // MODE — apply the switch
         if (val <= MODE_MAX && val != g_mode) {
@@ -1272,6 +1464,8 @@ static void i2c_reg_write(uint8_t reg, uint8_t val) {
                 while (DAC->STATUS.bit.SYNCBUSY) { /* spin */ }
                 pio_apply_all();                           // claim + configure the 8 channels
                 pio_il_arm();                              // parse interlock_cfg, set up INT pin
+            } else if (val == MODE_ADC) {                  // entering ADC
+                adc_mode_setup();                          // DIV16 sampler + window stats + DAC const
             }
         }
         break;
@@ -1280,11 +1474,6 @@ static void i2c_reg_write(uint8_t reg, uint8_t val) {
         if (val & 0x01u) pio_il_manual_reset();           // acking the trip bit == manual reset
         break;
     case 0x0E: if (val == 0xA5u) g_reset_pending = true; break;  // RESET (magic 0xA5; deferred)
-    case REG_PIO_IODIR: g_pio_iodir = val; if (g_mode == MODE_PIO) pio_apply_all(); break;
-    case REG_PIO_GPPU:  g_pio_gppu  = val; if (g_mode == MODE_PIO) pio_apply_all(); break;
-    case REG_PIO_IPOL:  g_pio_ipol  = val; break;
-    case REG_PIO_GPIO:                                     // GPIO write == OLAT (MCP-style)
-    case REG_PIO_OLAT:  g_pio_olat  = val; if (g_mode == MODE_PIO) pio_update_outputs(); break;
     case REG_REC_SEL: if (val < REC_COUNT) { g_store_rec_sel = val; g_store_rec_off = 0u; } break;
     case REG_REC_LEN: if (g_store_rec_sel < REC_COUNT && val <= REC_DATA_MAX) g_rec_len[g_store_rec_sel] = val; break;
     case REG_REC_OFF: g_store_rec_off = val; break;

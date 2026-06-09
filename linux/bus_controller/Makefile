@@ -142,3 +142,7 @@ libbus_controller.so: $(SOLIB_SRC)
 # mon_pio_b — exercise SAMD21 PIO-mode gpio interlock (DSL trip + INT + manual reset).
 mon_pio_b: mon_pio_b_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+# mon_adc_mode — exercise SAMD21 ADC mode (free-running window stats + DAC const).
+mon_adc_mode: mon_adc_mode_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
