@@ -25,6 +25,7 @@
 local cjson         = require("cjson")
 local controller    = require("controller_client")
 local KB3           = require("kb3_sustained")
+local KB4V2         = require("kb4_v2")    -- read-only access to baselines_kb4v2 for secondary trip
 local WsCommand     = require("ws_command")
 local app_heartbeat = require("app_heartbeat")
 
@@ -88,11 +89,26 @@ M.one_shot.KB3_TICK = function(handle, _node)
             return
         end
         st.db = db
-        log(id, "db ready at %s (armed=%s, threshold=%.1f GPM, warmup=%d min, consec=%d)",
+        log(id, "db ready at %s (armed=%s, threshold=%.1f GPM, warmup=%d min, consec=%d, secondary=baseline+%.1f after n>=%d)",
             db_path, tostring(KB3_ARM_KILL),
-            KB3.GPM_THRESHOLD, KB3.WARMUP_MINUTES, KB3.CONSECUTIVE_REQUIRED)
+            KB3.GPM_THRESHOLD, KB3.WARMUP_MINUTES, KB3.CONSECUTIVE_REQUIRED,
+            KB3.BASELINE_DELTA_GPM, KB3.BASELINE_MIN_N_CLEAN)
     end
     local db = st.db
+
+    -- KB4 v2 baselines DB (read-only access for secondary trip)
+    if not st.kb4v2_db then
+        local kb4v2_path = cfg.kb4v2_db_path or "/var/fleet/kb4v2/kb4v2.db"
+        local kb4_db, kerr = KB4V2.open_db(kb4v2_path)
+        if not kb4_db then
+            log(id, "kb4v2 db open FAILED at %s: %s — secondary trip disabled",
+                kb4v2_path, tostring(kerr))
+            st.kb4v2_db = false  -- false = tried-and-failed, don't retry every tick
+        else
+            st.kb4v2_db = kb4_db
+            log(id, "kb4v2 baselines available at %s", kb4v2_path)
+        end
+    end
 
     -- Fast-forward past_actions cursor on first tick
     if not st.initialized then
@@ -117,9 +133,23 @@ M.one_shot.KB3_TICK = function(handle, _node)
             local bin_key  = KB3.bin_key(io_setup)
             if KB3.is_eto_bin(io_setup) then
                 local is_city = KB3.is_city_bin(io_setup)
+
+                -- Look up per-bin baseline for secondary trip path.
+                -- Gated on n_clean_runs to avoid acting on a 1-run sample
+                -- that could be the leak itself.
+                local baseline_gpm = nil
+                if st.kb4v2_db then
+                    local b = KB4V2.load_baseline(st.kb4v2_db, bin_key)
+                    if b and b.base_flow_gpm
+                       and (b.n_clean_runs or 0) >= KB3.BASELINE_MIN_N_CLEAN then
+                        baseline_gpm = b.base_flow_gpm
+                    end
+                end
+
                 st.arming = {
                     bin           = bin_key,
                     is_city       = is_city,
+                    baseline_gpm  = baseline_gpm,
                     schedule      = ent.details.schedule_name,
                     station_step  = ent.details.step,
                     started_sid   = ent.stream_id,
@@ -127,11 +157,15 @@ M.one_shot.KB3_TICK = function(handle, _node)
                     consecutive   = 0,
                     fired         = false,
                 }
-                log(id, "STATION_START bin=%s sched=%s step=%s (ETO%s — armed)",
+                log(id, "STATION_START bin=%s sched=%s step=%s (ETO%s%s — armed)",
                     bin_key,
                     tostring(ent.details.schedule_name),
                     tostring(ent.details.step),
-                    is_city and ", CITY" or "")
+                    is_city and ", CITY" or "",
+                    baseline_gpm
+                        and string.format(", baseline=%.1f GPM secondary trip @ %.1f",
+                            baseline_gpm, baseline_gpm + KB3.BASELINE_DELTA_GPM)
+                        or ", no baseline — primary only")
             else
                 st.arming = nil
                 log(id, "STATION_START bin=%s — non-ETO, skipping",
@@ -213,7 +247,10 @@ M.one_shot.KB3_TICK = function(handle, _node)
         plc_gpm        = plc,
         hunter_gpm     = hunter,
         city_delta_gpm = result.city_delta,
-        trip_plc       = result.trip_plc,
+        baseline_gpm   = result.baseline_gpm,
+        trip_primary   = result.trip_primary,
+        trip_secondary = result.trip_secondary,
+        trip_path      = result.trip_path,
         consecutive    = result.consecutive,
         in_warmup      = result.in_warmup,
         fired          = result.fired,
@@ -244,8 +281,18 @@ M.one_shot.KB3_TICK = function(handle, _node)
         local city_tail = st.arming.is_city and result.city_delta
             and string.format("\ncity_delta=%+.1f GPM (FHV-PLC)", result.city_delta)
             or ""
+        local trip_desc
+        if result.trip_path == "primary" then
+            trip_desc = string.format("3 consec min PLC > %.0f GPM (primary/absolute)", KB3.GPM_THRESHOLD)
+        elseif result.trip_path == "secondary" then
+            trip_desc = string.format("3 consec min PLC > %.1f GPM (secondary: baseline %.1f + %.1f)",
+                (result.baseline_gpm or 0) + KB3.BASELINE_DELTA_GPM,
+                result.baseline_gpm or 0, KB3.BASELINE_DELTA_GPM)
+        else
+            trip_desc = string.format("3 consec min PLC > %.0f GPM (both primary AND secondary)", KB3.GPM_THRESHOLD)
+        end
         local body = string.format(
-            "🚨 KB3 SUSTAINED LEAK — %s%s\nschedule=%s step=%s minute=%d\nPLC=%.1f GPM  HUNTER=%.1f GPM%s\n3 consecutive minutes PLC > %.0f GPM\n%s",
+            "🚨 KB3 SUSTAINED LEAK — %s%s\nschedule=%s step=%s minute=%d\nPLC=%.1f GPM  HUNTER=%.1f GPM%s\n%s\n%s",
             st.arming.bin,
             st.arming.is_city and " [CITY]" or "",
             tostring(st.arming.schedule),
@@ -253,7 +300,7 @@ M.one_shot.KB3_TICK = function(handle, _node)
             elapsed or 0,
             plc or 0, hunter or 0,
             city_tail,
-            KB3.GPM_THRESHOLD,
+            trip_desc,
             KB3_ARM_KILL and ("ACTUATED: " .. table.concat(actions_sent, ", "))
                          or "MONITOR-ONLY (KB3_ARM_KILL not set)")
         local nok, nerr = push_notify(ps, id, body)
@@ -271,11 +318,11 @@ M.one_shot.KB3_TICK = function(handle, _node)
             plc_gpm        = plc,
             hunter_gpm     = hunter,
             city_delta_gpm = result.city_delta,
+            baseline_gpm   = result.baseline_gpm,
+            trip_path      = result.trip_path,
             actions_sent   = table.concat(actions_sent, ","),
             armed          = KB3_ARM_KILL,
-            note           = string.format("3 consec PLC > %.0f GPM%s",
-                KB3.GPM_THRESHOLD,
-                st.arming.is_city and " [city bin]" or ""),
+            note           = trip_desc,
         })
 
         log(id, "FIRED bin=%s minute=%d PLC=%.1f HUNTER=%.1f armed=%s",

@@ -40,7 +40,15 @@ local M = {}
 -- =========================================================================
 -- Tuneables
 -- =========================================================================
-M.GPM_THRESHOLD       = 15.0   -- fire if PLC > this for N consecutive minutes
+M.GPM_THRESHOLD       = 15.0   -- primary: fire if PLC > this for N consec min (absolute)
+-- Secondary trip (Glenn 2026-06-09 PM): catches elevated-for-this-bin runs
+-- that don't cross the absolute threshold. Reads KB4 v2's per-bin baseline
+-- (base_flow_gpm from baselines_kb4v2 table). When baseline + delta is
+-- lower than GPM_THRESHOLD, secondary trips first; when baseline is
+-- absent or has < BASELINE_MIN_N_CLEAN runs, only primary applies.
+-- Both trips share the 3-consec gate.
+M.BASELINE_DELTA_GPM    = 2.0   -- secondary: fire if PLC > baseline + this
+M.BASELINE_MIN_N_CLEAN  = 3     -- skip secondary until baseline has this many clean runs
 -- WARMUP_MINUTES exists because of SPRINKLER LINE RECHARGE (Glenn 2026-06-09):
 -- When a station starts, the dry/depressurized sprinkler distribution lines
 -- fill rapidly — water rushes in to refill empty pipe between the master
@@ -120,17 +128,22 @@ end
 -- arming: the per-station state table. Mutated in place. Fields:
 --   bin             string
 --   is_city         bool — set at STATION_START; affects city_delta logging
+--   baseline_gpm    REAL | nil — KB4 v2 per-bin baseline if available with
+--                                n_clean_runs >= BASELINE_MIN_N_CLEAN
 --   started_sid     past_actions stream_id of STATION_START
 --   prev_elapsed    last seen popup.ELASPED_TIME (so we eval only on change)
 --   consecutive     current count of over-threshold minutes
 --   fired           bool — true after we've fired this station
 --
--- Returns table { action, elapsed, plc, hunter, city_delta, trip_plc,
---                 consecutive, fired, in_warmup, no_change } describing
--- what just happened — caller logs and may dispatch on action="FIRE".
+-- Returns table describing what happened. Caller logs and may dispatch on
+-- action="FIRE". `trip_path` is "primary" | "secondary" | "both" | nil so
+-- the operator knows which gate fired.
 --
--- Trip rule: PLC > THRESHOLD only. FHV no longer trips (carried for
--- telemetry; on city bins it produces city_delta).
+-- Trip rule:
+--   primary   = PLC > GPM_THRESHOLD
+--   secondary = baseline_gpm and PLC > (baseline_gpm + BASELINE_DELTA_GPM)
+--   trip      = primary OR secondary
+-- FHV no longer trips (carried for telemetry; on city bins it produces city_delta).
 function M.evaluate_step(arming, elapsed, plc, hunter)
     if not arming or not elapsed then
         return { action = "skip", reason = "no_arming_or_elapsed" }
@@ -144,8 +157,6 @@ function M.evaluate_step(arming, elapsed, plc, hunter)
     arming.prev_elapsed = elapsed
 
     -- city_delta: signed FHV - PLC (positive = city water contributing).
-    -- Always computed when both readings exist so we have it across the
-    -- full run for diagnostics. Only persisted on city bins.
     local city_delta = nil
     if plc and hunter then city_delta = hunter - plc end
 
@@ -156,6 +167,7 @@ function M.evaluate_step(arming, elapsed, plc, hunter)
             action = "warmup", elapsed = elapsed,
             plc = plc, hunter = hunter, city_delta = city_delta,
             consecutive = 0, in_warmup = true,
+            baseline_gpm = arming.baseline_gpm,
         }
     end
 
@@ -165,11 +177,18 @@ function M.evaluate_step(arming, elapsed, plc, hunter)
             action = "fired_already", elapsed = elapsed,
             plc = plc, hunter = hunter, city_delta = city_delta,
             consecutive = arming.consecutive, fired = true,
+            baseline_gpm = arming.baseline_gpm,
         }
     end
 
-    local trip_plc = (plc or 0) > M.GPM_THRESHOLD
-    local trip = trip_plc
+    local plc_val = plc or 0
+    local trip_primary = plc_val > M.GPM_THRESHOLD
+    local trip_secondary = false
+    if arming.baseline_gpm
+       and plc_val > (arming.baseline_gpm + M.BASELINE_DELTA_GPM) then
+        trip_secondary = true
+    end
+    local trip = trip_primary or trip_secondary
 
     if trip then
         arming.consecutive = (arming.consecutive or 0) + 1
@@ -180,15 +199,24 @@ function M.evaluate_step(arming, elapsed, plc, hunter)
     local should_fire = (arming.consecutive >= M.CONSECUTIVE_REQUIRED) and (not arming.fired)
     if should_fire then arming.fired = true end
 
+    local trip_path = nil
+    if trip_primary and trip_secondary then trip_path = "both"
+    elseif trip_primary then trip_path = "primary"
+    elseif trip_secondary then trip_path = "secondary"
+    end
+
     return {
-        action      = should_fire and "FIRE" or "checked",
-        elapsed     = elapsed,
-        plc         = plc,
-        hunter      = hunter,
-        city_delta  = city_delta,
-        trip_plc    = trip_plc,
-        consecutive = arming.consecutive,
-        fired       = arming.fired,
+        action         = should_fire and "FIRE" or "checked",
+        elapsed        = elapsed,
+        plc            = plc,
+        hunter         = hunter,
+        city_delta     = city_delta,
+        trip_primary   = trip_primary,
+        trip_secondary = trip_secondary,
+        trip_path      = trip_path,
+        baseline_gpm   = arming.baseline_gpm,
+        consecutive    = arming.consecutive,
+        fired          = arming.fired,
     }
 end
 
@@ -216,7 +244,10 @@ CREATE TABLE IF NOT EXISTS evals_kb3 (
     plc_gpm         REAL,
     hunter_gpm      REAL,
     city_delta_gpm  REAL,
-    trip_plc        INTEGER,
+    baseline_gpm    REAL,
+    trip_primary    INTEGER,
+    trip_secondary  INTEGER,
+    trip_path       TEXT,
     consecutive     INTEGER,
     in_warmup       INTEGER,
     fired           INTEGER,
@@ -237,6 +268,8 @@ CREATE TABLE IF NOT EXISTS runs_kb3 (
     plc_gpm         REAL,
     hunter_gpm      REAL,
     city_delta_gpm  REAL,
+    baseline_gpm    REAL,
+    trip_path       TEXT,
     actions_sent    TEXT,
     armed           INTEGER DEFAULT 0,
     note            TEXT
@@ -265,9 +298,10 @@ function M.insert_eval(db, fields)
     local stmt = db:prepare([[
         INSERT INTO evals_kb3(
             ts_ms, bin, is_city, schedule, station_step, elapsed_min,
-            plc_gpm, hunter_gpm, city_delta_gpm, trip_plc, consecutive,
+            plc_gpm, hunter_gpm, city_delta_gpm, baseline_gpm,
+            trip_primary, trip_secondary, trip_path, consecutive,
             in_warmup, fired, action)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ]])
     if not stmt then return nil, db:errmsg() end
     stmt:bind_values(fields.ts_ms, fields.bin,
@@ -276,7 +310,10 @@ function M.insert_eval(db, fields)
         fields.station_step, fields.elapsed_min,
         fields.plc_gpm, fields.hunter_gpm,
         fields.is_city and fields.city_delta_gpm or nil,
-        fields.trip_plc and 1 or 0,
+        fields.baseline_gpm,
+        fields.trip_primary and 1 or 0,
+        fields.trip_secondary and 1 or 0,
+        fields.trip_path,
         fields.consecutive or 0,
         fields.in_warmup and 1 or 0,
         fields.fired and 1 or 0,
@@ -290,8 +327,9 @@ function M.insert_fire(db, fields)
     local stmt = db:prepare([[
         INSERT INTO runs_kb3(
             ts_ms, bin, is_city, schedule, station_step, elapsed_min,
-            plc_gpm, hunter_gpm, city_delta_gpm, actions_sent, armed, note)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            plc_gpm, hunter_gpm, city_delta_gpm, baseline_gpm,
+            trip_path, actions_sent, armed, note)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ]])
     if not stmt then return nil, db:errmsg() end
     stmt:bind_values(fields.ts_ms, fields.bin,
@@ -300,6 +338,8 @@ function M.insert_fire(db, fields)
         fields.station_step, fields.elapsed_min,
         fields.plc_gpm, fields.hunter_gpm,
         fields.is_city and fields.city_delta_gpm or nil,
+        fields.baseline_gpm,
+        fields.trip_path,
         fields.actions_sent or "",
         fields.armed and 1 or 0,
         fields.note)
