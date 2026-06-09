@@ -20,7 +20,7 @@ M.capabilities = {
 }
 
 M.app_kbs = { "monitor", "detector", "kb4_clog", "kb2_resistance",
-              "kb1_overcurrent", "kb2_within_run" }
+              "kb1_overcurrent", "kb2_within_run", "kb3_sustained" }
 
 -- Controller config — where to fetch popup + past_actions from.
 -- Reused by lib/controller_client.lua (which wraps the SSH+python popup
@@ -111,19 +111,22 @@ M.kb2_within_run = {
     kb2_db_path = os.getenv("KB2_DB_PATH")    or "/var/fleet/kb2/kb2.db",
 }
 
--- KB3-curve — ETO-aware live leak detector, sister to KB3 hard-kill.
--- WSL test phase: monitor-only (no SKIP_STATION). Reads baselines_eto
--- from kb4.db (no separate DB). LEAK at avg5 > ceiling + 5 GPM (Discord).
--- WARN at avg5 > ceiling + 2 GPM (DB only). Sliding 5-sample average.
--- ceiling_offset_gpm: set negative (e.g. -3) to force-fire during
--- end-to-end path verification, then return to 0.
-M.kb3_curve = {
-    db_path             = os.getenv("KB4_DB_PATH") or "/var/fleet/kb4/kb4.db",
-    window_n            = 5,
-    leak_delta_gpm      = tonumber(os.getenv("KB3_CURVE_LEAK_DELTA_GPM") or "5.0"),
-    warn_delta_gpm      = tonumber(os.getenv("KB3_CURVE_WARN_DELTA_GPM") or "2.0"),
-    ceiling_offset_gpm  = tonumber(os.getenv("KB3_CURVE_CEILING_OFFSET_GPM") or "0.0"),
+-- KB3 sustained — schedule-aware ETO leak detector (Glenn 2026-06-09).
+-- Fires on 3 consecutive minutes of PLC_FLOW_METER OR FILTERED_HUNTER_VALVE
+-- above 15 GPM, after a 5-min warmup. ETO bins only. On fire: dispatches
+-- CLOSE_MASTER_VALVE + SKIP_STATION. Independent of every other KB.
+M.kb3_sustained = {
+    ssh_host             = os.getenv("IRRIGATION_CONTROLLER_HOST") or "pi@irrigation",
+    timeout_s            = 8,
+    poll_s               = tonumber(os.getenv("IRRIGATION_KB3_POLL_S") or "30"),
+    db_path              = os.getenv("KB3_DB_PATH") or "/var/fleet/kb3/kb3.db",
+    gpm_threshold        = tonumber(os.getenv("KB3_GPM_THRESHOLD")    or "15.0"),
+    warmup_minutes       = tonumber(os.getenv("KB3_WARMUP_MIN")       or "5"),
+    consecutive_required = tonumber(os.getenv("KB3_CONSECUTIVE_MIN")  or "3"),
 }
+
+-- KB3-curve REMOVED 2026-06-09. Replaced by kb3_sustained (Glenn's redesign).
+-- See M.kb3_sustained above.
 
 -- Persistence-topology declaration. Three leaves for the v1 skeleton:
 --   state/latest  — UPSERT status; current irrigation state snapshot

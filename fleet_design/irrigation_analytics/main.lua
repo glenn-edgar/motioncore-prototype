@@ -75,10 +75,12 @@ local kb4_clog_fns = require("kb4_clog_user_functions")
 local kb2_resistance_fns = require("kb2_resistance_user_functions")
 local kb1_overcurrent_fns = require("kb1_overcurrent_user_functions")
 local kb2_within_run_fns = require("kb2_within_run_user_functions")
+local kb3_sustained_fns = require("kb3_sustained_user_functions")
 fn_registry.register_functions(ir, builtins,
     conn_fns.registry, monitor_fns.registry, detector_fns.registry,
     kb4_clog_fns.registry, kb2_resistance_fns.registry,
-    kb1_overcurrent_fns.registry, kb2_within_run_fns.registry)
+    kb1_overcurrent_fns.registry, kb2_within_run_fns.registry,
+    kb3_sustained_fns.registry)
 
 local ok, missing = fn_registry.validate(ir)
 if not ok then
@@ -156,25 +158,8 @@ do
         handle.blackboard._detector_baselines = nil
     end
 
-    -- KB3-curve baselines: read from kb4.db baselines_eto table. ETO-only,
-    -- monitor-only sister to KB3 (no actuation). If the DB doesn't exist yet
-    -- (first boot before KB4 has populated), kb3_curve simply no-ops on every
-    -- tick until the next reboot picks it up.
-    local kb3c_cfg = class_spec.kb3_curve or {}
-    local kb3c_path = kb3c_cfg.db_path or "/var/fleet/kb4/kb4.db"
-    local KB3Curve_local = require("kb3_curve")
-    local kb3c_baselines, n_kb3c, kb3c_err = KB3Curve_local.load_baselines(kb3c_path)
-    if kb3c_baselines then
-        io.stderr:write(string.format(
-            "IRRIGATION_ANALYTICS [%s]: loaded %d KB3-curve baselines from %s\n",
-            id.namespace, n_kb3c, kb3c_path))
-        handle.blackboard._kb3_curve_baselines = kb3c_baselines
-    else
-        io.stderr:write(string.format(
-            "IRRIGATION_ANALYTICS [%s]: KB3-curve baselines load FAILED (%s) — KB3-curve disabled\n",
-            id.namespace, tostring(kb3c_err)))
-        handle.blackboard._kb3_curve_baselines = nil
-    end
+    -- KB3-curve removed 2026-06-09 (replaced by kb3_sustained chain which
+    -- doesn't need baselines_eto — uses absolute 15 GPM threshold instead).
 end
 
 handle.controller_last_beat = nil

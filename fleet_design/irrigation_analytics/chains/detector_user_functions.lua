@@ -29,7 +29,7 @@ local Modes         = require("modes")
 local T             = require("thresholds")
 local Baselines     = require("baselines")
 local KB3Live       = require("kb3_live")
-local KB3Curve      = require("kb3_curve")
+-- KB3-curve removed 2026-06-09 (Glenn's redesign — replaced by kb3_sustained chain)
 local WsCommand     = require("ws_command")
 local app_heartbeat = require("app_heartbeat")
 
@@ -162,7 +162,8 @@ local function apply_past_actions(st, delta, curves, baselines, id)
                 last_accepted_ts       = nil,
                 cond_state             = {},
                 kb3                    = { by_step = {}, last_step = 0, fired = false },
-                kb3_curve              = { samples = {}, fired_leak = false, fired_warn = false },
+                -- kb3_curve session-state removed 2026-06-09; kb3_sustained chain
+                -- has its own independent arming state in bb._kb3.
             }
             log(id, "STATION_START bin=%s calibrated=%s baseline=%s",
                 bin_key,
@@ -355,39 +356,11 @@ M.one_shot.DETECTOR_TICK = function(handle, _node)
         end
     end
 
-    -- 8b) KB3 CURVE — ETO-aware live leak detector.
-    -- Only fires on ETO bins (those with a baselines_eto row). Non-ETO short
-    -- runs fall through silently — no flat-ref fallback by design.
-    local kb3c_baselines = bb._kb3_curve_baselines
-    local kb3c_cfg       = (cs and cs.kb3_curve) or {}
-    if state == SM.states.ACTIVE_RUN
-       and st.arming and st.arming.bin_key
-       and kb3c_baselines then
-        local entry = KB3Curve.lookup(kb3c_baselines, st.arming.bin_key)
-        local filt  = live_hunter_gpm
-        local step  = tonumber(popup.STEP)
-        if entry and filt then
-            local res = KB3Curve.update(entry, st.arming.kb3_curve, filt, step, kb3c_cfg)
-            if res then
-                if res.fired_leak then
-                    log(id, "KB3-CURVE LEAK bin=%s avg5=%.2f ceil=%.2f step=%d",
-                        st.arming.bin_key, res.avg5, res.ceiling, res.step)
-                    events[#events+1] = KB3Curve.event_leak(st.arming.bin_key, res)
-                end
-                if res.fired_warn then
-                    log(id, "KB3-CURVE WARN bin=%s avg5=%.2f ceil=%.2f step=%d",
-                        st.arming.bin_key, res.avg5, res.ceiling, res.step)
-                    events[#events+1] = KB3Curve.event_warn(st.arming.bin_key, res)
-                end
-                -- Every-tick math log (helps verify the path on healthy runs).
-                if res.win_n >= KB3Curve.WINDOW_N then
-                    log(id, "kb3_curve [%s]: sample=%.1f avg5=%.2f ceil=%.2f Δ=%+.2f step=%s",
-                        st.arming.bin_key, filt, res.avg5, res.eff_ceiling,
-                        res.avg5 - res.eff_ceiling, tostring(res.step))
-                end
-            end
-        end
-    end
+    -- 8b) KB3 CURVE REMOVED 2026-06-09 (Glenn's redesign).
+    -- Replaced by kb3_sustained chain (chains/kb3_sustained_user_functions.lua)
+    -- which is schedule-aware, ETO-only, uses 5-min warmup + 3 consecutive
+    -- minutes over 15 GPM threshold on EITHER PLC_FLOW_METER OR
+    -- FILTERED_HUNTER_VALVE. Independent of detector chain entirely.
 
     -- 9) last_sample for next cycle (sustained-N comparison in Modes.eval_eq)
     st.last_sample = {

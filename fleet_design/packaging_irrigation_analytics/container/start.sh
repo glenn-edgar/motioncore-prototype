@@ -33,6 +33,9 @@ mkdir -p "$FLEET_DATA_DIR/kb2_wr"
 # KB1 SQLite directory — written by kb1_overcurrent chain.
 mkdir -p "$FLEET_DATA_DIR/kb1"
 
+# KB3 SQLite directory — written by kb3_sustained chain (Glenn 2026-06-09 redesign).
+mkdir -p "$FLEET_DATA_DIR/kb3"
+
 # Stage SSH key/config from the read-only secrets bind mount into /root/.ssh
 # so the openssh client accepts them (strict-perm check requires
 # owner=root + mode 600). Required by controller_client.lua's
