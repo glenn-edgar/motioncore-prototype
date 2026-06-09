@@ -923,6 +923,9 @@ enum { REC_IDENTITY = 0, REC_CLASS_INSTANCE, REC_BUS_ROSTER,
 #define REG_REC_DATA   0x43u
 #define REG_REC_CTRL   0x44u
 #define REG_STORE_STAT 0x45u
+#define REG_SET_ADDR   0x0Fu   // control-bank: magic-guarded address commissioning (data-port)
+// Registers the master bursts -> the ISR must NOT advance the register pointer.
+#define IS_DATA_PORT(r) ((r) == REG_REC_DATA || (r) == REG_SET_ADDR)
 
 typedef struct {
     uint32_t magic;      // STORE_ENTRY_MAGIC
@@ -942,6 +945,7 @@ static bool     g_rec_dirty[REC_COUNT];
 static uint16_t g_store_wr_cursor;                     // round-robin write cursor
 static volatile int8_t g_commit_pending = -1;          // rec id to commit (ISR -> main loop)
 static volatile bool   g_reset_pending;                // soft-reset request (ISR -> main loop)
+static bool            g_setaddr_armed;                // SET_ADDR magic seen, awaiting the new addr
 static uint8_t  g_store_rec_sel;
 static uint8_t  g_store_rec_off;
 
@@ -1081,6 +1085,7 @@ static uint8_t i2c_reg_read(uint8_t reg) {
         return v;
     }
     case REG_STORE_STAT: return g_status;
+    case REG_SET_ADDR:   return 0u;
     default:   return 0xFFu;
     }
 }
@@ -1107,6 +1112,19 @@ static void i2c_reg_write(uint8_t reg, uint8_t val) {
         if (val == 0xC0u && g_store_rec_sel < REC_COUNT) g_commit_pending = (int8_t)g_store_rec_sel;
         else if (val == 0x5Eu) store_load();
         break;
+    case REG_SET_ADDR:                                    // commissioning data-port: [0xAC magic][new_addr]
+        if (!g_setaddr_armed) {
+            g_setaddr_armed = (val == 0xACu);
+        } else {
+            g_setaddr_armed = false;
+            if (val >= 0x08u && val <= 0x77u) {           // valid 7-bit address
+                g_rec_data[REC_IDENTITY][0] = val;        // identity record byte 0 = I2C address
+                if (g_rec_len[REC_IDENTITY] < 1u) g_rec_len[REC_IDENTITY] = 1u;
+                g_rec_dirty[REC_IDENTITY] = true;
+                g_commit_pending = (int8_t)REC_IDENTITY;  // persist; effective on next RESET
+            }
+        }
+        break;
     default:   break;
     }
 }
@@ -1114,6 +1132,17 @@ static void i2c_reg_write(uint8_t reg, uint8_t val) {
 static void i2c_slave_init(void) {
     i2c_read_unique_id();   // for commissioning identification (UNIQUE_ID regs)
     store_load();           // scan the config log -> RAM shadow of each record
+
+    // Identity record: byte0 = I2C address, byte1 = power-up mode. Default 0x55
+    // / IDLE if unprovisioned. (Set via SET_ADDR commissioning, effective here.)
+    if (g_rec_len[REC_IDENTITY] >= 1u) {
+        uint8_t a = g_rec_data[REC_IDENTITY][0];
+        if (a >= 0x08u && a <= 0x77u) g_i2c_addr = a;
+    }
+    if (g_rec_len[REC_IDENTITY] >= 2u) {
+        uint8_t m = g_rec_data[REC_IDENTITY][1];
+        if (m <= MODE_MAX) g_mode = m;
+    }
 
     // 1. Bus clock.
     PM->APBCMASK.reg |= PM_APBCMASK_SERCOM2;
@@ -1178,7 +1207,7 @@ void SERCOM2_Handler(void) {
         i2c_reg_ptr_known = false;
         if (s->STATUS.bit.DIR) {                        // master read -> pre-load 1st tx byte
             s->DATA.reg = i2c_reg_read(i2c_reg_ptr);    // else the stale addr byte goes out first
-            if (i2c_reg_ptr != REG_REC_DATA) i2c_reg_ptr++;  // data port advances OFFSET, not reg ptr
+            if (!IS_DATA_PORT(i2c_reg_ptr)) i2c_reg_ptr++;  // data port advances OFFSET, not reg ptr
         }
         s->CTRLB.bit.ACKACT = 0;
         s->CTRLB.bit.CMD = 0x3;                         // ACK the address (smart mode)
@@ -1189,11 +1218,11 @@ void SERCOM2_Handler(void) {
     if (s->INTFLAG.bit.DRDY) {
         if (s->STATUS.bit.DIR) {                        // master read -> slave transmit
             s->DATA.reg = i2c_reg_read(i2c_reg_ptr);    // smart mode sends it
-            if (i2c_reg_ptr != REG_REC_DATA) i2c_reg_ptr++;
+            if (!IS_DATA_PORT(i2c_reg_ptr)) i2c_reg_ptr++;
         } else {                                        // master write -> slave receive
             uint8_t b = (uint8_t)s->DATA.reg;           // smart mode ACKs it
             if (!i2c_reg_ptr_known) { i2c_reg_ptr = b; i2c_reg_ptr_known = true; }
-            else { uint8_t reg = i2c_reg_ptr; i2c_reg_write(reg, b); if (reg != REG_REC_DATA) i2c_reg_ptr++; }
+            else { uint8_t reg = i2c_reg_ptr; i2c_reg_write(reg, b); if (!IS_DATA_PORT(reg)) i2c_reg_ptr++; }
         }
         return;
     }

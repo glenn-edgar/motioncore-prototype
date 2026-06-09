@@ -79,6 +79,18 @@ static int store_read(controller_t *c, uint8_t rec, uint8_t *dst, uint8_t len) {
     memcpy(dst, r.buf, len); return 0;
 }
 
+/* commissioning: SET_ADDR (0x0F) is a data-port -> write [0x0F][0xAC magic][new_addr] */
+static int set_addr(controller_t *c, uint8_t newaddr) {
+    uint8_t a[4] = { g_addr, 0x0F, 0xAC, newaddr };
+    reply_t r; return (call_to(c, APPCORE, CMD_I2C_WRITE, a, 4, &r)!=0 || r.status!=0) ? -1 : 0;
+}
+static void do_reset(controller_t *c) { reg_write(c, 0x0E, 0xA5); }  /* deferred soft-reset (may NACK) */
+/* re-read WHO_AM_I at g_addr, retrying while the chip reboots */
+static int whoami_retry(controller_t *c, uint8_t *out) {
+    for (int i=0;i<12 && !g_stop;i++){ if (reg_read(c, REG_WHOAMI, out, 1)==0) return 0; nap_ms(400); }
+    return -1;
+}
+
 int main(int argc, char **argv) {
     signal(SIGINT, on_sigint);
     const char *dev   = (argc>1 && argv[1][0]!='-') ? argv[1] : NULL;
@@ -140,6 +152,23 @@ int main(int argc, char **argv) {
     if (got) { int ok=!memcmp(rb,pat,8);
         printf("  read back (FLASH): %02X%02X%02X%02X%02X%02X%02X%02X %s\n", rb[0],rb[1],rb[2],rb[3],rb[4],rb[5],rb[6],rb[7], ok?"ok PERSISTED":"FAIL"); if(!ok)pass=0; }
     else { printf("  read back after reset FAIL (no response)\n"); pass=0; }
+
+    /* M2c: Modbus-style address commissioning (0x55 -> 0x42 -> restore 0x55) */
+    printf("\n  --- address commissioning (M2c) ---\n");
+    uint8_t tgt = 0x42, w = 0;
+    printf("  SET_ADDR 0x%02X -> 0x%02X, reset...\n", g_addr, tgt);
+    if (set_addr(ctrl, tgt) != 0) { printf("  SET_ADDR FAIL\n"); pass=0; }
+    nap_ms(60); do_reset(ctrl); nap_ms(2500);
+    g_addr = tgt;
+    if (whoami_retry(ctrl, &w)==0 && w==0x5A) printf("  WHO_AM_I @0x%02X = 0x%02X  ok COMMISSIONED\n", tgt, w);
+    else { printf("  WHO_AM_I @0x%02X = 0x%02X  FAIL\n", tgt, w); pass=0; }
+
+    printf("  SET_ADDR 0x%02X -> 0x55 (restore), reset...\n", tgt);
+    if (set_addr(ctrl, 0x55) != 0) { printf("  restore SET_ADDR FAIL\n"); pass=0; }
+    nap_ms(60); do_reset(ctrl); nap_ms(2500);
+    g_addr = 0x55;
+    if (whoami_retry(ctrl, &w)==0 && w==0x5A) printf("  WHO_AM_I @0x55 = 0x%02X  ok RESTORED\n", w);
+    else { printf("  WHO_AM_I @0x55 = 0x%02X  FAIL\n", w); pass=0; }
 
     printf("\n[mon_samd21] %s\n", pass?"PASS":"FAIL");
     controller_destroy(ctrl); link_close(ep);
