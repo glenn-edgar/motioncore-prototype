@@ -20,7 +20,8 @@ M.capabilities = {
 }
 
 M.app_kbs = { "monitor", "detector", "kb4_clog", "kb2_resistance",
-              "kb1_overcurrent", "kb2_within_run", "kb3_sustained" }
+              "kb1_overcurrent", "kb2_within_run", "kb3_sustained",
+              "kb4_v2" }
 
 -- Controller config — where to fetch popup + past_actions from.
 -- Reused by lib/controller_client.lua (which wraps the SSH+python popup
@@ -112,8 +113,12 @@ M.kb2_within_run = {
 }
 
 -- KB3 sustained — schedule-aware ETO leak detector (Glenn 2026-06-09).
--- Fires on 3 consecutive minutes of PLC_FLOW_METER OR FILTERED_HUNTER_VALVE
--- above 15 GPM, after a 5-min warmup. ETO bins only. On fire: dispatches
+-- Fires on 3 consecutive minutes of PLC_FLOW_METER above 15 GPM after a
+-- 5-min warmup. ETO bins only. PLC main_flow_meter is the new
+-- high-accuracy well-side sensor (post-filter-fix 2026-06-09 PM); FHV
+-- (FILTERED_HUNTER_VALVE) is no longer in the trip path — on city bins
+-- (any group containing sat_1:39) it's used as a side-channel
+-- city_delta = FHV - PLC to detect city water use. On fire: dispatches
 -- CLOSE_MASTER_VALVE + SKIP_STATION. Independent of every other KB.
 M.kb3_sustained = {
     ssh_host             = os.getenv("IRRIGATION_CONTROLLER_HOST") or "pi@irrigation",
@@ -127,6 +132,23 @@ M.kb3_sustained = {
 
 -- KB3-curve REMOVED 2026-06-09. Replaced by kb3_sustained (Glenn's redesign).
 -- See M.kb3_sustained above.
+
+-- KB4 v2 — PLC-based flow baseline (Glenn 2026-06-09 PM, COLLECTION-ONLY).
+-- Builds per-bin normalized flow + total gallons references over a 5-15
+-- minute window for ETO runs; end-of-run last-3-min flow for non-ETO.
+-- Rolling-7 median per bin (separate baselines for city bins).
+-- NO alerts. KB3 prevents well depletion and thus most baseline poisoning;
+-- median-of-7 absorbs the rest. Future detector modules can read
+-- runs_kb4v2 + baselines_kb4v2 to define thresholds once we have field
+-- data from the post-sprinkler-check repair cycle.
+-- Coexists with kb4_clog (cohort starvation / clog fingerprints).
+M.kb4_v2 = {
+    ssh_host  = os.getenv("IRRIGATION_CONTROLLER_HOST") or "pi@irrigation",
+    timeout_s = 8,
+    poll_s    = tonumber(os.getenv("IRRIGATION_KB4V2_POLL_S") or "60"),
+    db_path   = os.getenv("KB4V2_DB_PATH") or "/var/fleet/kb4v2/kb4v2.db",
+    rolling_n = tonumber(os.getenv("KB4V2_ROLLING_N") or "7"),
+}
 
 -- Persistence-topology declaration. Three leaves for the v1 skeleton:
 --   state/latest  — UPSERT status; current irrigation state snapshot

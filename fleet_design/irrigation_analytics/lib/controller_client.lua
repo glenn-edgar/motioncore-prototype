@@ -31,6 +31,12 @@ local TIME_HISTORY_KEY =
     "[IRRIGIGATION_SCHEDULING_CONTROL:IRRIGIGATION_SCHEDULING_CONTROL]" ..
     "[PACKAGE:IRRIGIGATION_SCHEDULING_CONTROL_DATA][HASH:IRRIGATION_TIME_HISTORY]"
 
+local PLC_STREAM_DB = 4
+-- PLC_MEASUREMENTS_STREAM — high-accuracy well-side flow + plc currents.
+-- ~1 sample/min. Key lives under PLC_MEASUREMENTS/PLC_MEASUREMENTS_PACKAGE.
+-- Fields (per sample): main_flow_meter, FILTERED_HUNTER_VALVE,
+-- HUNTER_HIRES_VALVE, HUNTER_VALVE, plc_irrigation_1, plc_slave_1.
+
 local DEFAULT_SSH_HOST    = "pi@irrigation"
 local DEFAULT_SSH_TIMEOUT = 8
 
@@ -278,6 +284,59 @@ sys.stdout.write(json.dumps({"value": hf[-1] if hf else None, "n": len(hf)}))
         return nil, "controller_client: " .. tostring(decoded._error)
     end
     return decoded
+end
+
+-- plc_xrange(start_ms, end_ms, opts) — fetch PLC_MEASUREMENTS_STREAM
+-- samples between two ms-epoch boundaries. Returns
+--   { samples = [{ sid_ms = INT, main_flow_meter, FILTERED_HUNTER_VALVE,
+--                  HUNTER_HIRES_VALVE, plc_irrigation_1, plc_slave_1 }, ...] }
+-- The stream auto-discovers via "*PLC_MEASUREMENTS_STREAM*" scan so we
+-- don't hard-code the full bracketed key (it's long and unique enough).
+function M.plc_xrange(start_ms, end_ms, opts)
+    if not start_ms or not end_ms then
+        return nil, "plc_xrange: start_ms / end_ms required"
+    end
+    opts = opts or {}
+    local ssh_host  = opts.ssh_host  or DEFAULT_SSH_HOST
+    local timeout_s = opts.timeout_s or DEFAULT_SSH_TIMEOUT
+    local py = string.format([[
+import redis, msgpack, json, sys
+r = redis.Redis(db=%d)
+KEY = None
+for k in r.scan_iter(match="*PLC_MEASUREMENTS_STREAM*"):
+    KEY = k; break
+if KEY is None:
+    sys.stdout.write(json.dumps({"_error": "PLC_MEASUREMENTS_STREAM not found"}))
+    sys.exit(0)
+ents = r.xrange(KEY, min="%d-0", max="%d-0", count=20000)
+out = []
+for sid, fields in ents:
+    try:
+        d = msgpack.unpackb(fields[b"data"], raw=False)
+    except Exception as e:
+        continue
+    if not isinstance(d, dict):
+        continue
+    rec = {"sid_ms": int(sid.decode().split("-")[0])}
+    for k in ("main_flow_meter","FILTERED_HUNTER_VALVE","HUNTER_HIRES_VALVE",
+              "HUNTER_VALVE","plc_irrigation_1","plc_slave_1"):
+        if k in d and d[k] is not None:
+            rec[k] = float(d[k])
+    out.append(rec)
+sys.stdout.write(json.dumps({"samples": out}))
+]], PLC_STREAM_DB, start_ms, end_ms)
+    local raw = run_remote_python(ssh_host, timeout_s, py)
+    if not raw or raw == "" then
+        return nil, "controller_client: plc ssh empty"
+    end
+    local ok, decoded = pcall(cjson.decode, raw)
+    if not ok then
+        return nil, "controller_client: plc decode failed: " .. raw:sub(1, 200)
+    end
+    if decoded._error then
+        return nil, "controller_client: " .. tostring(decoded._error)
+    end
+    return decoded.samples or {}
 end
 
 return M

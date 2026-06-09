@@ -36,6 +36,9 @@ mkdir -p "$FLEET_DATA_DIR/kb1"
 # KB3 SQLite directory — written by kb3_sustained chain (Glenn 2026-06-09 redesign).
 mkdir -p "$FLEET_DATA_DIR/kb3"
 
+# KB4 v2 SQLite directory — PLC-based flow baseline (Glenn 2026-06-09 PM).
+mkdir -p "$FLEET_DATA_DIR/kb4v2"
+
 # Stage SSH key/config from the read-only secrets bind mount into /root/.ssh
 # so the openssh client accepts them (strict-perm check requires
 # owner=root + mode 600). Required by controller_client.lua's

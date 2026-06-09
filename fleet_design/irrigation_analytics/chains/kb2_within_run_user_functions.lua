@@ -17,6 +17,7 @@
 local cjson         = require("cjson")
 local controller    = require("controller_client")
 local KB2_WR        = require("kb2_within_run")
+local KB2           = require("kb2_resistance")     -- for derive_calibration
 local KB1           = require("kb1_overcurrent")    -- reuses load_kb2_R/load_kb2_offset
 local app_heartbeat = require("app_heartbeat")
 
@@ -200,6 +201,29 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
         { ssh_host = ssh_host, timeout_s = cfg.timeout_s or 8 })
     delta = delta or {}
 
+    -- Lazy-derive calibration: only fetch popup if we're going to process at
+    -- least one ETO STEP_COMPLETE this tick. Most ticks have no new events.
+    local calibration = nil
+    local function get_calibration()
+        if calibration then return calibration end
+        local popup_data = controller.popup_get({
+            ssh_host = ssh_host, timeout_s = cfg.timeout_s or 8,
+        })
+        -- KB2_WR has no live currents table for the legacy 2-null fallback;
+        -- if popup lacks v_psu, derive_calibration falls back to a 2-null
+        -- offset of 0, so we patch in the KB2-DB-cached offset here.
+        calibration = KB2.derive_calibration(popup_data, {})
+        if calibration.source == "legacy_2null" then
+            calibration.offset = st.kb2_offset or 0
+        end
+        log(id, "calibration source=%s v_psu=%.3f offset=%.4f",
+            calibration.source, calibration.v_psu,
+            calibration.source == "controller"
+                and (calibration.controller_offset or 0)
+                or calibration.offset)
+        return calibration
+    end
+
     local processed = 0
     local flagged = 0
     for _, ent in ipairs(delta) do
@@ -213,13 +237,14 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
                 if fresh_offset then st.kb2_offset = fresh_offset end
 
                 local n_coils = n_zone_coils_for_bin(bin_key, valves)
+                local cal = get_calibration()
 
                 local th = fetch_th({
                     ssh_host = ssh_host, timeout_s = cfg.timeout_s or 8,
                 }, bin_key)
                 if th and th.I_data and #th.I_data > 0 then
-                    local R_series = KB2_WR.compute_R_per_minute(
-                        th.I_data, st.kb2_offset, st.kb2_R_master, n_coils)
+                    local R_series = KB2_WR.compute_R_per_minute_calibrated(
+                        th.I_data, cal, st.kb2_R_master, n_coils)
                     local result = KB2_WR.analyze_run(R_series)
                     KB2_WR.insert_run(db, {
                         ts_ms       = now_ms(),
@@ -229,7 +254,9 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
                         schedule    = ent.details.schedule_name,
                         run_time_m  = ent.details.run_time,
                         n_samples   = result.n,
-                        null_offset = st.kb2_offset,
+                        null_offset = (cal.source == "controller")
+                                        and (cal.controller_offset or 0)
+                                        or st.kb2_offset,
                         R_master    = st.kb2_R_master,
                         R_start     = result.R_start,
                         R_end       = result.R_end,

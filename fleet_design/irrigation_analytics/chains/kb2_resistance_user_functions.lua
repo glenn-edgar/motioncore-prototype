@@ -23,6 +23,7 @@
 
 local cjson         = require("cjson")
 local KB2           = require("kb2_resistance")
+local controller    = require("controller_client")
 local app_heartbeat = require("app_heartbeat")
 
 local M = { main = {}, one_shot = {}, boolean = {} }
@@ -184,15 +185,38 @@ M.one_shot.KB2_TICK = function(handle, _node)
     end
 
     -- New cycle detected — process all valves.
-    local offset = KB2.compute_offset_2null(latest)
-    if not offset then
-        log(id, "no offset (null channels missing)")
+    -- Fetch popup to pick up controller-published v_psu + sensor_offset
+    -- (added 2026-06-09 in valve_resistance_check_py3 rewrite). On older
+    -- controllers these fields aren't present → derive_calibration falls
+    -- back to legacy 2-null method + hardcoded 15.6 V silently.
+    local popup_data, popup_err = controller.popup_get({
+        ssh_host  = ssh_host,
+        timeout_s = cfg.timeout_s or 8,
+    })
+    if not popup_data then
+        log(id, "popup_get failed (continuing with legacy calibration): %s",
+            tostring(popup_err))
+    end
+
+    local calibration = KB2.derive_calibration(popup_data, latest)
+    local offset = calibration.offset
+    if calibration.source == "legacy_2null"
+       and not KB2.compute_offset_2null(latest) then
+        log(id, "no offset (null channels missing) and controller did not publish v_psu")
         app_heartbeat.stamp(handle, "kb2_resistance", "degraded",
             "offset missing", poll_s)
         return
     end
+    log(id, "calibration source=%s v_psu=%.3f offset=%.4f%s",
+        calibration.source, calibration.v_psu, offset,
+        calibration.controller_v_psu_spread
+            and string.format(" (cohort_n=%d spread=%.3f V)",
+                calibration.controller_cohort_n or 0,
+                calibration.controller_v_psu_spread)
+            or "")
 
     -- Cycle validity: count "near-null" valves (I_net very small → noise).
+    -- In controller mode, I is already offset-corrected → use I directly.
     local near_null_n = 0
     for _, v in ipairs(KB2.VALVE_LIST) do
         local I = latest[v]
@@ -225,7 +249,7 @@ M.one_shot.KB2_TICK = function(handle, _node)
     for _, valve in ipairs(KB2.VALVE_LIST) do
         local I_raw = latest[valve]
         if I_raw then
-            local R = KB2.compute_R(I_raw, offset)
+            local R = KB2.compute_R_calibrated(I_raw, calibration)
             if R then R_table[valve] = R end
         end
     end
@@ -370,8 +394,9 @@ M.one_shot.KB2_TICK = function(handle, _node)
     -- Discord: one message bundling all alerts for this cycle.
     if #notify_lines > 0 then
         local body = string.format(
-            "KB2 resistance — cycle %d:\n%s\n(offset=%.4f A, 2-null method)",
-            cycle_id, table.concat(notify_lines, "\n"), offset)
+            "KB2 resistance — cycle %d:\n%s\n(V_PSU=%.2f V, offset=%.4f A, source=%s)",
+            cycle_id, table.concat(notify_lines, "\n"),
+            calibration.v_psu, offset, calibration.source)
         local ok, err = push_notify(ps, id, body)
         if not ok then
             log(id, "Discord notify FAILED: %s", tostring(err))

@@ -116,8 +116,10 @@ M.one_shot.KB3_TICK = function(handle, _node)
             local io_setup = ent.details.io_setup
             local bin_key  = KB3.bin_key(io_setup)
             if KB3.is_eto_bin(io_setup) then
+                local is_city = KB3.is_city_bin(io_setup)
                 st.arming = {
                     bin           = bin_key,
+                    is_city       = is_city,
                     schedule      = ent.details.schedule_name,
                     station_step  = ent.details.step,
                     started_sid   = ent.stream_id,
@@ -125,10 +127,11 @@ M.one_shot.KB3_TICK = function(handle, _node)
                     consecutive   = 0,
                     fired         = false,
                 }
-                log(id, "STATION_START bin=%s sched=%s step=%s (ETO — armed)",
+                log(id, "STATION_START bin=%s sched=%s step=%s (ETO%s — armed)",
                     bin_key,
                     tostring(ent.details.schedule_name),
-                    tostring(ent.details.step))
+                    tostring(ent.details.step),
+                    is_city and ", CITY" or "")
             else
                 st.arming = nil
                 log(id, "STATION_START bin=%s — non-ETO, skipping",
@@ -178,30 +181,43 @@ M.one_shot.KB3_TICK = function(handle, _node)
         return
     end
 
-    -- Per-minute log line (the trace Glenn asked for)
-    log(id, "bin=%s minute=%s PLC=%s HUNTER=%s %s cons=%d",
-        st.arming.bin,
-        tostring(elapsed),
-        plc    and string.format("%.1f", plc)    or "nil",
-        hunter and string.format("%.1f", hunter) or "nil",
-        result.action,
-        result.consecutive or 0)
+    -- Per-minute log line (the trace Glenn asked for). On city bins also
+    -- show city_delta = FHV - PLC (positive = city water flowing).
+    if st.arming.is_city and result.city_delta then
+        log(id, "bin=%s minute=%s PLC=%s HUNTER=%s city_delta=%+.1f %s cons=%d",
+            st.arming.bin,
+            tostring(elapsed),
+            plc    and string.format("%.1f", plc)    or "nil",
+            hunter and string.format("%.1f", hunter) or "nil",
+            result.city_delta,
+            result.action,
+            result.consecutive or 0)
+    else
+        log(id, "bin=%s minute=%s PLC=%s HUNTER=%s %s cons=%d",
+            st.arming.bin,
+            tostring(elapsed),
+            plc    and string.format("%.1f", plc)    or "nil",
+            hunter and string.format("%.1f", hunter) or "nil",
+            result.action,
+            result.consecutive or 0)
+    end
 
     -- Write evaluation row
     KB3.insert_eval(db, {
-        ts_ms        = now_ms(),
-        bin          = st.arming.bin,
-        schedule     = st.arming.schedule,
-        station_step = st.arming.station_step,
-        elapsed_min  = elapsed,
-        plc_gpm      = plc,
-        hunter_gpm   = hunter,
-        trip_plc     = result.trip_plc,
-        trip_hunter  = result.trip_hunter,
-        consecutive  = result.consecutive,
-        in_warmup    = result.in_warmup,
-        fired        = result.fired,
-        action       = result.action,
+        ts_ms          = now_ms(),
+        bin            = st.arming.bin,
+        is_city        = st.arming.is_city,
+        schedule       = st.arming.schedule,
+        station_step   = st.arming.station_step,
+        elapsed_min    = elapsed,
+        plc_gpm        = plc,
+        hunter_gpm     = hunter,
+        city_delta_gpm = result.city_delta,
+        trip_plc       = result.trip_plc,
+        consecutive    = result.consecutive,
+        in_warmup      = result.in_warmup,
+        fired          = result.fired,
+        action         = result.action,
     })
 
     -- FIRE path
@@ -225,13 +241,18 @@ M.one_shot.KB3_TICK = function(handle, _node)
             log(id, "MONITOR-ONLY: KB3_ARM_KILL not set, actions suppressed")
         end
 
+        local city_tail = st.arming.is_city and result.city_delta
+            and string.format("\ncity_delta=%+.1f GPM (FHV-PLC)", result.city_delta)
+            or ""
         local body = string.format(
-            "🚨 KB3 SUSTAINED LEAK — %s\nschedule=%s step=%s minute=%d\nPLC=%.1f GPM  HUNTER=%.1f GPM\n3 consecutive minutes > %.0f GPM\n%s",
+            "🚨 KB3 SUSTAINED LEAK — %s%s\nschedule=%s step=%s minute=%d\nPLC=%.1f GPM  HUNTER=%.1f GPM%s\n3 consecutive minutes PLC > %.0f GPM\n%s",
             st.arming.bin,
+            st.arming.is_city and " [CITY]" or "",
             tostring(st.arming.schedule),
             tostring(st.arming.station_step),
             elapsed or 0,
             plc or 0, hunter or 0,
+            city_tail,
             KB3.GPM_THRESHOLD,
             KB3_ARM_KILL and ("ACTUATED: " .. table.concat(actions_sent, ", "))
                          or "MONITOR-ONLY (KB3_ARM_KILL not set)")
@@ -241,19 +262,20 @@ M.one_shot.KB3_TICK = function(handle, _node)
         end
 
         KB3.insert_fire(db, {
-            ts_ms        = now_ms(),
-            bin          = st.arming.bin,
-            schedule     = st.arming.schedule,
-            station_step = st.arming.station_step,
-            elapsed_min  = elapsed,
-            plc_gpm      = plc,
-            hunter_gpm   = hunter,
-            actions_sent = table.concat(actions_sent, ","),
-            armed        = KB3_ARM_KILL,
-            note         = string.format("3 consec > %.0f GPM (PLC trip=%s HUNTER trip=%s)",
+            ts_ms          = now_ms(),
+            bin            = st.arming.bin,
+            is_city        = st.arming.is_city,
+            schedule       = st.arming.schedule,
+            station_step   = st.arming.station_step,
+            elapsed_min    = elapsed,
+            plc_gpm        = plc,
+            hunter_gpm     = hunter,
+            city_delta_gpm = result.city_delta,
+            actions_sent   = table.concat(actions_sent, ","),
+            armed          = KB3_ARM_KILL,
+            note           = string.format("3 consec PLC > %.0f GPM%s",
                 KB3.GPM_THRESHOLD,
-                tostring(result.trip_plc),
-                tostring(result.trip_hunter)),
+                st.arming.is_city and " [city bin]" or ""),
         })
 
         log(id, "FIRED bin=%s minute=%d PLC=%.1f HUNTER=%.1f armed=%s",

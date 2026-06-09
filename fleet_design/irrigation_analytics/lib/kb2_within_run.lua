@@ -70,6 +70,53 @@ function M.compute_R_per_minute(I_data, null_offset, R_master, n_zone_coils)
     return out
 end
 
+-- Calibrated variant: takes a KB2 calibration object instead of separate
+-- null_offset + hardcoded PSU. When the controller publishes v_psu +
+-- sensor_offset (post-2026-06-09 rewrite), this uses them; otherwise
+-- the caller passes a legacy_2null calibration built from kb2_resistance's
+-- DB cache + M.PSU_VOLTAGE.
+--
+-- NOTE: IRRIGATION_CURRENT.data[] in TIME_HISTORY is collected during
+-- normal runs (not valve_test), so it is RAW regardless of whether the
+-- controller upgrade has shipped. The calibration object provides the
+-- offset to subtract here in either mode:
+--   - "controller" mode: offset = controller_offset (the value the
+--     controller measured at sensor null this cycle)
+--   - "legacy_2null" mode: offset = 2-null heuristic from valve_test
+function M.compute_R_per_minute_calibrated(I_data, calibration, R_master, n_zone_coils)
+    if not I_data or #I_data == 0 then return nil end
+    if not calibration then return nil end
+    R_master = R_master or M.R_MASTER_DEFAULT
+    n_zone_coils = n_zone_coils or 1
+    local v_psu = calibration.v_psu or M.PSU_VOLTAGE
+    -- For TIME_HISTORY we always need to subtract a sensor offset because
+    -- IRRIGATION_CURRENT is raw. In controller mode, prefer the published
+    -- controller_offset; in legacy mode, the 2-null offset is in
+    -- calibration.offset.
+    local null_offset
+    if calibration.source == "controller" then
+        null_offset = calibration.controller_offset or 0
+    else
+        null_offset = calibration.offset or 0
+    end
+    local out = {}
+    for i, I_obs in ipairs(I_data) do
+        local I_real = I_obs - null_offset
+        if I_real > 0.05 then
+            local R_total = v_psu / I_real
+            local inv = 1.0/R_total - 1.0/R_master
+            if inv > 0 then
+                out[i] = n_zone_coils / inv
+            else
+                out[i] = nil
+            end
+        else
+            out[i] = nil
+        end
+    end
+    return out
+end
+
 -- =========================================================================
 -- Stats
 -- =========================================================================

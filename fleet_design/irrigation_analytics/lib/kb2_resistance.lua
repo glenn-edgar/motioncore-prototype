@@ -105,6 +105,56 @@ function M.compute_offset_2null(currents)
     return (n31 + n46) / 2.0
 end
 
+-- Derive the operative calibration for this cycle. Returns a table:
+--   { v_psu = number, offset = number, source = string,
+--     controller_offset = number_or_nil, controller_v_psu_spread = number_or_nil }
+--
+-- Two sources, tried in order:
+--   1. "controller": popup_data has v_psu + sensor_offset published by the
+--      controller's rewritten valve_resistance_check_py3.py (2026-06-09).
+--      The valve_test currents are ALREADY offset-corrected by the
+--      controller, so our subtraction offset = 0. v_psu is the measured
+--      PSU voltage for this cycle.
+--   2. "legacy_2null": no v_psu in popup → fall back to the 2-null
+--      heuristic + hardcoded PSU_VOLTAGE. This is the path that runs
+--      against the unmodified controller.
+--
+-- popup_data may be nil (popup fetch failed) — silently falls back.
+function M.derive_calibration(popup_data, currents)
+    if popup_data then
+        local v_psu = tonumber(popup_data.v_psu)
+        local ctrl_offset = tonumber(popup_data.sensor_offset)
+        if v_psu and v_psu > 10 and v_psu < 25 and ctrl_offset ~= nil then
+            return {
+                v_psu                  = v_psu,
+                offset                 = 0,  -- controller already subtracted
+                source                 = "controller",
+                controller_offset      = ctrl_offset,
+                controller_v_psu_spread = tonumber(popup_data.v_psu_spread),
+                controller_cohort_n    = tonumber(popup_data.v_psu_cohort_n),
+            }
+        end
+    end
+    -- Legacy fallback
+    return {
+        v_psu  = M.PSU_VOLTAGE,
+        offset = M.compute_offset_2null(currents) or 0,
+        source = "legacy_2null",
+    }
+end
+
+-- Compute R given a current reading and a calibration object. Single
+-- entry-point used by both KB2_TICK and KB2_WR_TICK so the source
+-- transition is in one place.
+function M.compute_R_calibrated(I_raw, calibration)
+    if not I_raw or not calibration then return nil end
+    local I_net = I_raw - (calibration.offset or 0)
+    if I_net <= 0 then return nil end
+    return calibration.v_psu / I_net
+end
+
+-- Legacy two-arg signature preserved for any callers that pass a raw
+-- offset (no callers left after the controller upgrade, but defensive).
 function M.compute_R(I_raw, offset)
     if not I_raw or not offset then return nil end
     local Inet = I_raw - offset
