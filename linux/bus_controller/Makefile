@@ -63,6 +63,10 @@ mon_i2c: mon_i2c_main.c controller.c demux.c identity.c roster.c cmd_tracker.c u
 mon_servo_stop: mon_servo_stop_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
+# mon_samd21 — exercise the SAMD21 I2C client control bank (WHO_AM_I/UNIQUE_ID/MODE).
+mon_samd21: mon_samd21_main.c controller.c demux.c identity.c roster.c cmd_tracker.c usb_link.c $(LIBCOMM)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
 # Step 0b — demux reader (reply-vs-async dispatch, monotonic request_ids).
 step0b: step0b_main.c demux.c usb_link.c $(LIBCOMM)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)

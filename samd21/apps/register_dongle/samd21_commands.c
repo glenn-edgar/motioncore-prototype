@@ -861,21 +861,69 @@ static void i2c_init(void) {
 // I2C master can talk to this dongle. Same pins (PA08/PA09 = D4/D5), same GCLK0
 // as the master path; -DI2C_CLIENT selects slave instead of master at boot.
 //
-// M1: a 16-byte register file (reg[0] = 0x5A device id) — proof of life that the
-// master can scan + read us, like the Pico loopback's 0x42. M2 will layer the
-// shell-command transport (shell_dispatch_payload) over the same RX/TX.
+// Register-mapped device (like a classic I2C chip): the master writes a register
+// address (pointer), then reads/writes with auto-increment. SERCOM slave uses
+// smart mode + SCLSM; the ISR loads the tx byte into DATA — and must pre-load the
+// first byte on AMATCH(read) or the stale address byte clocks out first.
 //
-// Smart mode OFF: we drive CTRLB.CMD/ACKACT explicitly (matches i2c_init style).
-// Register-pointer protocol: a write of 1 byte sets the pointer; further write
-// bytes store from there; a read returns bytes from the pointer (auto-increment).
+// M2a — control bank (always live, every mode):
+//   0x00 WHO_AM_I(ro)=0x5A  0x01 VERSION(ro)  0x02 MODE(rw)  0x03 STATUS(ro)
+//   0x04 INT_FLAGS(ro/W1C)  0x05 I2C_ADDR(ro)  0x06..0x0D UNIQUE_ID[8](ro)
+// Mode switching is stubbed (stores MODE); per-mode config + the store window
+// (0x40..) land in M2b/M2c.
 // ============================================================================
-#define I2C_CLIENT_ADDR  0x55u            // 7-bit slave address
+#define I2C_CLIENT_WHOAMI       0x5Au
+#define I2C_CLIENT_VERSION      0x01u
+#define I2C_CLIENT_ADDR_DEFAULT 0x55u   // 7-bit; M2c makes this come from the store
 
-static volatile uint8_t i2c_slv_reg[16] = { 0x5A }; // reg[0] = device id
-static volatile uint8_t i2c_slv_idx;                // register pointer
-static volatile bool    i2c_slv_idx_known;          // first write byte = the pointer
+enum { MODE_IDLE = 0, MODE_PIO, MODE_ADC, MODE_MIXED, MODE_SERVO, MODE_MAX = MODE_SERVO };
+
+static volatile uint8_t i2c_reg_ptr;        // register address pointer
+static volatile bool    i2c_reg_ptr_known;  // first write byte after addr = the pointer
+static volatile uint8_t g_mode      = MODE_IDLE;
+static volatile uint8_t g_status;           // bit0 flash-busy, bit1 store-err, bit2 int-pending
+static volatile uint8_t g_int_flags;        // interlock trip flags (W1C)
+static uint8_t          g_i2c_addr  = I2C_CLIENT_ADDR_DEFAULT;
+static uint8_t          g_unique_id[8];
+
+// SAMD21 factory serial: word0 @ 0x0080A00C, word1 @ 0x0080A040 (low 64 bits).
+static void i2c_read_unique_id(void) {
+    uint32_t w0 = *(const volatile uint32_t *)0x0080A00Cu;
+    uint32_t w1 = *(const volatile uint32_t *)0x0080A040u;
+    g_unique_id[0] = (uint8_t)w0;         g_unique_id[1] = (uint8_t)(w0 >> 8);
+    g_unique_id[2] = (uint8_t)(w0 >> 16); g_unique_id[3] = (uint8_t)(w0 >> 24);
+    g_unique_id[4] = (uint8_t)w1;         g_unique_id[5] = (uint8_t)(w1 >> 8);
+    g_unique_id[6] = (uint8_t)(w1 >> 16); g_unique_id[7] = (uint8_t)(w1 >> 24);
+}
+
+// Register read dispatch (control bank). Out-of-range -> 0xFF.
+static uint8_t i2c_reg_read(uint8_t reg) {
+    switch (reg) {
+    case 0x00: return I2C_CLIENT_WHOAMI;
+    case 0x01: return I2C_CLIENT_VERSION;
+    case 0x02: return g_mode;
+    case 0x03: return g_status;
+    case 0x04: return g_int_flags;
+    case 0x05: return g_i2c_addr;
+    case 0x06: case 0x07: case 0x08: case 0x09:
+    case 0x0A: case 0x0B: case 0x0C: case 0x0D:
+        return g_unique_id[reg - 0x06u];
+    default:   return 0xFFu;
+    }
+}
+
+// Register write dispatch. Read-only / unimplemented regs are ignored.
+static void i2c_reg_write(uint8_t reg, uint8_t val) {
+    switch (reg) {
+    case 0x02: if (val <= MODE_MAX) g_mode = val; break;  // MODE (switch stubbed in M2a)
+    case 0x04: g_int_flags &= (uint8_t)~val; break;       // INT_FLAGS: write-1-to-clear
+    default:   break;
+    }
+}
 
 static void i2c_slave_init(void) {
+    i2c_read_unique_id();   // for commissioning identification (UNIQUE_ID regs)
+
     // 1. Bus clock.
     PM->APBCMASK.reg |= PM_APBCMASK_SERCOM2;
 
@@ -902,8 +950,9 @@ static void i2c_slave_init(void) {
     //     requires it). This is what makes the transmit actually drive the byte.
     I2C_SERCOM->I2CS.CTRLB.reg = SERCOM_I2CS_CTRLB_SMEN;
 
-    // 5. 7-bit address (placed in ADDR[7:1] by the macro), exact match.
-    I2C_SERCOM->I2CS.ADDR.reg = SERCOM_I2CS_ADDR_ADDR(I2C_CLIENT_ADDR);
+    // 5. 7-bit address (placed in ADDR[7:1] by the macro), exact match. From
+    //    g_i2c_addr (default 0x55; M2c loads it from the identity record).
+    I2C_SERCOM->I2CS.ADDR.reg = SERCOM_I2CS_ADDR_ADDR(g_i2c_addr);
 
     // 6. PMUX PA08/PA09 -> function D (SERCOM2 PAD[0]/[1]).
     PORT->Group[0].PINCFG[8].bit.PMUXEN = 1;
@@ -929,16 +978,15 @@ void SERCOM2_Handler(void) {
     // Stop received -> end of transaction; next AMATCH starts fresh.
     if (s->INTFLAG.bit.PREC) {
         s->INTFLAG.reg = SERCOM_I2CS_INTFLAG_PREC;
-        i2c_slv_idx_known = false;
+        i2c_reg_ptr_known = false;
         return;
     }
 
-    // Address match -> ACK (CMD=0x3 also clears AMATCH). Sync the CMD before
-    // returning so it commits before the first DRDY (esp. on a read).
+    // Address match -> ACK (CMD=0x3 also clears AMATCH).
     if (s->INTFLAG.bit.AMATCH) {
-        i2c_slv_idx_known = false;
+        i2c_reg_ptr_known = false;
         if (s->STATUS.bit.DIR) {                        // master read -> pre-load 1st tx byte
-            s->DATA.reg = i2c_slv_reg[i2c_slv_idx++ & 0x0Fu];  // else the stale addr byte goes out first
+            s->DATA.reg = i2c_reg_read(i2c_reg_ptr++);  // else the stale addr byte goes out first
         }
         s->CTRLB.bit.ACKACT = 0;
         s->CTRLB.bit.CMD = 0x3;                         // ACK the address (smart mode)
@@ -948,11 +996,11 @@ void SERCOM2_Handler(void) {
     // Data ready.
     if (s->INTFLAG.bit.DRDY) {
         if (s->STATUS.bit.DIR) {                        // master read -> slave transmit
-            s->DATA.reg = i2c_slv_reg[i2c_slv_idx++ & 0x0Fu];   // smart mode sends it
+            s->DATA.reg = i2c_reg_read(i2c_reg_ptr++);  // smart mode sends it
         } else {                                        // master write -> slave receive
             uint8_t b = (uint8_t)s->DATA.reg;           // smart mode ACKs it
-            if (!i2c_slv_idx_known) { i2c_slv_idx = b & 0x0Fu; i2c_slv_idx_known = true; }
-            else { i2c_slv_reg[i2c_slv_idx++ & 0x0Fu] = b; }
+            if (!i2c_reg_ptr_known) { i2c_reg_ptr = b; i2c_reg_ptr_known = true; }
+            else { i2c_reg_write(i2c_reg_ptr++, b); }
         }
         return;
     }
