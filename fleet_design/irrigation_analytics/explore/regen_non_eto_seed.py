@@ -21,13 +21,10 @@ def med3(xs):
         s=sorted(xs[max(0,i-1):min(len(xs),i+2)])
         out.append(s[(len(s)-1)//2])
     return out
-def flow_window(series):   # == lib/kb4_baselines.compute_flow_window
+def flow_window(series):   # non-ETO = LAST VALUE of the run (Glenn 2026-06-10)
     s=[v for v in series if v is not None]
-    if len(s)<3: return None
-    f=med3(s); start=1; end=min(15,len(f))   # 0-indexed: skip sample 1
-    if end-start < 3: return None
-    win=f[start:end]
-    return sum(win)/len(win)
+    if not s: return None
+    return s[-1]
 th=json.load(open(TH))
 out={}
 rows=[]

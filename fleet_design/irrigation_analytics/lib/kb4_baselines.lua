@@ -80,6 +80,18 @@ local function median_filter_3(xs)
     return out
 end
 
+-- Non-ETO per-run metric = the LAST value of the run (Glenn 2026-06-10).
+-- Short non-ETO runs (flowers/house/city_rose, 5-8 min) never reach a steady
+-- 5-15 window; the end-of-run value is the best single estimate of delivered
+-- flow. Returns the last non-nil sample. (ETO keeps compute_flow_window.)
+function M.last_value(series)
+    if not series then return nil end
+    for i = #series, 1, -1 do
+        if series[i] ~= nil then return series[i] end
+    end
+    return nil
+end
+
 function M.compute_flow_window(flow_series)
     if not flow_series or #flow_series < 3 then return nil end
     local filt = median_filter_3(flow_series)

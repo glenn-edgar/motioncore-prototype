@@ -320,11 +320,14 @@ function M.one_shot.KB4_TICK(handle, params)
                         else
                             local flow_series = (th_entry.HUNTER_FLOW_METER or {}).data or {}
                             local curr_series = (th_entry.IRRIGATION_CURRENT or {}).data or {}
-                            local flow = KB4.compute_flow_window(flow_series)
+                            -- Non-ETO = LAST value of the run (Glenn 2026-06-10):
+                            -- short bins never reach a steady window; the end value
+                            -- is the per-run flow. Baseline seed is computed the same.
+                            local flow = KB4.last_value(flow_series)
                             local total_gal = KB4.compute_total_gal(flow_series)
-                            local curr = KB4.compute_flow_window(curr_series) or 0
+                            local curr = KB4.last_value(curr_series) or 0
                             if not flow then
-                                log(id, "too short for window: %s (n=%d)",
+                                log(id, "no flow samples: %s (n=%d)",
                                     bin_sorted, #flow_series)
                             else
                                 local baseline_med = bl and bl.flow_med or nil
