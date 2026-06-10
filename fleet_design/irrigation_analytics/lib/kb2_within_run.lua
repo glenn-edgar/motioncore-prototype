@@ -25,7 +25,9 @@
 local cjson = require("cjson")
 local M = {}
 
-M.PSU_VOLTAGE          = 15.6
+-- See lib/kb2_resistance.lua — V_PSU = 15.4 V locked 2026-06-09 PM after
+-- the two-cycle avg3 calibration sweep.
+M.PSU_VOLTAGE          = 15.4
 M.R_MASTER_DEFAULT     = 40.0
 M.HEATING_SLOPE_OHM_PM = 0.20      -- Ω per minute (warn)
 M.STEP_DELTA_OHM       = 5.0       -- |ΔR| per minute (warn)

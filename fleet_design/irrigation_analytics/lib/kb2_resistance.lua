@@ -27,7 +27,14 @@ local M = {}
 -- =========================================================================
 -- Tuneables
 -- =========================================================================
-M.PSU_VOLTAGE              = 15.6
+-- PSU_VOLTAGE: 15.4 V — locked 2026-06-09 PM by Glenn after the two-cycle
+-- avg3 calibration sweep with the modified-old-code controller. With this
+-- V_PSU and the 2-null offset (~0.133 A cycle-to-cycle), R_effective
+-- matches hand-meter coil readings to within ±4% on six reference valves
+-- (sat_1:17, :29, :30, :31, :43, :44). Cycle-to-cycle reproducibility is
+-- under 2% for nearly all valves. See effective_r_short_detection memo
+-- for why we track effective R (= coil R + wire R) and not bare coil R.
+M.PSU_VOLTAGE              = 15.4
 M.WARN_DELTA_OHM           = 4.0    -- |Δ| > 4 → DB warn
 M.ALERT_DELTA_OHM          = 8.0    -- |Δ| > 8 over 3 cycles → Discord
 M.STEP_DELTA_OHM           = 5.0    -- |ΔR_prev| > 5 in one cycle → maintenance flag
@@ -99,19 +106,24 @@ function M.load_topology(path)
 end
 
 function M.compute_offset_2null(currents)
-    -- DISABLED 2026-06-09 PM: the controller's valve_resistance_check_py3
-    -- was rewritten to subtract sensor offset BEFORE storing each per-valve
-    -- reading. The null channels (sat_3:1, sat_4:6) are not in the
-    -- controller's test queue, so their values in IRRIGATION_VALVE_TEST
-    -- remain stale (~0.17 A from the old code's raw ACS712 readings).
-    -- Computing the 2-null offset from those stale values and subtracting
-    -- from the already-corrected per-valve values would double-correct,
-    -- making R = ~2x too high. Returning 0 means KB2 treats the stored
-    -- currents as the true coil currents — which is what they are now.
+    -- Compute sensor offset as the mean of the two null channels'
+    -- raw current readings. sat_3:1 and sat_4:6 have no coil so their
+    -- raw ACS712 readings ARE the sensor offset for this cycle.
     --
-    -- If the controller is ever rolled back to the pre-2026-06-09 code,
-    -- revert this function to the original 2-null math.
-    return 0
+    -- 2026-06-09 PM final state: controller code reverted to OLD timing +
+    -- 3-sample averaging (parallel-pair valves like sat_1:44 need
+    -- continuous-bus timing to latch). Controller stores RAW currents
+    -- (no offset subtraction), so KB2 subtracts it here. Cycle-to-cycle
+    -- offset drift is ~0.007 A (well below sensor-accuracy budget).
+    --
+    -- Brief detour 2026-06-09 PM: this returned 0 while the controller
+    -- briefly ran the offset-subtracting NEW.py code. That's been
+    -- reverted. See [[effective-r-short-detection-2026-06-09]] for the
+    -- locked design.
+    local n31 = currents[M.NULL_VALVES[1]]
+    local n46 = currents[M.NULL_VALVES[2]]
+    if not n31 or not n46 then return nil end
+    return (n31 + n46) / 2.0
 end
 
 -- Derive the operative calibration for this cycle. Returns a table:
