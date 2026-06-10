@@ -36,14 +36,22 @@ local function open_rw(path)
     return lsqlite3.open(path)
 end
 
--- Run a SELECT, return list of row tables.
+-- Run a SELECT, return list of row tables. pcall-guarded so a schema-drifted
+-- query (a renamed column after a KB redesign) degrades to {} instead of
+-- throwing and 500-ing the whole page.
 local function query(db, sql)
     if not db then return {} end
     local out = {}
-    for r in db:nrows(sql) do
-        local copy = {}
-        for k, v in pairs(r) do copy[k] = v end
-        out[#out+1] = copy
+    local ok, err = pcall(function()
+        for r in db:nrows(sql) do
+            local copy = {}
+            for k, v in pairs(r) do copy[k] = v end
+            out[#out+1] = copy
+        end
+    end)
+    if not ok then
+        io.stderr:write("dashboard query failed: " .. tostring(err) .. "\n")
+        return {}
     end
     return out
 end
@@ -291,8 +299,10 @@ end
 local function load_recent_kb1_fires(since_ms)
     local db = open_ro(DB_PATHS.kb1)
     if not db then return {} end
+    -- KB1 was redesigned 2026-06-09 to absolute overcurrent (irr_I/eq_I/excess);
+    -- the old I_measured/I_expected/delta columns no longer exist.
     local rows = query(db, string.format([[
-        SELECT ts_ms, bin, step, schedule, I_measured, I_expected, delta,
+        SELECT ts_ms, bin, step, schedule, irr_I, eq_I, excess,
                cls, severity, note
         FROM runs_kb1 WHERE ts_ms > %d ORDER BY ts_ms DESC LIMIT 30
     ]], since_ms))
