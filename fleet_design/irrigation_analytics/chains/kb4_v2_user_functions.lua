@@ -13,6 +13,7 @@
 
 local controller    = require("controller_client")
 local KB4V2         = require("kb4_v2")
+local KB_ALERTS     = require("kb_alerts")
 local app_heartbeat = require("app_heartbeat")
 
 local M = { main = {}, one_shot = {}, boolean = {} }
@@ -57,6 +58,7 @@ M.one_shot.KB4V2_TICK = function(handle, _node)
             return
         end
         st.db = db
+        KB_ALERTS.ensure_schema(db)   -- blocked-sprinkler alerts → daily digest
         log(id, "db ready at %s (COLLECTION-ONLY, window=%d-%d min, rolling=%d)",
             db_path, KB4V2.WINDOW_START_MIN, KB4V2.WINDOW_END_MIN,
             KB4V2.ROLLING_N)
@@ -182,6 +184,18 @@ M.one_shot.KB4V2_TICK = function(handle, _node)
                             ring_end          = ring_end,
                             last_updated_ms   = now_ms(),
                         })
+
+                        -- Blocked-sprinkler alert (PLC gallons curve) → digest.
+                        -- Checked vs the PRE-update baseline; ETO + mature only.
+                        if is_eto then
+                            local blocked, bnote = KB4V2.classify_blocked(stats, baseline)
+                            if blocked then
+                                KB_ALERTS.record(db, {
+                                    ts_ms = now_ms(), source = "kb4", kind = "clog",
+                                    severity = "warn", target = bin_key, summary = bnote })
+                                log(id, "BLOCKED %s — %s", bin_key, bnote)
+                            end
+                        end
 
                         processed = processed + 1
                         log(id, "%s%s%s win_flow=%.1f win_gal=%.0f%s base=%s %s%s",

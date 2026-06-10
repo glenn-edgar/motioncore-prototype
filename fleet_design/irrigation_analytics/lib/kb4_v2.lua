@@ -45,6 +45,15 @@ M.MIN_RUN_DURATION  = 16    -- skip runs shorter than this many minutes
 M.NON_ETO_END_WIN   = 3     -- last N minutes for non-ETO end-of-run flow
 M.ROLLING_N         = 7     -- rolling window depth for baseline median
 
+-- Blocked-sprinkler alert (Glenn 2026-06-10): a clog reduces delivered flow,
+-- so the 5-15 min window mean falls below the bin's baseline. Fire when flow
+-- is BLOCKED_FLOW_DELTA below base, OR gallons below BLOCKED_GALLONS_FRAC of
+-- base. ETO bins with a mature baseline only (>= BLOCKED_MIN_N runs).
+-- Non-actuating — records to kb_alerts for the 18:00 digest.
+M.BLOCKED_FLOW_DELTA   = tonumber(os.getenv("KB4_BLOCKED_FLOW_DELTA")) or 3.0
+M.BLOCKED_GALLONS_FRAC = tonumber(os.getenv("KB4_BLOCKED_GALLONS_FRAC")) or 0.75
+M.BLOCKED_MIN_N        = 3
+
 -- ETO + city membership mirrors KB3 (lib/kb3_sustained.lua). Could share
 -- via a robot_common helper later; duplicating for now keeps the modules
 -- decoupled.
@@ -212,6 +221,26 @@ function M.tag_run(bin_type, observed, baseline)
     end
     local delta = observed.win_flow_gpm - baseline.base_flow_gpm
     return "COLLECTED", delta, nil
+end
+
+-- Blocked-sprinkler check (the PLC gallons-curve alerter). Returns
+-- (is_blocked, note). ETO bins with a mature baseline only.
+function M.classify_blocked(observed, baseline)
+    if not observed or not baseline then return false end
+    if (baseline.n_clean_runs or 0) < M.BLOCKED_MIN_N then return false end
+    local bf = baseline.base_flow_gpm
+    local bg = baseline.base_gallons_5_15
+    if not bf then return false end
+    local wf = observed.win_flow_gpm or 0
+    local wg = observed.win_gallons or 0
+    local flow_blocked = wf < (bf - M.BLOCKED_FLOW_DELTA)
+    local gal_blocked  = bg and bg > 0 and (wg < bg * M.BLOCKED_GALLONS_FRAC)
+    if flow_blocked or gal_blocked then
+        return true, string.format(
+            "BLOCKED: flow %.1f vs base %.1f (Δ%+.1f), gallons %.0f vs base %.0f (%.0f%%)",
+            wf, bf, wf - bf, wg, bg or 0, (bg and bg > 0) and (wg / bg * 100) or 0)
+    end
+    return false
 end
 
 -- =========================================================================

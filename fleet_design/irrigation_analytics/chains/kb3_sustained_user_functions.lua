@@ -33,6 +33,10 @@ local app_heartbeat = require("app_heartbeat")
 local NOTIFY_DB_PATH = os.getenv("NOTIFY_DB_PATH") or "/var/fleet/notify/notifications.db"
 
 local KB3_ARM_KILL = (os.getenv("KB3_ARM_KILL") == "1")
+-- Separate gate for the new hydraulic trips (upstream-break divergence,
+-- well-exhaustion). Default OFF so their thresholds are validated on real
+-- alerts before they're allowed to close the master (Glenn 2026-06-10).
+local KB3_HYDRAULIC_ARM = (os.getenv("KB3_HYDRAULIC_ARM") == "1")
 
 local M = { main = {}, one_shot = {}, boolean = {} }
 
@@ -263,10 +267,15 @@ M.one_shot.KB3_TICK = function(handle, _node)
         action         = result.action,
     })
 
-    -- FIRE path
+    -- FIRE path — leak (Hunter) OR upstream-break (divergence) OR well-exhaustion.
     if result.action == "FIRE" then
+        local ftype = result.fire_type or "leak"
+        -- Actuation gate: the Hunter leak trip uses KB3_ARM_KILL; the new
+        -- hydraulic trips (divergence, well) use KB3_HYDRAULIC_ARM so their
+        -- thresholds can be validated on real alerts before they're armed.
+        local armed = (ftype == "leak") and KB3_ARM_KILL or KB3_HYDRAULIC_ARM
         local actions_sent = {}
-        if KB3_ARM_KILL then
+        if armed then
             -- CLOSE_MASTER_VALVE first (water off) then SKIP_STATION
             for _, action in ipairs({ "CLOSE_MASTER_VALVE", "SKIP_STATION" }) do
                 local ok, code, err = WsCommand.post(action, {
@@ -281,34 +290,45 @@ M.one_shot.KB3_TICK = function(handle, _node)
                     action, tostring(ok))
             end
         else
-            log(id, "MONITOR-ONLY: KB3_ARM_KILL not set, actions suppressed")
+            log(id, "MONITOR-ONLY (%s): actuation gate off, actions suppressed", ftype)
         end
 
-        local city_tail = st.arming.is_city and result.city_delta
-            and string.format("\ncity_delta=%+.1f GPM (FHV-PLC)", result.city_delta)
-            or ""
-        local trip_desc
-        if result.trip_path == "primary" then
-            trip_desc = string.format("3 consec min HUNTER > %.0f GPM (primary/absolute)", KB3.GPM_THRESHOLD)
-        elseif result.trip_path == "secondary" then
-            trip_desc = string.format("3 consec min HUNTER > %.1f GPM (secondary: baseline %.1f + %.1f)",
-                (result.baseline_gpm or 0) + KB3.BASELINE_DELTA_GPM,
-                result.baseline_gpm or 0, KB3.BASELINE_DELTA_GPM)
+        local kind, title, trip_desc
+        if ftype == "divergence" then
+            kind  = "UPSTREAM_BREAK"
+            title = string.format("KB3 UPSTREAM BREAK %s — PLC-Hunter div=%.1f GPM @ min %d",
+                st.arming.bin, result.divergence or 0, elapsed or 0)
+            trip_desc = string.format("3 consec min PLC-Hunter divergence > %.0f GPM (main-line break upstream of the zone meter)",
+                KB3.DIVERGENCE_GPM)
+        elseif ftype == "well" then
+            kind  = "WELL_EXHAUSTION"
+            title = string.format("KB3 WELL EXHAUSTION %s — PLC collapsed to %.1f GPM @ min %d",
+                st.arming.bin, plc or 0, elapsed or 0)
+            trip_desc = string.format("3 consec min PLC < %.0f GPM after supplying (well drawdown / dry-run risk)",
+                KB3.WELL_FLOOR_GPM)
         else
-            trip_desc = string.format("3 consec min HUNTER > %.0f GPM (both primary AND secondary)", KB3.GPM_THRESHOLD)
+            kind  = "LEAK"
+            title = string.format("KB3 SUSTAINED LEAK %s — HUNTER=%.1f GPM @ min %d",
+                st.arming.bin, hunter or 0, elapsed or 0)
+            if result.trip_path == "secondary" then
+                trip_desc = string.format("3 consec min HUNTER > %.1f GPM (secondary: baseline %.1f + %.1f)",
+                    (result.baseline_gpm or 0) + KB3.BASELINE_DELTA_GPM,
+                    result.baseline_gpm or 0, KB3.BASELINE_DELTA_GPM)
+            elseif result.trip_path == "both" then
+                trip_desc = string.format("3 consec min HUNTER > %.0f GPM (both primary AND secondary)", KB3.GPM_THRESHOLD)
+            else
+                trip_desc = string.format("3 consec min HUNTER > %.0f GPM (primary/absolute)", KB3.GPM_THRESHOLD)
+            end
         end
+        local city_tail = st.arming.is_city and result.city_delta
+            and string.format("\ncity_delta=%+.1f GPM (FHV-PLC)", result.city_delta) or ""
         local body = string.format(
-            "🚨 KB3 SUSTAINED LEAK — %s%s\nschedule=%s step=%s minute=%d\nPLC=%.1f GPM  HUNTER=%.1f GPM%s\n%s\n%s",
-            st.arming.bin,
-            st.arming.is_city and " [CITY]" or "",
-            tostring(st.arming.schedule),
-            tostring(st.arming.station_step),
-            elapsed or 0,
-            plc or 0, hunter or 0,
-            city_tail,
-            trip_desc,
-            KB3_ARM_KILL and ("ACTUATED: " .. table.concat(actions_sent, ", "))
-                         or "MONITOR-ONLY (KB3_ARM_KILL not set)")
+            "🚨 KB3 %s — %s%s\nschedule=%s step=%s minute=%d\nPLC=%.1f GPM  HUNTER=%.1f GPM%s\n%s\n%s",
+            kind, st.arming.bin, st.arming.is_city and " [CITY]" or "",
+            tostring(st.arming.schedule), tostring(st.arming.station_step),
+            elapsed or 0, plc or 0, hunter or 0, city_tail, trip_desc,
+            armed and ("ACTUATED: " .. table.concat(actions_sent, ", "))
+                  or string.format("MONITOR-ONLY (%s actuation gate off)", ftype))
         local nok, nerr = push_notify(ps, id, body)
         if not nok then
             log(id, "Discord push FAILED: %s", tostring(nerr))
@@ -317,11 +337,10 @@ M.one_shot.KB3_TICK = function(handle, _node)
         -- Past-actions log (the /irrigation/actions page reads this).
         if st.notify_db then
             NOTIFY.record(st.notify_db, {
-                ts_ms  = now_ms(), level = "RED", source = "KB3", kind = "LEAK",
+                ts_ms  = now_ms(), level = "RED", source = "KB3", kind = kind,
                 target = st.arming.bin,
-                action = KB3_ARM_KILL and table.concat(actions_sent, "+") or "(monitor-only)",
-                title  = string.format("KB3 SUSTAINED LEAK %s — HUNTER=%.1f GPM @ min %d",
-                    st.arming.bin, hunter or 0, elapsed or 0),
+                action = armed and table.concat(actions_sent, "+") or "(monitor-only)",
+                title  = title,
                 body   = body,
             })
         end
@@ -337,15 +356,15 @@ M.one_shot.KB3_TICK = function(handle, _node)
             hunter_gpm     = hunter,
             city_delta_gpm = result.city_delta,
             baseline_gpm   = result.baseline_gpm,
-            trip_path      = result.trip_path,
+            trip_path      = ftype .. (result.trip_path and ("/" .. result.trip_path) or ""),
             actions_sent   = table.concat(actions_sent, ","),
-            armed          = KB3_ARM_KILL,
+            armed          = armed,
             note           = trip_desc,
         })
 
-        log(id, "FIRED bin=%s minute=%d PLC=%.1f HUNTER=%.1f armed=%s",
-            st.arming.bin, elapsed or 0, plc or 0, hunter or 0,
-            tostring(KB3_ARM_KILL))
+        log(id, "FIRED type=%s bin=%s minute=%d PLC=%.1f HUNTER=%.1f div=%.1f armed=%s",
+            ftype, st.arming.bin, elapsed or 0, plc or 0, hunter or 0,
+            result.divergence or 0, tostring(armed))
     end
 
     app_heartbeat.stamp(handle, "kb3_sustained", "ok",

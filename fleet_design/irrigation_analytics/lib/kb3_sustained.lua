@@ -77,6 +77,21 @@ M.CONSECUTIVE_REQUIRED = 3     -- N minutes in a row over threshold
 -- delayed. Verified against sat_4:9 06-09 18:00 (recharge at run-min 1-5).
 M.ONSET_GPM           = 1.0
 
+-- Upstream-break trip — PLC−Hunter divergence (Glenn 2026-06-10). A main-line
+-- break UPSTREAM of the Hunter meter gushes from the well (PLC spikes) without
+-- reaching the zone (Hunter stays normal), so the Hunter leak trip misses it.
+-- Trip on SUSTAINED divergence; a transient divergence is benign house draw
+-- (the well feeds the house). Non-city bins only — city bins legitimately have
+-- Hunter > PLC. Normal divergence ~+1.5 GPM; house draw ~+4 (brief).
+M.DIVERGENCE_GPM      = 8.0    -- fire if (PLC - Hunter) > this for N consec min
+-- Well-exhaustion / dry-run guard — PLC well-flow collapse during a run that
+-- WAS supplying. Arms once PLC exceeds WELL_ARMED_GPM (well was carrying the
+-- run), trips on a sustained drop below WELL_FLOOR_GPM. Protects the pump and
+-- cuts the draw so the well recovers. PLC-collapse proxy until WELL_PRESSURE
+-- is wired.
+M.WELL_ARMED_GPM      = 8.0    -- guard arms once PLC exceeds this
+M.WELL_FLOOR_GPM      = 4.0    -- fire if PLC < this for N consec min once armed
+
 -- ETO valve membership. Mirror of farm-side eto_site_setup.json — these
 -- are the 20 pins that run on the No_city_water schedule. Non-ETO bins
 -- (short runs, city flushes, grass schedules) are skipped entirely
@@ -208,25 +223,42 @@ function M.evaluate_step(arming, elapsed, plc, hunter)
         }
     end
 
-    -- Leak trip is on the SMOOTH HUNTER meter (water delivered to
-    -- irrigation). PLC is the well meter (carries house draw) and is NOT
-    -- used here — it is the KB4 blocked/gallons signal.
+    -- ===== Three run-time hydraulic trips, evaluated together =====
     local hunter_val = hunter or 0
+    local plc_val    = plc or 0
+
+    -- (1) LEAK — on the SMOOTH HUNTER meter (water delivered to irrigation).
+    --     Absolute Hunter > threshold, or relative Hunter > per-bin baseline+4.
     local trip_primary = hunter_val > M.GPM_THRESHOLD
-    local trip_secondary = false
-    if arming.baseline_gpm
-       and hunter_val > (arming.baseline_gpm + M.BASELINE_DELTA_GPM) then
-        trip_secondary = true
-    end
-    local trip = trip_primary or trip_secondary
+    local trip_secondary = arming.baseline_gpm
+        and (hunter_val > (arming.baseline_gpm + M.BASELINE_DELTA_GPM)) or false
+    local leak_trip = trip_primary or trip_secondary
+    arming.consecutive = leak_trip and ((arming.consecutive or 0) + 1) or 0
 
-    if trip then
-        arming.consecutive = (arming.consecutive or 0) + 1
-    else
-        arming.consecutive = 0
-    end
+    -- (2) UPSTREAM BREAK — PLC−Hunter divergence (well gushing before the zone
+    --     meter). Non-city bins only (city bins legitimately have Hunter > PLC).
+    --     Sustained-gated so transient house draws don't trip.
+    local divergence = (plc and hunter) and (plc_val - hunter_val) or nil
+    local div_trip = (not arming.is_city) and divergence
+        and (divergence > M.DIVERGENCE_GPM) or false
+    arming.div_consec = div_trip and ((arming.div_consec or 0) + 1) or 0
 
-    local should_fire = (arming.consecutive >= M.CONSECUTIVE_REQUIRED) and (not arming.fired)
+    -- (3) WELL EXHAUSTION / dry-run guard — PLC well-flow collapse during a run
+    --     that WAS supplying. Arms once PLC exceeds WELL_ARMED_GPM, trips on a
+    --     sustained drop below WELL_FLOOR_GPM (protects the pump; lets the well
+    --     recover). PLC-collapse proxy until WELL_PRESSURE is wired.
+    if plc_val > M.WELL_ARMED_GPM then arming.well_flowing = true end
+    local well_trip = arming.well_flowing and (plc_val < M.WELL_FLOOR_GPM) or false
+    arming.well_consec = well_trip and ((arming.well_consec or 0) + 1) or 0
+
+    -- First trip to reach the consecutive gate fires; all three close the master.
+    -- One fire per station (arming.fired latches until next STATION_START).
+    local fire_type = nil
+    if arming.consecutive >= M.CONSECUTIVE_REQUIRED then fire_type = "leak"
+    elseif arming.div_consec >= M.CONSECUTIVE_REQUIRED then fire_type = "divergence"
+    elseif arming.well_consec >= M.CONSECUTIVE_REQUIRED then fire_type = "well"
+    end
+    local should_fire = (fire_type ~= nil) and (not arming.fired)
     if should_fire then arming.fired = true end
 
     local trip_path = nil
@@ -237,15 +269,19 @@ function M.evaluate_step(arming, elapsed, plc, hunter)
 
     return {
         action         = should_fire and "FIRE" or "checked",
+        fire_type      = should_fire and fire_type or nil,
         elapsed        = elapsed,
         plc            = plc,
         hunter         = hunter,
         city_delta     = city_delta,
+        divergence     = divergence,
         trip_primary   = trip_primary,
         trip_secondary = trip_secondary,
         trip_path      = trip_path,
         baseline_gpm   = arming.baseline_gpm,
         consecutive    = arming.consecutive,
+        div_consec     = arming.div_consec,
+        well_consec    = arming.well_consec,
         fired          = arming.fired,
     }
 end
