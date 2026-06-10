@@ -125,7 +125,11 @@ M.kb3_sustained = {
     timeout_s            = 8,
     poll_s               = tonumber(os.getenv("IRRIGATION_KB3_POLL_S") or "30"),
     db_path              = os.getenv("KB3_DB_PATH") or "/var/fleet/kb3/kb3.db",
-    gpm_threshold        = tonumber(os.getenv("KB3_GPM_THRESHOLD")    or "15.0"),
+    -- Trip signal is the SMOOTH HUNTER meter (GPM curve), not PLC — Glenn
+    -- 2026-06-10. 14.0 validated against the sat_3:5 leak (Hunter peaked
+    -- 14.8) with 0 false positives across 33 clean ETO runs; the old
+    -- PLC-era 15.0 would have MISSED it on Hunter. See explore/kb3_replay_hunter.py.
+    gpm_threshold        = tonumber(os.getenv("KB3_GPM_THRESHOLD")    or "14.0"),
     warmup_minutes       = tonumber(os.getenv("KB3_WARMUP_MIN")       or "5"),
     consecutive_required = tonumber(os.getenv("KB3_CONSECUTIVE_MIN")  or "3"),
 }

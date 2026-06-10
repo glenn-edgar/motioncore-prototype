@@ -134,17 +134,14 @@ M.one_shot.KB3_TICK = function(handle, _node)
             if KB3.is_eto_bin(io_setup) then
                 local is_city = KB3.is_city_bin(io_setup)
 
-                -- Look up per-bin baseline for secondary trip path.
-                -- Gated on n_clean_runs to avoid acting on a 1-run sample
-                -- that could be the leak itself.
+                -- Secondary (per-bin baseline) trip is DORMANT as of
+                -- 2026-06-10: the leak signal is now the SMOOTH HUNTER meter,
+                -- but KB4 v2 only collects a PLC-frame base_flow_gpm (the
+                -- gallons curve). Comparing the Hunter trip signal to a PLC
+                -- baseline is a ~1 GPM unit mismatch, so we leave baseline_gpm
+                -- nil and run primary-only (absolute Hunter > GPM_THRESHOLD).
+                -- Re-enable when a Hunter-GPM per-bin baseline is available.
                 local baseline_gpm = nil
-                if st.kb4v2_db then
-                    local b = KB4V2.load_baseline(st.kb4v2_db, bin_key)
-                    if b and b.base_flow_gpm
-                       and (b.n_clean_runs or 0) >= KB3.BASELINE_MIN_N_CLEAN then
-                        baseline_gpm = b.base_flow_gpm
-                    end
-                end
 
                 st.arming = {
                     bin           = bin_key,
@@ -283,13 +280,13 @@ M.one_shot.KB3_TICK = function(handle, _node)
             or ""
         local trip_desc
         if result.trip_path == "primary" then
-            trip_desc = string.format("3 consec min PLC > %.0f GPM (primary/absolute)", KB3.GPM_THRESHOLD)
+            trip_desc = string.format("3 consec min HUNTER > %.0f GPM (primary/absolute)", KB3.GPM_THRESHOLD)
         elseif result.trip_path == "secondary" then
-            trip_desc = string.format("3 consec min PLC > %.1f GPM (secondary: baseline %.1f + %.1f)",
+            trip_desc = string.format("3 consec min HUNTER > %.1f GPM (secondary: baseline %.1f + %.1f)",
                 (result.baseline_gpm or 0) + KB3.BASELINE_DELTA_GPM,
                 result.baseline_gpm or 0, KB3.BASELINE_DELTA_GPM)
         else
-            trip_desc = string.format("3 consec min PLC > %.0f GPM (both primary AND secondary)", KB3.GPM_THRESHOLD)
+            trip_desc = string.format("3 consec min HUNTER > %.0f GPM (both primary AND secondary)", KB3.GPM_THRESHOLD)
         end
         local body = string.format(
             "🚨 KB3 SUSTAINED LEAK — %s%s\nschedule=%s step=%s minute=%d\nPLC=%.1f GPM  HUNTER=%.1f GPM%s\n%s\n%s",

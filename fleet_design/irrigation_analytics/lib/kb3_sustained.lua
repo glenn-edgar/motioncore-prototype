@@ -1,18 +1,25 @@
--- kb3_sustained.lua — schedule-aware ETO leak detector (Glenn 2026-06-09 spec).
+-- kb3_sustained.lua — schedule-aware ETO leak detector (Glenn 2026-06-10 spec).
 --
 -- Design: per-minute step-based detector that fires on 3 consecutive
--- minutes with PLC main_flow_meter (well sensor) over an absolute GPM
--- threshold. After 5-minute warmup at run start. ETO bins only (non-ETO
--- short runs are skipped entirely).
+-- minutes with the SMOOTH HUNTER meter over an absolute GPM threshold.
+-- After 5-minute warmup at run start. ETO bins only (non-ETO short runs
+-- are skipped entirely).
 --
--- Sensor strategy (Glenn 2026-06-09 PM, post-filter-fix + new sensor):
---   - PLC main_flow_meter (popup.PLC_FLOW_METER) is now the high-accuracy
---     primary signal. Use it for ALL trip decisions.
---   - FILTERED_HUNTER_VALVE (popup.FILTERED_HUNTER_VALVE) is no longer in
---     the trip path. For NON-CITY bins it's a side-channel sanity check
---     only. For CITY bins (any group containing sat_1:39, the city-water
---     valve) the difference FHV - PLC reveals how much city water is
---     flowing — logged as city_delta, never trips.
+-- Sensor strategy (Glenn 2026-06-10 — leak/blocked signal split):
+--   - LEAK detection (this module, KB3) trips on the SMOOTH HUNTER meter
+--     (popup.FILTERED_HUNTER_VALVE) — the GPM curve = water actually
+--     DELIVERED to irrigation. Hunter never sees the house draw, so no
+--     house-draw correction is needed on the leak path.
+--   - The PLC well meter (popup.PLC_FLOW_METER) is NOT used for leak
+--     detection. PLC = well output = irrigation + house draw; it is the
+--     BLOCKED-sprinkler signal (gallons curve, KB4) instead.
+--   - No PLC median filtering: a glitchy PLC is a valve to fix on the
+--     maintenance run, not noise to smooth over; and the gallons curve is
+--     an integral that already averages out per-sample noise.
+--   - city_delta = FHV - PLC is retained as telemetry only (never trips).
+--     NOTE: on city bins Hunter sees city + well summed, so a heavy city
+--     dwell can lift Hunter — watch for false leak fires there (clean at
+--     14 GPM in the 2026-06-08..10 test; city bins peaked ~11.4 GPM).
 --
 -- Key concept: "step" = popup.ELASPED_TIME (controller's per-minute
 -- counter — note the controller's typo, preserved as-is). It increments
@@ -22,12 +29,12 @@
 --
 -- Algorithm per evaluation:
 --   if elapsed < 5: in warmup → reset consecutive, skip
---   plc = popup.PLC_FLOW_METER (well GPM, new high-accuracy sensor)
---   trip = plc > THRESHOLD
+--   hunter = popup.FILTERED_HUNTER_VALVE (GPM delivered to irrigation)
+--   trip = hunter > THRESHOLD
 --   if trip: consecutive += 1
 --            if consecutive >= 3: FIRE
 --   else:    consecutive = 0
---   if is_city_bin: city_delta = max(0, FHV - PLC)  (telemetry only)
+--   city_delta = FHV - PLC  (telemetry only)
 --
 -- On FIRE: CLOSE_MASTER_VALVE (water off first) then SKIP_STATION
 -- (advance queue). One fire per station — the fired flag stays true
@@ -40,14 +47,16 @@ local M = {}
 -- =========================================================================
 -- Tuneables
 -- =========================================================================
-M.GPM_THRESHOLD       = 15.0   -- primary: fire if PLC > this for N consec min (absolute)
--- Secondary trip (Glenn 2026-06-09 PM): catches elevated-for-this-bin runs
--- that don't cross the absolute threshold. Reads KB4 v2's per-bin baseline
--- (base_flow_gpm from baselines_kb4v2 table). When baseline + delta is
--- lower than GPM_THRESHOLD, secondary trips first; when baseline is
--- absent or has < BASELINE_MIN_N_CLEAN runs, only primary applies.
--- Both trips share the 3-consec gate.
-M.BASELINE_DELTA_GPM    = 2.0   -- secondary: fire if PLC > baseline + this
+M.GPM_THRESHOLD       = 14.0   -- primary: fire if HUNTER > this for N consec min (absolute)
+-- Secondary trip: catches elevated-for-this-bin Hunter runs that don't
+-- cross the absolute threshold. Requires a HUNTER-frame per-bin baseline
+-- (base_hunter_gpm). DORMANT as of 2026-06-10: KB4 v2 only collects a
+-- PLC-frame base_flow_gpm (the gallons curve), and comparing the Hunter
+-- trip signal to a PLC baseline is a ~1 GPM unit mismatch — so the caller
+-- no longer loads a baseline (arming.baseline_gpm stays nil) and only the
+-- primary absolute trip is active. Re-enable once a Hunter-GPM per-bin
+-- baseline exists. Both trips share the 3-consec gate.
+M.BASELINE_DELTA_GPM    = 2.0   -- secondary: fire if HUNTER > baseline + this
 M.BASELINE_MIN_N_CLEAN  = 3     -- skip secondary until baseline has this many clean runs
 -- WARMUP_MINUTES exists because of SPRINKLER LINE RECHARGE (Glenn 2026-06-09):
 -- When a station starts, the dry/depressurized sprinkler distribution lines
@@ -139,11 +148,12 @@ end
 -- action="FIRE". `trip_path` is "primary" | "secondary" | "both" | nil so
 -- the operator knows which gate fired.
 --
--- Trip rule:
---   primary   = PLC > GPM_THRESHOLD
---   secondary = baseline_gpm and PLC > (baseline_gpm + BASELINE_DELTA_GPM)
+-- Trip rule (signal = SMOOTH HUNTER, the GPM curve):
+--   primary   = HUNTER > GPM_THRESHOLD
+--   secondary = baseline_gpm and HUNTER > (baseline_gpm + BASELINE_DELTA_GPM)
 --   trip      = primary OR secondary
--- FHV no longer trips (carried for telemetry; on city bins it produces city_delta).
+-- PLC does NOT trip (carried for telemetry / city_delta only). secondary is
+-- dormant until a Hunter-frame per-bin baseline exists (caller passes nil).
 function M.evaluate_step(arming, elapsed, plc, hunter)
     if not arming or not elapsed then
         return { action = "skip", reason = "no_arming_or_elapsed" }
@@ -181,11 +191,14 @@ function M.evaluate_step(arming, elapsed, plc, hunter)
         }
     end
 
-    local plc_val = plc or 0
-    local trip_primary = plc_val > M.GPM_THRESHOLD
+    -- Leak trip is on the SMOOTH HUNTER meter (water delivered to
+    -- irrigation). PLC is the well meter (carries house draw) and is NOT
+    -- used here — it is the KB4 blocked/gallons signal.
+    local hunter_val = hunter or 0
+    local trip_primary = hunter_val > M.GPM_THRESHOLD
     local trip_secondary = false
     if arming.baseline_gpm
-       and plc_val > (arming.baseline_gpm + M.BASELINE_DELTA_GPM) then
+       and hunter_val > (arming.baseline_gpm + M.BASELINE_DELTA_GPM) then
         trip_secondary = true
     end
     local trip = trip_primary or trip_secondary
