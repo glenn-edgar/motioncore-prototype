@@ -17,12 +17,14 @@ local M = {}
 -- SQLite helpers
 -- =========================================================================
 local lsqlite3 = require("lsqlite3")
+local pt_time  = require("pt_time")
 
 local DB_PATHS = {
     kb1    = os.getenv("KB1_DB_PATH")    or "/var/fleet/kb1/kb1.db",
     kb2    = os.getenv("KB2_DB_PATH")    or "/var/fleet/kb2/kb2.db",
     kb2_wr = os.getenv("KB2_WR_DB_PATH") or "/var/fleet/kb2_wr/kb2_wr.db",
     kb4    = os.getenv("KB4_DB_PATH")    or "/var/fleet/kb4/kb4.db",
+    notify = os.getenv("NOTIFY_DB_PATH") or "/var/fleet/notify/notifications.db",
 }
 
 local function open_ro(path)
@@ -82,9 +84,8 @@ end
 
 local function pdt_from_ms(ts_ms)
     if not ts_ms then return "—" end
-    -- Convert UTC unix-ms to PT
-    local utc_sec = math.floor(ts_ms / 1000)
-    return os.date("!%Y-%m-%d %H:%M", utc_sec - 7 * 3600) .. " PT"
+    -- DST-aware Pacific (PST/PDT) via pt_time — replaces the old fixed -7h.
+    return pt_time.format_ms(ts_ms, "!%Y-%m-%d %H:%M")
 end
 
 -- =========================================================================
@@ -177,7 +178,7 @@ local NAV_ITEMS = {
     { path = "/irrigation/today",  label = "Today"  },
     { path = "/irrigation/valves", label = "Valves" },
     { path = "/irrigation/cohort", label = "Cohort" },
-    { path = "/irrigation/alerts", label = "Alerts" },
+    { path = "/irrigation/alerts", label = "Past Actions" },
     { path = "/irrigation/field",  label = "Field"  },
     { path = "/irrigation/meter",  label = "Meter R" },
     { path = "/irrigation/check",  label = "Sprinkler check" },
@@ -627,7 +628,83 @@ local function view_valve_detail(req)
 end
 
 -- =========================================================================
--- ALERTS view — last 24h fires across all detectors
+-- PAST ACTIONS view — the robot's notifications log (Glenn 2026-06-10).
+-- One chronological, level-colored, Pacific-stamped feed of every Discord-
+-- bound message: action alerts (KB1/KB3, RED) + daily summaries (DIGEST,
+-- YELLOW). Reads /var/fleet/notify/notifications.db (14-day retention).
+-- Filter: all | actions | summaries. Paginated 50/page.
+-- =========================================================================
+
+local NOTIFY_LEVEL_TAG = { RED = "t-bad", YELLOW = "t-warn", GREEN = "t-ok" }
+local ACTIONS_PER_PAGE = 50
+
+local function view_actions(req)
+    local filter = (req.query and req.query.filter) or "all"
+    local page   = math.max(1, math.floor(tonumber(req.query and req.query.page) or 1))
+    local src_sql = ""
+    if filter == "actions"   then src_sql = " AND source IN ('KB1','KB3')"
+    elseif filter == "summaries" then src_sql = " AND source IN ('DIGEST')"
+    else filter = "all" end
+
+    local db = open_ro(DB_PATHS.notify)
+    local rows, total = {}, 0
+    if db then
+        rows = query(db, string.format(
+            "SELECT ts_ms, level, source, kind, target, action, title, body "
+            .. "FROM notifications WHERE 1=1%s ORDER BY ts_ms DESC LIMIT %d OFFSET %d",
+            src_sql, ACTIONS_PER_PAGE, (page - 1) * ACTIONS_PER_PAGE))
+        local tr = query_one(db, "SELECT count(*) AS c FROM notifications WHERE 1=1" .. src_sql)
+        total = (tr and tr.c) or 0
+        db:close()
+    end
+
+    local p = {}
+    p[#p+1] = '<div class="panel"><div class="panel-h">Past Actions — robot notifications (last 14 days, Pacific time)</div>'
+    p[#p+1] = '<div style="padding:8px 14px;">'
+    for _, f in ipairs({ {"all","All"}, {"actions","Action alerts"}, {"summaries","Summaries"} }) do
+        local a = (f[1] == filter) and ' style="color:var(--accent);font-weight:600;"' or ''
+        p[#p+1] = string.format('<a href="/irrigation/alerts?filter=%s"%s>%s</a>&nbsp;&nbsp;', f[1], a, f[2])
+    end
+    p[#p+1] = '</div>'
+
+    if not db then
+        p[#p+1] = '<div style="padding:14px;">Notifications log not available yet (no events recorded).</div>'
+    elseif #rows == 0 then
+        p[#p+1] = '<div style="padding:14px;">No notifications for this filter.</div>'
+    else
+        p[#p+1] = '<table><thead><tr><th>Time (Pacific)</th><th>Level</th><th>Source</th>'
+              .. '<th>Target</th><th>Message</th></tr></thead><tbody>'
+        for _, r in ipairs(rows) do
+            local tag = NOTIFY_LEVEL_TAG[r.level] or "t-muted"
+            local action_line = (r.action and r.action ~= "")
+                and ('<div class="kv-k" style="margin-top:4px;">action: ' .. esc(r.action) .. '</div>') or ''
+            p[#p+1] = string.format(
+                '<tr><td style="white-space:nowrap;">%s</td>'
+                .. '<td><span class="tag %s">%s</span></td><td>%s/%s</td><td>%s</td>'
+                .. '<td><details><summary>%s</summary>%s<pre style="white-space:pre-wrap;margin:6px 0 0;">%s</pre></details></td></tr>',
+                esc(pt_time.format_ms(r.ts_ms)), tag, esc(r.level),
+                esc(r.source), esc(r.kind), esc(r.target),
+                esc(r.title), action_line, esc(r.body))
+        end
+        p[#p+1] = '</tbody></table>'
+        local pages = math.max(1, math.ceil(total / ACTIONS_PER_PAGE))
+        if pages > 1 then
+            p[#p+1] = string.format('<div style="padding:10px 14px;color:var(--muted);">Page %d of %d &nbsp;', page, pages)
+            if page > 1 then
+                p[#p+1] = string.format('<a href="/irrigation/alerts?filter=%s&page=%d">‹ newer</a>&nbsp;&nbsp;', filter, page - 1)
+            end
+            if page < pages then
+                p[#p+1] = string.format('<a href="/irrigation/alerts?filter=%s&page=%d">older ›</a>', filter, page + 1)
+            end
+            p[#p+1] = '</div>'
+        end
+    end
+    p[#p+1] = '</div>'
+    return html_response(layout("Past Actions", "/irrigation/alerts", table.concat(p), { refresh_s = 60 }))
+end
+
+-- =========================================================================
+-- ALERTS view (superseded by view_actions; kept for reference, not routed)
 -- =========================================================================
 
 local function view_alerts(_req)
@@ -1306,7 +1383,7 @@ function M.register_routes(srv)
     srv:route("GET", "/irrigation/valves", view_valves)
     srv:route("GET", "/irrigation/valves/:valve", view_valve_detail)
     srv:route("GET", "/irrigation/cohort", view_cohort)
-    srv:route("GET", "/irrigation/alerts", view_alerts)
+    srv:route("GET", "/irrigation/alerts", view_actions)
     srv:route("GET", "/irrigation/field", view_field)
     srv:route("GET", "/irrigation/meter", view_meter)
     srv:route("POST", "/irrigation/meter", post_meter)

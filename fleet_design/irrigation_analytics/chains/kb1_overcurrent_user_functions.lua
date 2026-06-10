@@ -22,8 +22,11 @@
 local cjson         = require("cjson")
 local controller    = require("controller_client")
 local KB1           = require("kb1_overcurrent")
+local NOTIFY        = require("notifications")
 local WsCommand     = require("ws_command")
 local app_heartbeat = require("app_heartbeat")
+
+local NOTIFY_DB_PATH = os.getenv("NOTIFY_DB_PATH") or "/var/fleet/notify/notifications.db"
 
 local KB1_ARM_KILL = (os.getenv("KB1_ARM_KILL") == "1")
 
@@ -85,6 +88,8 @@ M.one_shot.KB1_TICK = function(handle, _node)
             return
         end
         st.db = db
+        st.notify_db = NOTIFY.open_db(NOTIFY_DB_PATH)  -- past-actions log (shared)
+        if not st.notify_db then log(id, "notifications log open failed at %s", NOTIFY_DB_PATH) end
         log(id, "db ready at %s (armed=%s, IRR_KILL=%.1fA EQ_KILL=%.1fA)",
             db_path, tostring(KB1_ARM_KILL), KB1.IRR_KILL_A, KB1.EQ_KILL_A)
     end
@@ -172,6 +177,17 @@ M.one_shot.KB1_TICK = function(handle, _node)
     local nok, nerr = push_notify(ps, id, body)
     if not nok then
         log(id, "Discord push FAILED: %s", tostring(nerr))
+    end
+
+    -- Past-actions log (the /irrigation/actions page reads this).
+    if st.notify_db then
+        NOTIFY.record(st.notify_db, {
+            ts_ms  = now_ms(), level = "RED", source = "KB1", kind = "OVERCURRENT",
+            target = string.format("%s step %s", sched, tostring(step)),
+            action = KB1_ARM_KILL and table.concat(actions_sent, "+") or "(monitor-only)",
+            title  = string.format("KB1 OVERCURRENT %s — IRR=%.2f A EQ=%.2f A", cls, irr_I, eq_I),
+            body   = body,
+        })
     end
 
     -- SQLite row

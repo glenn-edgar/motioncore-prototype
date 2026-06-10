@@ -16,6 +16,9 @@ local clock         = require("clock")
 local app_heartbeat = require("app_heartbeat")
 local daily_marker  = require("daily_marker")
 local digest_summary = require("digest_summary")
+local NOTIFY        = require("notifications")
+
+local NOTIFY_DB_PATH = os.getenv("NOTIFY_DB_PATH") or "/var/fleet/notify/notifications.db"
 
 local M = { main = {}, one_shot = {}, boolean = {} }
 
@@ -89,6 +92,19 @@ M.one_shot.DAILY_DIGEST = function(handle, _node)
     local ok, err = pcall(function() ps:publish(DIGEST_TOPIC, payload) end)
     if ok then
         state.last_published_date = pacific_today
+        -- Past-actions log (the /irrigation/actions page reads this) + 14-day prune.
+        if not state.notify_db then state.notify_db = NOTIFY.open_db(NOTIFY_DB_PATH) end
+        if state.notify_db then
+            local now_ms = os.time() * 1000
+            NOTIFY.record(state.notify_db, {
+                ts_ms = now_ms, level = "YELLOW", source = "DIGEST", kind = "DAILY_SUMMARY",
+                target = pacific_today, action = "",
+                title = string.format("Daily review — failrisk=%d short=%d thermal=%d wear=%d",
+                    counts.failure_risk, counts.short, counts.thermal, counts.wear),
+                body = body,
+            })
+            NOTIFY.prune(state.notify_db, now_ms)
+        end
         local _, mark_err = daily_marker.write(id, "irrigation_digest", pacific_today)
         if mark_err then
             log(id, "WARN: daily_marker write failed (%s); restart could republish",

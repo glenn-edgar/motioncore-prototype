@@ -26,8 +26,11 @@ local cjson         = require("cjson")
 local controller    = require("controller_client")
 local KB3           = require("kb3_sustained")
 local KB4V2         = require("kb4_v2")    -- read-only access to baselines_kb4v2 for secondary trip
+local NOTIFY        = require("notifications")
 local WsCommand     = require("ws_command")
 local app_heartbeat = require("app_heartbeat")
+
+local NOTIFY_DB_PATH = os.getenv("NOTIFY_DB_PATH") or "/var/fleet/notify/notifications.db"
 
 local KB3_ARM_KILL = (os.getenv("KB3_ARM_KILL") == "1")
 
@@ -89,6 +92,8 @@ M.one_shot.KB3_TICK = function(handle, _node)
             return
         end
         st.db = db
+        st.notify_db = NOTIFY.open_db(NOTIFY_DB_PATH)  -- past-actions log (shared)
+        if not st.notify_db then log(id, "notifications log open failed at %s", NOTIFY_DB_PATH) end
         log(id, "db ready at %s (armed=%s, threshold=%.1f GPM, warmup=%d min, consec=%d, secondary=baseline+%.1f after n>=%d)",
             db_path, tostring(KB3_ARM_KILL),
             KB3.GPM_THRESHOLD, KB3.WARMUP_MINUTES, KB3.CONSECUTIVE_REQUIRED,
@@ -303,6 +308,18 @@ M.one_shot.KB3_TICK = function(handle, _node)
         local nok, nerr = push_notify(ps, id, body)
         if not nok then
             log(id, "Discord push FAILED: %s", tostring(nerr))
+        end
+
+        -- Past-actions log (the /irrigation/actions page reads this).
+        if st.notify_db then
+            NOTIFY.record(st.notify_db, {
+                ts_ms  = now_ms(), level = "RED", source = "KB3", kind = "LEAK",
+                target = st.arming.bin,
+                action = KB3_ARM_KILL and table.concat(actions_sent, "+") or "(monitor-only)",
+                title  = string.format("KB3 SUSTAINED LEAK %s — HUNTER=%.1f GPM @ min %d",
+                    st.arming.bin, hunter or 0, elapsed or 0),
+                body   = body,
+            })
         end
 
         KB3.insert_fire(db, {

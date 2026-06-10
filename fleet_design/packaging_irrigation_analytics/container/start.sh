@@ -39,6 +39,10 @@ mkdir -p "$FLEET_DATA_DIR/kb3"
 # KB4 v2 SQLite directory — PLC-based flow baseline (Glenn 2026-06-09 PM).
 mkdir -p "$FLEET_DATA_DIR/kb4v2"
 
+# Notifications log — the robot's "past actions" (KB1/KB3 alerts + daily
+# digest); read by application_gateway for /irrigation/alerts (Glenn 2026-06-10).
+mkdir -p "$FLEET_DATA_DIR/notify"
+
 # Stage SSH key/config from the read-only secrets bind mount into /root/.ssh
 # so the openssh client accepts them (strict-perm check requires
 # owner=root + mode 600). Required by controller_client.lua's
