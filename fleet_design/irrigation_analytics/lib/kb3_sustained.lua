@@ -69,6 +69,13 @@ M.BASELINE_MIN_N_CLEAN  = 3     -- arm secondary only once >= this many runs col
 -- duration for the most distant zone.
 M.WARMUP_MINUTES      = 5
 M.CONSECUTIVE_REQUIRED = 3     -- N minutes in a row over threshold
+-- Flow-onset anchoring (Glenn 2026-06-10): flow can start a few minutes after
+-- STATION_START (valve actuation + bookkeeping lag), and the line-recharge
+-- transient rides on FIRST flow — so the warmup is counted from first flow
+-- (PLC or Hunter > ONSET_GPM), not from elapsed=0. Keeps the recharge spike
+-- (and its Hunter overshoot) reliably inside the warmup even when onset is
+-- delayed. Verified against sat_4:9 06-09 18:00 (recharge at run-min 1-5).
+M.ONSET_GPM           = 1.0
 
 -- ETO valve membership. Mirror of farm-side eto_site_setup.json — these
 -- are the 20 pins that run on the No_city_water schedule. Non-ETO bins
@@ -170,8 +177,18 @@ function M.evaluate_step(arming, elapsed, plc, hunter)
     local city_delta = nil
     if plc and hunter then city_delta = hunter - plc end
 
-    -- Warmup: don't evaluate, keep consecutive at 0.
-    if elapsed < M.WARMUP_MINUTES then
+    -- Flow-onset: record the elapsed minute at which flow first appears on
+    -- either meter; the warmup is measured from there (see M.ONSET_GPM).
+    if not arming.flow_onset then
+        if math.max(plc or 0, hunter or 0) > M.ONSET_GPM then
+            arming.flow_onset = elapsed
+        end
+    end
+
+    -- Warmup: don't evaluate until WARMUP_MINUTES past first flow. If flow
+    -- hasn't started yet (flow_onset nil), stay in warmup.
+    local warmed = arming.flow_onset and (elapsed - arming.flow_onset) or -1
+    if warmed < M.WARMUP_MINUTES then
         arming.consecutive = 0
         return {
             action = "warmup", elapsed = elapsed,
