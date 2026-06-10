@@ -43,6 +43,29 @@ M.MIN_SAMPLES_FOR_FIT  = 10
 -- baseline ≈ 20% ≈ 50 °C coil temperature rise. Plausible for ~10 min run.
 M.MASTER_VALVE_KEY     = "satellite_1:43"   -- always energized during runs
 
+-- Thermal-lift EARLY-FAILURE alert (Glenn 2026-06-10): solenoids that run
+-- HOT — sun exposure plus self-heating on long runs — age fast and fail
+-- early. The sustained 5-15 min lift / cold-baseline fraction is the coil's
+-- thermal state; as a PERCENT it adapts across bins with different parallel
+-- baselines (ΔT ≈ pct / 0.0039 by the Cu tempco). Anchored, not relative to
+-- a moving baseline. TUNE from field early-failure data via KB2_LIFT_ALERT_PCT.
+M.LIFT_ALERT_PCT = tonumber(os.getenv("KB2_LIFT_ALERT_PCT")) or 0.30  -- >30% (~77 °C rise) → warn
+
+-- Classify the sustained thermal lift against the cold parallel-R baseline.
+-- Returns (cls, severity, pct, note) or nil if below threshold / no data.
+function M.classify_thermal_lift(lift_results, R_baseline)
+    if not lift_results or not R_baseline or R_baseline <= 0 then return nil end
+    local lw = lift_results.lift_window
+    if not lw then return nil end
+    local pct = lw / R_baseline
+    if pct > M.LIFT_ALERT_PCT then
+        return "R_THERMAL_LIFT_HIGH", "warn", pct,
+            string.format("sustained lift %.1f Ω = %.0f%% of cold baseline %.1f Ω (~%.0f °C rise) — running hot, early-failure risk",
+                lw, pct * 100, R_baseline, pct / 0.0039)
+    end
+    return nil
+end
+
 -- =========================================================================
 -- Per-minute R back-derivation
 -- =========================================================================

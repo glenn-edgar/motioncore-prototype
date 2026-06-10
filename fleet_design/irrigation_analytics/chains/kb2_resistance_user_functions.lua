@@ -23,6 +23,7 @@
 
 local cjson         = require("cjson")
 local KB2           = require("kb2_resistance")
+local KB_ALERTS     = require("kb_alerts")
 local controller    = require("controller_client")
 local app_heartbeat = require("app_heartbeat")
 
@@ -141,6 +142,7 @@ M.one_shot.KB2_TICK = function(handle, _node)
             return
         end
         st.db = db
+        KB_ALERTS.ensure_schema(db)   -- daily-digest alert record lives in kb2.db
         log(id, "db ready at %s", db_path)
         -- Load topology JSON for branch / coil_R cohort analysis.
         local topology_path = cfg.topology_path
@@ -238,7 +240,17 @@ M.one_shot.KB2_TICK = function(handle, _node)
     local flagged_warn = 0
     local flagged_alert = 0
 
-    local notify_lines = {}
+    -- Two-tier notify (Glenn 2026-06-10): KB2 no longer pushes per-cycle
+    -- Discord. Each CONFIRMED alert is recorded to kb_alerts; the 18:00 daily
+    -- digest rolls them up + links the dashboard. Per-cycle detail stays in
+    -- runs_kb2 (the website reads it).
+    local recorded = 0
+    local function record_alert(kind, severity, target, summary)
+        recorded = recorded + 1
+        KB_ALERTS.record(db, { ts_ms = cycle_ms, source = "kb2",
+            kind = kind, severity = severity, target = target, summary = summary })
+        log(id, "alert[%s/%s] %s: %s", kind, severity, tostring(target), summary)
+    end
 
     -- ===== Cohort pre-pass: compute R per valve, then wire R per branch =====
     -- This is the new 2026-06-08 cohort analysis layer. We do TWO passes:
@@ -307,10 +319,13 @@ M.one_shot.KB2_TICK = function(handle, _node)
             })
             processed = processed + 1
 
-            -- Coil cohort flagging: log + Discord-elevation
-            if coil_cls == "COIL_DRIFT_WARN" then
+            -- Coil cohort flagging: log + Discord-elevation. SHORT = member
+            -- below its branch peers (effective R falling); DRIFT = above.
+            local coil_kind = coil_cls:find("SHORT") and "SHORT" or "DRIFT"
+            if coil_cls == "COIL_DRIFT_WARN" or coil_cls == "COIL_SHORT_WARN" then
                 flagged_warn = flagged_warn + 1
-            elseif coil_cls == "COIL_DRIFT_ALERT_CANDIDATE" then
+            elseif coil_cls == "COIL_DRIFT_ALERT_CANDIDATE"
+                or coil_cls == "COIL_SHORT_ALERT_CANDIDATE" then
                 -- Combine with baseline-drift signal: if BOTH the per-cycle
                 -- baseline drift AND the cohort deviation point the same way,
                 -- elevate to Discord. This is the "two independent sources
@@ -320,14 +335,24 @@ M.one_shot.KB2_TICK = function(handle, _node)
                 local joint = (baseline_dir and baseline_dir == cohort_dir)
                 if joint or (cohort_dev and math.abs(cohort_dev) > 8) then
                     flagged_alert = flagged_alert + 1
-                    notify_lines[#notify_lines+1] = string.format(
-                        "COIL_ALERT %s (%s) — coil_R=%.1f, branch_med=%.1f, dev=%+.1f%s",
-                        valve, tostring(branch),
+                    record_alert(coil_kind == "SHORT" and "short" or "drift", "alert", valve,
+                        string.format("COIL_%s_ALERT (%s) coil_R=%.1f branch_med=%.1f dev=%+.1f%s",
+                        coil_kind, tostring(branch),
                         coil_R or 0, bm_coil or 0, cohort_dev or 0,
-                        joint and " [confirmed by baseline drift]" or " [|dev|>8]")
+                        joint and " [confirmed by baseline]" or " [|dev|>8]"))
                 else
                     flagged_warn = flagged_warn + 1
                 end
+            end
+
+            -- Absolute high-R failure-risk (anchored to frozen expected_coil_R,
+            -- so the slow creep the rolling baseline absorbs can't hide). This
+            -- is the sat_2:13 mode: rising R until the solenoid won't pull in.
+            local fr_cls, _fr_sev, _fr_over, fr_note = KB2.classify_failure_risk(valve, coil_R)
+            if fr_cls then
+                flagged_alert = flagged_alert + 1
+                record_alert("failure_risk", "alert", valve,
+                    string.format("R_HIGH_FAILURE_RISK (%s) — %s", tostring(branch), fr_note))
             end
 
             -- Update baseline rolling median on OK / R_STEP_NOTED. Both contribute.
@@ -348,9 +373,13 @@ M.one_shot.KB2_TICK = function(handle, _node)
                     R, ring, cycle_ms)
             end
 
-            -- Streak bookkeeping for R_DRIFT_ALERT promotion.
+            -- Streak bookkeeping for R_DRIFT_ALERT / R_SHORT_ALERT promotion.
+            -- Both ALERT_CANDIDATE families promote the same way (3 consecutive
+            -- same-direction cycles → Discord); only the label differs.
             local astate = KB2.load_alert_state(db, valve)
-            if cls == "R_DRIFT_ALERT_CANDIDATE" and d_base then
+            if (cls == "R_DRIFT_ALERT_CANDIDATE" or cls == "R_SHORT_ALERT_CANDIDATE")
+               and d_base then
+                local is_short = (cls == "R_SHORT_ALERT_CANDIDATE")
                 local dir = direction_of(d_base)
                 if astate.dir == dir then
                     astate.streak = (astate.streak or 0) + 1
@@ -359,25 +388,38 @@ M.one_shot.KB2_TICK = function(handle, _node)
                 end
                 astate.dir = dir
                 if astate.streak >= KB2.ALERT_STREAK_REQUIRED then
-                    cls = "R_DRIFT_ALERT"
+                    cls = is_short and "R_SHORT_ALERT" or "R_DRIFT_ALERT"
                     flagged_alert = flagged_alert + 1
-                    notify_lines[#notify_lines+1] = string.format(
-                        "ALERT %s — R=%.1f Ω (baseline %.1f, Δ%+.1f) %d consecutive %s",
-                        valve, R or 0, baseline_med or 0, d_base, astate.streak, dir or "?")
+                    record_alert(is_short and "short" or "drift", "alert", valve,
+                        string.format("%s R=%.1f Ω (baseline %.1f, Δ%+.1f) %d consecutive %s%s",
+                        is_short and "SHORT_ALERT" or "DRIFT_ALERT",
+                        R or 0, baseline_med or 0, d_base, astate.streak, dir or "?",
+                        is_short and " [effective R falling — developing short]" or ""))
                     KB2.upsert_alert_state(db, valve, 0, nil, cycle_ms)
                 else
                     flagged_warn = flagged_warn + 1
                     KB2.upsert_alert_state(db, valve, astate.streak, astate.dir, nil)
                 end
-            elseif cls == "R_DRIFT_WARN" then
+            elseif cls == "R_DRIFT_WARN" or cls == "R_SHORT_WARN" then
                 flagged_warn = flagged_warn + 1
                 -- Reset streak (drift below alert threshold)
                 KB2.upsert_alert_state(db, valve, 0, nil, nil)
+            elseif cls == "R_SHORT_STEP" then
+                -- Abrupt downward step = sudden-short signature (or a
+                -- maintenance swap to a lower-R coil). DB + log + Discord so
+                -- it gets a look. Baseline is NOT folded forward (handled by
+                -- the generic non-OK branch above), so a real short stays
+                -- visible to the drift/streak logic on subsequent cycles.
+                flagged_warn = flagged_warn + 1
+                record_alert("step", "warn", valve,
+                    string.format("R_SHORT_STEP ΔR_prev=%+.1f Ω one cycle (sudden short? or maintenance swap — verify)",
+                    d_step or 0))
+                KB2.upsert_alert_state(db, valve, 0, nil, cycle_ms)
             elseif cls == "MASTER_RELAY_CREEP" then
                 flagged_warn = flagged_warn + 1
-                notify_lines[#notify_lines+1] = string.format(
-                    "MASTER_RELAY_CREEP %s — R=%.1f Ω (baseline %.1f, Δ%+.1f Ω upward)",
-                    valve, R or 0, baseline_med or 0, d_base or 0)
+                record_alert("creep", "warn", valve,
+                    string.format("MASTER_RELAY_CREEP R=%.1f Ω (baseline %.1f, Δ%+.1f Ω upward)",
+                    R or 0, baseline_med or 0, d_base or 0))
                 KB2.upsert_alert_state(db, valve, 0, nil, cycle_ms)
             elseif cls == "R_STEP_NOTED" then
                 -- Maintenance flag — DB only, log only, no Discord.
@@ -391,16 +433,10 @@ M.one_shot.KB2_TICK = function(handle, _node)
         end
     end
 
-    -- Discord: one message bundling all alerts for this cycle.
-    if #notify_lines > 0 then
-        local body = string.format(
-            "KB2 resistance — cycle %d:\n%s\n(V_PSU=%.2f V, offset=%.4f A, source=%s)",
-            cycle_id, table.concat(notify_lines, "\n"),
-            calibration.v_psu, offset, calibration.source)
-        local ok, err = push_notify(ps, id, body)
-        if not ok then
-            log(id, "Discord notify FAILED: %s", tostring(err))
-        end
+    -- No per-cycle Discord: confirmed alerts went to kb_alerts above and the
+    -- 18:00 daily digest rolls them up. (Two-tier notify, Glenn 2026-06-10.)
+    if recorded > 0 then
+        log(id, "recorded %d confirmed alert(s) to kb_alerts for the daily digest", recorded)
     end
 
     -- Commit probe cache so we don't re-process this cycle.

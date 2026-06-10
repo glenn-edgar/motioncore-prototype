@@ -21,7 +21,7 @@ M.capabilities = {
 
 M.app_kbs = { "monitor", "detector", "kb4_clog", "kb2_resistance",
               "kb1_overcurrent", "kb2_within_run", "kb3_sustained",
-              "kb4_v2" }
+              "kb4_v2", "digest" }
 
 -- Controller config — where to fetch popup + past_actions from.
 -- Reused by lib/controller_client.lua (which wraps the SSH+python popup
@@ -152,6 +152,22 @@ M.kb4_v2 = {
     poll_s    = tonumber(os.getenv("IRRIGATION_KB4V2_POLL_S") or "60"),
     db_path   = os.getenv("KB4V2_DB_PATH") or "/var/fleet/kb4v2/kb4v2.db",
     rolling_n = tonumber(os.getenv("KB4V2_ROLLING_N") or "7"),
+}
+
+-- Daily KB2/KB4 operator digest (Glenn 2026-06-10). At/after hour_pacific
+-- (18:00 PT) once per day, rolls up the confirmed alert rows the KBs wrote
+-- to kb_alerts (last 24 h) into one summary + dashboard link, published to
+-- the shared digest topic. KB1/KB3 keep their immediate per-event alerts;
+-- KB2/KB4 are summary-only. DASHBOARD_URL must be operator-reachable
+-- (192.168.1.66 over the LAN / OpenVPN), NOT the 0.0.0.0 listen address.
+M.digest = {
+    hour_pacific  = tonumber(os.getenv("DIGEST_HOUR_PACIFIC") or "18"),
+    retry_s       = tonumber(os.getenv("DIGEST_RETRY_S") or "900"),
+    dashboard_url = os.getenv("DASHBOARD_URL") or "http://192.168.1.66:28081/",
+    kb_db_paths   = {
+        os.getenv("KB2_DB_PATH")    or "/var/fleet/kb2/kb2.db",
+        os.getenv("KB2_WR_DB_PATH") or "/var/fleet/kb2_wr/kb2_wr.db",
+    },
 }
 
 -- Persistence-topology declaration. Three leaves for the v1 skeleton:

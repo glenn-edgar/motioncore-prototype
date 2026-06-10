@@ -64,6 +64,18 @@ M.TOPOLOGY = {
 M.COIL_DRIFT_WARN_OHM  = 3.0  -- coil R deviates from branch median by > 3 Ω → DB warn
 M.COIL_DRIFT_ALERT_OHM = 5.0  -- > 5 Ω AND streak ≥ 3 cycles → Discord
 
+-- Absolute high-R FAILURE-RISK ceiling (Glenn 2026-06-10). The drift +
+-- cohort detectors compare to a ROLLING median, which absorbs slow
+-- monotonic creep — a valve aging steadily upward re-baselines every cycle
+-- and never trips, until it's too high to pull in the solenoid (the
+-- sat_2:13 group field failure: rising R → valve won't operate). This
+-- check is anchored to the FROZEN expected_coil_R in the topology, so creep
+-- can't hide. Pull-in is really a minimum actuation current (I = V_PSU/R),
+-- so a RATIO over the commissioned value adapts across branches with
+-- different expected R. TUNE from the 2:13 failure (what coil R did it
+-- reach when it stopped pulling in?) via KB2_FAILURE_RISK_RATIO env.
+M.FAILURE_RISK_RATIO = tonumber(os.getenv("KB2_FAILURE_RISK_RATIO")) or 1.30
+
 -- 43 driven valves (excludes the 2 nulls used for offset).
 M.VALVE_LIST = {
     "satellite_1:17", "satellite_1:29", "satellite_1:30", "satellite_1:31",
@@ -278,7 +290,20 @@ function M.compute_branch_median_coil(coil_R_table)
 end
 
 -- Classify a valve's coil R against its branch cohort.
+-- Direction-aware cohort class name (Glenn 2026-06-10 effective-R model).
+-- A member ABOVE its branch peers (d>0) is drifting UP = wear/aging;
+-- a member BELOW its peers (d<0) is the SHORT direction (that valve's
+-- coil insulation / terminal junction breaking down). Same magnitudes,
+-- opposite sign — see [[effective-r-short-detection-2026-06-09]].
+local function coil_class_for(d, level)
+    local kind = (d < 0) and "SHORT" or "DRIFT"
+    if level == "alert" then return "COIL_" .. kind .. "_ALERT_CANDIDATE" end
+    return "COIL_" .. kind .. "_WARN"
+end
+
 -- Returns (coil_cls, severity, deviation, note).
+-- coil_cls: COIL_OK | COIL_DRIFT_WARN | COIL_DRIFT_ALERT_CANDIDATE (above peers)
+--                   | COIL_SHORT_WARN | COIL_SHORT_ALERT_CANDIDATE (below peers)
 function M.classify_coil_vs_cohort(valve, coil_R, branch_median)
     if not coil_R or not branch_median then
         return "COIL_OK", "ok", 0, nil
@@ -289,10 +314,10 @@ function M.classify_coil_vs_cohort(valve, coil_R, branch_median)
         local expected = (topo and topo.expected_coil_R) or coil_R
         local d = coil_R - expected
         if math.abs(d) > M.COIL_DRIFT_ALERT_OHM then
-            return "COIL_DRIFT_ALERT_CANDIDATE", "alert", d,
-                string.format("special-role |coil_R - expected|=%.1f Ω", math.abs(d))
+            return coil_class_for(d, "alert"), "alert", d,
+                string.format("special-role coil_R %+.1f Ω vs expected", d)
         elseif math.abs(d) > M.COIL_DRIFT_WARN_OHM then
-            return "COIL_DRIFT_WARN", "warn", d,
+            return coil_class_for(d, "warn"), "warn", d,
                 string.format("special-role coil_R %+.1f Ω vs expected", d)
         end
         return "COIL_OK", "ok", d, nil
@@ -300,13 +325,31 @@ function M.classify_coil_vs_cohort(valve, coil_R, branch_median)
     -- Standard valves: compare to branch median
     local d = coil_R - branch_median
     if math.abs(d) > M.COIL_DRIFT_ALERT_OHM then
-        return "COIL_DRIFT_ALERT_CANDIDATE", "alert", d,
+        return coil_class_for(d, "alert"), "alert", d,
             string.format("coil_R %+.1f Ω vs branch median %.1f", d, branch_median)
     elseif math.abs(d) > M.COIL_DRIFT_WARN_OHM then
-        return "COIL_DRIFT_WARN", "warn", d,
+        return coil_class_for(d, "warn"), "warn", d,
             string.format("coil_R %+.1f Ω vs branch median %.1f", d, branch_median)
     end
     return "COIL_OK", "ok", d, nil
+end
+
+-- Absolute high-R failure-risk vs the FROZEN commissioned expected_coil_R.
+-- Independent of the rolling baseline (which absorbs slow creep) and of the
+-- per-cycle cohort median (blind to whole-branch aging). Returns
+-- (cls, severity, delta_over_expected, note) or nil when no expected_coil_R
+-- is known for the valve. Catches the sat_2:13 rising-R-to-non-operation mode.
+function M.classify_failure_risk(valve, coil_R)
+    if not coil_R then return nil end
+    local topo = M.TOPOLOGY[valve]
+    local exp = topo and topo.expected_coil_R
+    if not exp or exp <= 0 then return nil end
+    if coil_R > exp * M.FAILURE_RISK_RATIO then
+        return "R_HIGH_FAILURE_RISK", "alert", coil_R - exp,
+            string.format("coil_R=%.1f Ω > %.0f%% of commissioned %.1f Ω — rising toward non-operation (won't pull in)",
+                coil_R, M.FAILURE_RISK_RATIO * 100, exp)
+    end
+    return nil
 end
 
 -- =========================================================================
@@ -314,12 +357,23 @@ end
 -- =========================================================================
 --
 -- Returns (cls, severity, delta_baseline, delta_step, note).
--- cls strings: OK | R_DRIFT_WARN | R_DRIFT_ALERT_CANDIDATE | MASTER_RELAY_CREEP
---              | R_STEP_NOTED | POSSIBLE_CHIP_MISCAL | no_reading
 --
--- R_DRIFT_ALERT_CANDIDATE is a single-cycle observation. The KB2_TICK
--- caller bumps a streak counter; once 3 consecutive cycles in the same
--- direction land, it promotes to R_DRIFT_ALERT and pushes Discord.
+-- Effective-R direction model (Glenn 2026-06-10, see
+-- [[effective-r-short-detection-2026-06-09]]): effective R = R_coil + R_wire.
+-- INCREASING R = wear / coil aging / relay creep (R_DRIFT_*, R_STEP_NOTED,
+-- MASTER_RELAY_CREEP). DECREASING R = SHORT signature — insulation
+-- breakdown / developing wire-to-wire bridge / moisture intrusion
+-- (R_SHORT_*). The two families share magnitudes (WARN=4, ALERT=8,
+-- STEP=5 Ω); only the sign differs.
+--
+-- cls strings:
+--   OK | POSSIBLE_CHIP_MISCAL | no_reading
+--   up:   R_DRIFT_WARN | R_DRIFT_ALERT_CANDIDATE | R_STEP_NOTED | MASTER_RELAY_CREEP
+--   down: R_SHORT_WARN | R_SHORT_ALERT_CANDIDATE | R_SHORT_STEP
+--
+-- R_{DRIFT,SHORT}_ALERT_CANDIDATE is a single-cycle observation. The
+-- KB2_TICK caller bumps a streak counter; once 3 consecutive cycles in the
+-- same direction land, it promotes to R_DRIFT_ALERT / R_SHORT_ALERT + Discord.
 
 function M.classify(R_calc, baseline_med, prev_R, bin_key)
     if not R_calc then
@@ -332,13 +386,21 @@ function M.classify(R_calc, baseline_med, prev_R, bin_key)
 
     local delta_step = prev_R and (R_calc - prev_R) or nil
 
-    -- Step-change vs the immediate prior cycle = maintenance signature.
-    -- Fire even if we have no baseline yet. This is INFO, not WARN.
+    -- Abrupt single-cycle step vs the immediate prior cycle. Direction is
+    -- the diagnosis: UP = maintenance swap / wear (info, folds into baseline
+    -- downstream); DOWN = SUDDEN-SHORT signature (bare wire to ground, splice
+    -- failure) — flag loudly to verify, and do NOT fold into baseline (a
+    -- maintenance swap to a lower-R coil is handled by a post-maintenance
+    -- baseline reset, so we don't risk masking a real short).
     if delta_step and math.abs(delta_step) > M.STEP_DELTA_OHM then
-        return "R_STEP_NOTED", "info",
-            baseline_med and (R_calc - baseline_med) or nil,
-            delta_step,
-            string.format("ΔR_prev=%+.1f Ω in one cycle (likely maintenance)", delta_step)
+        local d_base = baseline_med and (R_calc - baseline_med) or nil
+        if delta_step < 0 then
+            return "R_SHORT_STEP", "warn", d_base, delta_step,
+                string.format("ΔR_prev=%+.1f Ω in one cycle (SUDDEN-SHORT direction — verify; or maintenance swap)",
+                    delta_step)
+        end
+        return "R_STEP_NOTED", "info", d_base, delta_step,
+            string.format("ΔR_prev=%+.1f Ω in one cycle (likely maintenance/wear)", delta_step)
     end
 
     if not baseline_med then
@@ -354,14 +416,24 @@ function M.classify(R_calc, baseline_med, prev_R, bin_key)
             string.format("master R %+.1f Ω vs baseline %.1f", d, baseline_med)
     end
 
+    -- Direction-aware drift vs baseline. d<0 (effective R falling) = short.
     if math.abs(d) > M.ALERT_DELTA_OHM then
+        if d < 0 then
+            return "R_SHORT_ALERT_CANDIDATE", "alert", d, delta_step,
+                string.format("Δ=%.1f Ω (effective R falling > %.1f — developing SHORT, pending 3-cycle confirm)",
+                    d, M.ALERT_DELTA_OHM)
+        end
         return "R_DRIFT_ALERT_CANDIDATE", "alert", d, delta_step,
-            string.format("|Δ|=%.1f Ω > %.1f (alert pending 3-cycle confirm)",
-                math.abs(d), M.ALERT_DELTA_OHM)
+            string.format("Δ=+%.1f Ω > %.1f (upward drift, pending 3-cycle confirm)",
+                d, M.ALERT_DELTA_OHM)
     end
     if math.abs(d) > M.WARN_DELTA_OHM then
+        if d < 0 then
+            return "R_SHORT_WARN", "warn", d, delta_step,
+                string.format("Δ=%.1f Ω (short direction) > %.1f", d, M.WARN_DELTA_OHM)
+        end
         return "R_DRIFT_WARN", "warn", d, delta_step,
-            string.format("|Δ|=%.1f Ω > %.1f", math.abs(d), M.WARN_DELTA_OHM)
+            string.format("Δ=+%.1f Ω (wear direction) > %.1f", d, M.WARN_DELTA_OHM)
     end
 
     return "OK", "ok", d, delta_step, nil

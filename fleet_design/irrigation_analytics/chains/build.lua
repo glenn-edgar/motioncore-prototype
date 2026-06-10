@@ -23,6 +23,7 @@ local kb1_overcurrent = require("kb1_overcurrent")
 local kb2_within_run = require("kb2_within_run")
 local kb3_sustained = require("kb3_sustained")
 local kb4_v2 = require("kb4_v2")
+local digest = require("digest")
 
 if #arg ~= 1 then
     print("Usage: luajit irrigation_analytics/chains/build.lua <json_file>")
@@ -39,6 +40,7 @@ kb1_overcurrent.build_kb1_overcurrent(ct, kb1_overcurrent.KB1_OVERCURRENT_KB_NAM
 kb2_within_run.build_kb2_within_run(ct, kb2_within_run.KB2_WITHIN_RUN_KB_NAME)
 kb3_sustained.build_kb3_sustained(ct, kb3_sustained.KB3_SUSTAINED_KB_NAME)
 kb4_v2.build_kb4_v2(ct, kb4_v2.KB4_V2_KB_NAME)
+digest.build_digest(ct, digest.DIGEST_KB_NAME)
 ct:check_and_generate()
 print("Wrote: " .. arg[1])
 print("Total nodes: " .. ct.ctb:get_total_node_count())

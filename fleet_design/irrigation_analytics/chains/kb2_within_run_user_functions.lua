@@ -18,6 +18,7 @@ local cjson         = require("cjson")
 local controller    = require("controller_client")
 local KB2_WR        = require("kb2_within_run")
 local KB2           = require("kb2_resistance")     -- for derive_calibration
+local KB_ALERTS     = require("kb_alerts")
 local app_heartbeat = require("app_heartbeat")
 
 local M = { main = {}, one_shot = {}, boolean = {} }
@@ -173,6 +174,7 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
             return
         end
         st.db = db
+        KB_ALERTS.ensure_schema(db)   -- daily-digest alert record lives in kb2_wr.db
         log(id, "db ready at %s", db_path)
         -- Read all cold R values from KB2's baselines table (KB1 used to
         -- expose load_kb2_R but was simplified out of that role in the
@@ -273,6 +275,25 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
                                 lift_results.lift_window and string.format("%+.2f Ω", lift_results.lift_window) or "nil",
                                 lift_results.lift_end    and string.format("%+.2f Ω", lift_results.lift_end)    or "nil",
                                 lift_results.lift_max    and string.format("%+.2f Ω", lift_results.lift_max)    or "nil")
+
+                            -- Early-failure alert: solenoid running hot (sun /
+                            -- self-heating on long runs). Sustained lift vs cold
+                            -- baseline → Discord. Note long runs (worst case).
+                            local tl_cls, _tl_sev, _tl_pct, tl_note =
+                                KB2_WR.classify_thermal_lift(lift_results, R_baseline_par)
+                            if tl_cls then
+                                flagged = flagged + 1
+                                local rt = tonumber(ent.details.run_time) or 0
+                                -- Two-tier notify: record for the 18:00 digest, no per-run Discord.
+                                KB_ALERTS.record(db, {
+                                    ts_ms = now_ms(), source = "kb2_wr",
+                                    kind = "thermal", severity = "warn", target = bin_key,
+                                    summary = string.format("%s step=%s run=%s min%s — %s",
+                                        tl_cls, tostring(ent.details.step),
+                                        tostring(ent.details.run_time),
+                                        rt >= 30 and " (long run)" or "", tl_note) })
+                                log(id, "alert[thermal/warn] %s: %s", bin_key, tl_note)
+                            end
                         end
                     elseif baseline_err then
                         log(id, "thermal: bin=%s baseline skipped — %s", bin_key, baseline_err)
@@ -334,17 +355,16 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
                     end
                     if result.severity == "alert" or result.cls == "R_HEATING_DURING_RUN" then
                         flagged = flagged + 1
-                        local body = string.format(
-                            "KB2 within-run %s — %s\nbin=%s schedule=%s step=%s\n%s\nR_start=%.1f R_end=%.1f slope=%+.3f Ω/min",
-                            result.severity == "alert" and "🚨 ALERT" or "🟡 WARN",
-                            result.cls,
-                            bin_key, tostring(ent.details.schedule_name),
-                            tostring(ent.details.step),
-                            result.note or "",
-                            result.R_start or 0, result.R_end or 0,
-                            result.slope_ohm_per_min or 0)
-                        local ok, err = push_notify(ps, id, body)
-                        if not ok then log(id, "Discord push FAILED: %s", tostring(err)) end
+                        -- Two-tier notify: record for the 18:00 digest, no per-run Discord.
+                        KB_ALERTS.record(db, {
+                            ts_ms = now_ms(), source = "kb2_wr",
+                            kind = "heating", severity = result.severity or "warn",
+                            target = bin_key,
+                            summary = string.format("%s step=%s — %s (R_start=%.1f R_end=%.1f slope=%+.3f Ω/min)",
+                                result.cls, tostring(ent.details.step), result.note or "",
+                                result.R_start or 0, result.R_end or 0,
+                                result.slope_ohm_per_min or 0) })
+                        log(id, "alert[heating/%s] %s: %s", result.severity or "warn", bin_key, result.cls)
                     end
                 else
                     log(id, "no TH for %s — skipping", bin_key)
