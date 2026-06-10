@@ -146,6 +146,7 @@ M.one_shot.KB4V2_TICK = function(handle, _node)
                             run_time_min   = run_time,
                             n_samples      = stats.n_samples,
                             win_flow_gpm   = stats.win_flow_gpm,
+                            win_hunter_gpm = stats.win_hunter_gpm,
                             win_gallons    = stats.win_gallons,
                             end_flow_gpm   = stats.end_flow_gpm,
                             base_flow_used = baseline and baseline.base_flow_gpm,

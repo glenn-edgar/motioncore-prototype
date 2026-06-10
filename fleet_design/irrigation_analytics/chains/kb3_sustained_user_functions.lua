@@ -139,14 +139,18 @@ M.one_shot.KB3_TICK = function(handle, _node)
             if KB3.is_eto_bin(io_setup) then
                 local is_city = KB3.is_city_bin(io_setup)
 
-                -- Secondary (per-bin baseline) trip is DORMANT as of
-                -- 2026-06-10: the leak signal is now the SMOOTH HUNTER meter,
-                -- but KB4 v2 only collects a PLC-frame base_flow_gpm (the
-                -- gallons curve). Comparing the Hunter trip signal to a PLC
-                -- baseline is a ~1 GPM unit mismatch, so we leave baseline_gpm
-                -- nil and run primary-only (absolute Hunter > GPM_THRESHOLD).
-                -- Re-enable when a Hunter-GPM per-bin baseline is available.
+                -- Secondary (relative) trip: per-bin Hunter expected-flow from
+                -- KB4 v2 (median of the last 7 per-run means of Hunter over min
+                -- 5-15). Fires at base_hunter + 4 GPM (Glenn 2026-06-10), gated
+                -- on >= BASELINE_MIN_N_CLEAN runs so a thin baseline can't
+                -- false-trip — until then, primary-only (absolute Hunter > 14).
                 local baseline_gpm = nil
+                if st.kb4v2_db then
+                    local med, n = KB4V2.load_hunter_baseline(st.kb4v2_db, bin_key, 7)
+                    if med and n >= KB3.BASELINE_MIN_N_CLEAN then
+                        baseline_gpm = med
+                    end
+                end
 
                 st.arming = {
                     bin           = bin_key,

@@ -146,6 +146,17 @@ function M.compute_window_stats(plc_samples, run_start_ms, run_end_ms)
     for _, s in ipairs(win_samples) do sum = sum + s.main_flow_meter end
     local win_flow_gpm = sum / #win_samples
 
+    -- Mean HUNTER (FILTERED_HUNTER_VALVE) over the same 5-15 window. This is
+    -- the expected-flow baseline KB3 trips against (expected + 4 GPM, the
+    -- relative leak/break trip — Glenn 2026-06-10). Same samples; the Hunter
+    -- field rides along in plc_xrange. nil if no Hunter samples present.
+    local hsum, hn = 0, 0
+    for _, s in ipairs(win_samples) do
+        local h = s.FILTERED_HUNTER_VALVE
+        if h then hsum = hsum + h; hn = hn + 1 end
+    end
+    local win_hunter_gpm = hn > 0 and (hsum / hn) or nil
+
     -- Integrated gallons via dt-weighted sum. For each sample at t, use the
     -- interval to next sample (dt seconds). Clamp last sample's dt to the
     -- window-end boundary so we don't over-count outside the window.
@@ -172,11 +183,12 @@ function M.compute_window_stats(plc_samples, run_start_ms, run_end_ms)
     end
 
     return {
-        win_flow_gpm = win_flow_gpm,
-        win_gallons  = win_gallons,
-        n_samples    = #win_samples,
-        end_flow_gpm = end_flow_gpm,
-        end_n        = #end_samples,
+        win_flow_gpm   = win_flow_gpm,
+        win_hunter_gpm = win_hunter_gpm,
+        win_gallons    = win_gallons,
+        n_samples      = #win_samples,
+        end_flow_gpm   = end_flow_gpm,
+        end_n          = #end_samples,
     }
 end
 
@@ -263,6 +275,7 @@ CREATE TABLE IF NOT EXISTS runs_kb4v2 (
     run_time_min      INTEGER,
     n_samples         INTEGER,
     win_flow_gpm      REAL,
+    win_hunter_gpm    REAL,
     win_gallons       REAL,
     end_flow_gpm      REAL,
     base_flow_used    REAL,
@@ -289,7 +302,36 @@ function M.open_db(path)
         db:close()
         return nil, "schema migration failed: " .. tostring(msg)
     end
+    -- Additive migration for DBs created before the Hunter baseline (2026-06-10).
+    -- Errors on duplicate column = already present = the safe outcome.
+    pcall(function() db:exec("ALTER TABLE runs_kb4v2 ADD COLUMN win_hunter_gpm REAL") end)
     return db
+end
+
+-- KB3's relative leak/break baseline: median of the last N per-run Hunter
+-- window-means (mean Hunter over 5-15 min) for a bin. KB4 v2 collects these
+-- per run; KB3 reads them and trips at (median + 4 GPM). Returns
+-- (median_or_nil, n_clean) — KB3 arms the relative trip only when n_clean >= 3.
+-- Median over N is robust to a stray high/low run; the maturity gate guards
+-- the seeding period. (A *persistently* leaking bin bakes its leak into the
+-- baseline — the absolute 14 GPM trip remains the backstop for that.)
+function M.load_hunter_baseline(db, bin, n)
+    if not db or not bin then return nil, 0 end
+    local vals = {}
+    pcall(function()
+        for r in db:nrows(string.format(
+                "SELECT win_hunter_gpm AS v FROM runs_kb4v2 "
+                .. "WHERE bin = %q AND win_hunter_gpm IS NOT NULL "
+                .. "ORDER BY ts_ms DESC LIMIT %d", bin, n or 7)) do
+            vals[#vals+1] = r.v
+        end
+    end)
+    if #vals == 0 then return nil, 0 end
+    table.sort(vals)
+    local mid = math.floor((#vals + 1) / 2)
+    local median = (#vals % 2 == 1) and vals[mid]
+        or (vals[#vals / 2] + vals[#vals / 2 + 1]) / 2.0
+    return median, #vals
 end
 
 local cjson_ok, cjson = pcall(require, "cjson")
@@ -370,9 +412,9 @@ function M.insert_run(db, fields)
     local stmt = db:prepare([[
         INSERT INTO runs_kb4v2(
             ts_ms, bin, is_eto, is_city, sid, schedule, step, run_time_min,
-            n_samples, win_flow_gpm, win_gallons, end_flow_gpm,
+            n_samples, win_flow_gpm, win_hunter_gpm, win_gallons, end_flow_gpm,
             base_flow_used, leak_delta, cls, note)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ]])
     if not stmt then return nil, db:errmsg() end
     stmt:bind_values(fields.ts_ms, fields.bin,
@@ -380,7 +422,7 @@ function M.insert_run(db, fields)
         fields.is_city and 1 or 0,
         fields.sid, fields.schedule, fields.step, fields.run_time_min,
         fields.n_samples,
-        fields.win_flow_gpm, fields.win_gallons, fields.end_flow_gpm,
+        fields.win_flow_gpm, fields.win_hunter_gpm, fields.win_gallons, fields.end_flow_gpm,
         fields.base_flow_used, fields.leak_delta,
         fields.cls, fields.note)
     stmt:step()

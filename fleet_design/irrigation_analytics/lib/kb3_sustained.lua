@@ -48,16 +48,16 @@ local M = {}
 -- Tuneables
 -- =========================================================================
 M.GPM_THRESHOLD       = 14.0   -- primary: fire if HUNTER > this for N consec min (absolute)
--- Secondary trip: catches elevated-for-this-bin Hunter runs that don't
--- cross the absolute threshold. Requires a HUNTER-frame per-bin baseline
--- (base_hunter_gpm). DORMANT as of 2026-06-10: KB4 v2 only collects a
--- PLC-frame base_flow_gpm (the gallons curve), and comparing the Hunter
--- trip signal to a PLC baseline is a ~1 GPM unit mismatch — so the caller
--- no longer loads a baseline (arming.baseline_gpm stays nil) and only the
--- primary absolute trip is active. Re-enable once a Hunter-GPM per-bin
--- baseline exists. Both trips share the 3-consec gate.
-M.BASELINE_DELTA_GPM    = 2.0   -- secondary: fire if HUNTER > baseline + this
-M.BASELINE_MIN_N_CLEAN  = 3     -- skip secondary until baseline has this many clean runs
+-- Secondary (relative) trip — Glenn 2026-06-10. Catches a break/leak that is
+-- abnormally high FOR THIS BIN but still under the absolute 14 (e.g. a 7 GPM
+-- bin pushed to 12 by a coyote-chewed line). Baseline = KB4 v2's per-bin Hunter
+-- expected-flow = median of the last 7 per-run means of Hunter over min 5-15
+-- (KB4V2.load_hunter_baseline). Fire if HUNTER > base_hunter + 4 GPM, sustained
+-- 3 consec min, from the 5-minute mark — armed only once the bin has
+-- >= BASELINE_MIN_N_CLEAN runs so a thin/seeding baseline can't false-trip.
+-- Both trips share the 3-consec gate.
+M.BASELINE_DELTA_GPM    = 4.0   -- secondary: fire if HUNTER > base_hunter + this
+M.BASELINE_MIN_N_CLEAN  = 3     -- arm secondary only once >= this many runs collected
 -- WARMUP_MINUTES exists because of SPRINKLER LINE RECHARGE (Glenn 2026-06-09):
 -- When a station starts, the dry/depressurized sprinkler distribution lines
 -- fill rapidly — water rushes in to refill empty pipe between the master
