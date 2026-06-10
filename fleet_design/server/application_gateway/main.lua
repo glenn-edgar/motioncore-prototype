@@ -76,8 +76,14 @@ end
 
 local srv = http.new({ host = HOST, port = PORT, log_fn = log })
 
--- Static: dashboard front page.
+-- Root lands on the irrigation dashboard (this is the irrigation complex).
+-- The generic multi-robot fleet view stays reachable at /fleet.
 srv:route("GET", "/", function(_req)
+    return 302, { "Location: /irrigation" }, ""
+end)
+
+-- Generic fleet dashboard (the multi-robot SPA).
+srv:route("GET", "/fleet", function(_req)
     local body = read_file(STATIC_DIR .. "/index.html")
     if not body then return 500, {}, "index.html not found\n" end
     return 200, { "Content-Type: text/html; charset=utf-8" }, body
