@@ -129,7 +129,9 @@ M.ETO_UNSTABLE_ALERT_DELTA = 2.0
 function M.classify(flow, baseline_med)
     if not flow or not baseline_med then return "no_baseline", 0 end
     local delta = flow - baseline_med
-    if delta > M.LEAK_DELTA_GPM then return "LEAK", delta end
+    -- >= so a reading exactly 5 GPM above baseline alerts (Glenn 2026-06-10:
+    -- "discord alert if the end flow is 5 gpm above baseline").
+    if delta >= M.LEAK_DELTA_GPM then return "LEAK", delta end
     if delta > M.WARN_DELTA_GPM then return "rising_warn", delta end
     if delta < -M.WARN_DELTA_GPM then return "drop_warn", delta end
     return "OK", delta
