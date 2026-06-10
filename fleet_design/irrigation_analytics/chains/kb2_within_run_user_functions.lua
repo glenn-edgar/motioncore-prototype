@@ -18,7 +18,6 @@ local cjson         = require("cjson")
 local controller    = require("controller_client")
 local KB2_WR        = require("kb2_within_run")
 local KB2           = require("kb2_resistance")     -- for derive_calibration
-local KB1           = require("kb1_overcurrent")    -- reuses load_kb2_R/load_kb2_offset
 local app_heartbeat = require("app_heartbeat")
 
 local M = { main = {}, one_shot = {}, boolean = {} }
@@ -175,14 +174,20 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
         end
         st.db = db
         log(id, "db ready at %s", db_path)
-        -- Initial baseline + offset read from kb2_resistance's DB (read-only)
-        local R_table, n, R_master = KB1.load_kb2_R(kb2_path, 1)
-        st.kb2_R = R_table or {}
+        -- Read all cold R values from KB2's baselines table (KB1 used to
+        -- expose load_kb2_R but was simplified out of that role in the
+        -- KB1 rewrite; KB2_WR now owns these reads directly).
+        local cold_R, cold_err = KB2_WR.load_all_cold_R(kb2_path)
+        st.cold_R = cold_R or {}
+        local n_cold = 0
+        for _ in pairs(st.cold_R) do n_cold = n_cold + 1 end
+        local R_master = KB2_WR.load_master_R(kb2_path)
         st.kb2_R_master = R_master or 40.0
-        st.kb2_offset = KB1.load_kb2_offset(kb2_path)
-        log(id, "loaded %d KB2 baselines (R_master=%.1f Ω, offset=%s)",
-            n or 0, st.kb2_R_master,
-            st.kb2_offset and string.format("%.4f A", st.kb2_offset) or "nil")
+        st.kb2_offset = KB2_WR.load_kb2_offset(kb2_path)
+        log(id, "loaded cold_R for %d valves (R_master=%.1f Ω, offset=%s)%s",
+            n_cold, st.kb2_R_master,
+            st.kb2_offset and string.format("%.4f A", st.kb2_offset) or "nil",
+            cold_err and (" — " .. cold_err) or "")
     end
     local db = st.db
 
@@ -233,7 +238,7 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
             local bin_key = table.concat(valves, "/")
             if is_eto_bin(valves) then
                 -- Refresh offset (may have changed if KB2 ran a new cycle)
-                local fresh_offset = KB1.load_kb2_offset(kb2_path)
+                local fresh_offset = KB2_WR.load_kb2_offset(kb2_path)
                 if fresh_offset then st.kb2_offset = fresh_offset end
 
                 local n_coils = n_zone_coils_for_bin(bin_key, valves)
@@ -246,6 +251,33 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
                     local R_series = KB2_WR.compute_R_per_minute_calibrated(
                         th.I_data, cal, st.kb2_R_master, n_coils)
                     local result = KB2_WR.analyze_run(R_series)
+
+                    -- Thermal-lift analysis (Glenn 2026-06-09 PM). Uses
+                    -- per-bin parallel-R baseline (all bin valves + master)
+                    -- from KB2's cold R values, and subtracts the 2-null
+                    -- offset from each minute's raw IRRIGATION_CURRENT.
+                    local lift_results = nil
+                    local R_baseline_par, baseline_err =
+                        KB2_WR.compute_parallel_baseline(
+                            st.cold_R, valves, st.kb2_R_master)
+                    if R_baseline_par then
+                        local null_offset_for_lift = (cal.source == "controller")
+                                            and (cal.controller_offset or 0)
+                                            or (st.kb2_offset or 0)
+                        local lift_series = KB2_WR.compute_thermal_lift(
+                            th.I_data, null_offset_for_lift, R_baseline_par)
+                        if lift_series then
+                            lift_results = KB2_WR.analyze_thermal_lift(lift_series, 5, 15)
+                            log(id, "thermal: bin=%s R_base=%.2f Ω lift_win=%s lift_end=%s lift_max=%s",
+                                bin_key, R_baseline_par,
+                                lift_results.lift_window and string.format("%+.2f Ω", lift_results.lift_window) or "nil",
+                                lift_results.lift_end    and string.format("%+.2f Ω", lift_results.lift_end)    or "nil",
+                                lift_results.lift_max    and string.format("%+.2f Ω", lift_results.lift_max)    or "nil")
+                        end
+                    elseif baseline_err then
+                        log(id, "thermal: bin=%s baseline skipped — %s", bin_key, baseline_err)
+                    end
+
                     KB2_WR.insert_run(db, {
                         ts_ms       = now_ms(),
                         sid         = ent.stream_id,
@@ -258,6 +290,10 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
                                         and (cal.controller_offset or 0)
                                         or st.kb2_offset,
                         R_master    = st.kb2_R_master,
+                        R_baseline_par = R_baseline_par,
+                        lift_window = lift_results and lift_results.lift_window,
+                        lift_end    = lift_results and lift_results.lift_end,
+                        lift_max    = lift_results and lift_results.lift_max,
                         R_start     = result.R_start,
                         R_end       = result.R_end,
                         end_delta   = result.end_delta,

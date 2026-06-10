@@ -37,6 +37,12 @@ M.SLOPE_START_MIN      = 5         -- skip first 5 min (priming transient)
 M.SLOPE_END_MIN        = 45        -- cap at 45 min to avoid well-drawdown tail
 M.MIN_SAMPLES_FOR_FIT  = 10
 
+-- Thermal-lift thresholds (Glenn 2026-06-09 PM). Lift = R_observed_total
+-- minus cold parallel R baseline computed from KB2's per-valve R values
+-- plus master. Copper coil tempco ≈ 0.39%/°C so a 4 Ω lift on a ~20 Ω
+-- baseline ≈ 20% ≈ 50 °C coil temperature rise. Plausible for ~10 min run.
+M.MASTER_VALVE_KEY     = "satellite_1:43"   -- always energized during runs
+
 -- =========================================================================
 -- Per-minute R back-derivation
 -- =========================================================================
@@ -70,6 +76,107 @@ function M.compute_R_per_minute(I_data, null_offset, R_master, n_zone_coils)
         end
     end
     return out
+end
+
+-- =========================================================================
+-- Thermal-lift functions (Glenn 2026-06-09 PM)
+-- =========================================================================
+-- Compute the cold-baseline parallel resistance for a bin during a run.
+-- Master is ALWAYS in parallel during normal runs (we confirmed this
+-- against sat_4:4 TIME_HISTORY — V_PSU / I matched the parallel of all
+-- energized coils + master within 2% in the 5-15 minute window).
+--
+-- R_per_valve: { [valve_key] = R_cold_ohm, ... }  — from KB2's baselines_kb2
+-- valves     : list of "satellite_X:Y" strings from this bin's io_setup
+-- R_master   : master valve cold R (sat_1:43 from KB2)
+--
+-- Returns parallel R, or nil if any required baseline is missing.
+function M.compute_parallel_baseline(R_per_valve, valves, R_master)
+    if not R_per_valve or not valves or #valves == 0 then return nil end
+    R_master = R_master or M.R_MASTER_DEFAULT
+    local inv_sum = 1.0 / R_master  -- master always in parallel during runs
+    for _, v in ipairs(valves) do
+        if v ~= M.MASTER_VALVE_KEY then  -- avoid double-counting if io_setup includes master
+            local R = R_per_valve[v]
+            if not R or R <= 0 then
+                return nil, "missing cold R for " .. v
+            end
+            inv_sum = inv_sum + 1.0 / R
+        end
+    end
+    return 1.0 / inv_sum
+end
+
+-- Per-minute thermal lift = R_observed(t) - R_baseline_parallel.
+-- I_data is RAW IRRIGATION_CURRENT (the controller never subtracts offset
+-- from runtime samples — confirmed 2026-06-09 PM). null_offset comes from
+-- KB2's 2-null computation on the latest valve_test cycle.
+--
+-- Returns: { thermal_lift = [Ω per minute], R_observed = [Ω per minute],
+--            R_baseline = N, n_valid = N }
+function M.compute_thermal_lift(I_data, null_offset, R_baseline)
+    if not I_data or #I_data == 0 then return nil end
+    if not R_baseline or R_baseline <= 0 then return nil end
+    local R_obs, lifts = {}, {}
+    local n_valid = 0
+    for i, I_obs in ipairs(I_data) do
+        local I_real = (I_obs or 0) - (null_offset or 0)
+        if I_real > 0.05 then
+            local R = M.PSU_VOLTAGE / I_real
+            R_obs[i] = R
+            lifts[i] = R - R_baseline
+            n_valid = n_valid + 1
+        else
+            R_obs[i] = nil
+            lifts[i] = nil
+        end
+    end
+    return {
+        thermal_lift = lifts,
+        R_observed   = R_obs,
+        R_baseline   = R_baseline,
+        n_valid      = n_valid,
+    }
+end
+
+-- Summarise a thermal-lift series into headline metrics.
+-- window_start_min / window_end_min: clean steady-state window (default 5..15)
+function M.analyze_thermal_lift(lift_series, window_start_min, window_end_min)
+    if not lift_series or not lift_series.thermal_lift then return nil end
+    window_start_min = window_start_min or 5
+    window_end_min   = window_end_min   or 15
+    local lifts = lift_series.thermal_lift
+    local n = #lifts
+    -- Index = minute (lifts[1] = minute 1 of run = step 1)
+    local window_vals = {}
+    for i = window_start_min, math.min(window_end_min, n) do
+        if lifts[i] then window_vals[#window_vals+1] = lifts[i] end
+    end
+    local function mean(t)
+        if not t or #t == 0 then return nil end
+        local s = 0
+        for _, v in ipairs(t) do s = s + v end
+        return s / #t
+    end
+    local function max(t)
+        if not t or #t == 0 then return nil end
+        local m = t[1]
+        for _, v in ipairs(t) do if v > m then m = v end end
+        return m
+    end
+    -- Trailing-edge lift (end of run)
+    local end_lifts = {}
+    for i = math.max(1, n-2), n do
+        if lifts[i] then end_lifts[#end_lifts+1] = lifts[i] end
+    end
+    return {
+        lift_start      = lifts[1],         -- min 1 (will include line-recharge transient)
+        lift_window     = mean(window_vals), -- mean over 5-15 min steady-state
+        lift_window_max = max(window_vals),
+        lift_end        = mean(end_lifts),   -- mean over last 3 min
+        lift_max        = max(lifts),
+        n_window        = #window_vals,
+    }
 end
 
 -- Calibrated variant: takes a KB2 calibration object instead of separate
@@ -273,6 +380,15 @@ CREATE TABLE IF NOT EXISTS runs_kb2_within (
     cls             TEXT,
     severity        TEXT,
     note            TEXT,
+    -- Thermal-lift fields (Glenn 2026-06-09 PM).
+    -- R_baseline_par = cold parallel R from KB2 baselines (all bin valves
+    -- + master). lift_window = mean over step 5-15. lift_end = mean over
+    -- last 3 min. Positive lift = coil warming. Negative lift = parallel
+    -- load not accounted for (e.g. bin 3 sat_4:4/sat_1:39 anomaly).
+    R_baseline_par  REAL,
+    lift_window     REAL,
+    lift_end        REAL,
+    lift_max        REAL,
     UNIQUE(sid, bin)
 );
 CREATE INDEX IF NOT EXISTS idx_runs_kb2_within_bin ON runs_kb2_within(bin);
@@ -305,8 +421,9 @@ function M.insert_run(db, fields)
             R_start, R_end, end_delta,
             R_med, R_mad, slope_ohm_pm, intercept_ohm,
             max_step_ohm, max_step_minute,
-            cls, severity, note)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            cls, severity, note,
+            R_baseline_par, lift_window, lift_end, lift_max)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ]])
     if not stmt then return nil, db:errmsg() end
     stmt:bind_values(
@@ -315,10 +432,75 @@ function M.insert_run(db, fields)
         fields.R_start, fields.R_end, fields.end_delta,
         fields.R_med, fields.R_mad, fields.slope_ohm_pm, fields.intercept_ohm,
         fields.max_step_ohm, fields.max_step_minute,
-        fields.cls, fields.severity, fields.note)
+        fields.cls, fields.severity, fields.note,
+        fields.R_baseline_par, fields.lift_window, fields.lift_end, fields.lift_max)
     stmt:step()
     stmt:finalize()
     return true
+end
+
+-- Load all per-valve cold R values from kb2_resistance's DB. Read-only,
+-- snapshot at boot. Returns { [valve_key] = R_med_ohm, ... }.
+function M.load_all_cold_R(kb2_db_path)
+    local mod, err = ensure_lsqlite3()
+    if not mod then return nil, err end
+    local db, code, errmsg = mod.open(kb2_db_path)
+    if not db then
+        return nil, string.format("open %s failed: %s/%s",
+            kb2_db_path, tostring(code), tostring(errmsg))
+    end
+    local out = {}
+    local stmt = db:prepare("SELECT valve, R_med FROM baselines_kb2 WHERE R_med IS NOT NULL")
+    if not stmt then
+        local m = db:errmsg(); db:close()
+        return nil, "select R_med failed: " .. tostring(m)
+    end
+    for row in stmt:nrows() do
+        out[row.valve] = row.R_med
+    end
+    stmt:finalize()
+    db:close()
+    return out
+end
+
+-- Load most-recent 2-null offset from kb2_resistance's DB. The runs_kb2
+-- table stores offset_used per valve per cycle; we pick the latest cycle's
+-- value (it's the same across all valves in a cycle).
+function M.load_kb2_offset(kb2_db_path)
+    local mod, err = ensure_lsqlite3()
+    if not mod then return nil, err end
+    local db, code, errmsg = mod.open(kb2_db_path)
+    if not db then
+        return nil, string.format("open %s failed: %s/%s",
+            kb2_db_path, tostring(code), tostring(errmsg))
+    end
+    local stmt = db:prepare(
+        "SELECT offset_used FROM runs_kb2 WHERE offset_used IS NOT NULL ORDER BY ts_ms DESC LIMIT 1")
+    if not stmt then
+        local m = db:errmsg(); db:close()
+        return nil, "select offset failed: " .. tostring(m)
+    end
+    local offset = nil
+    for row in stmt:nrows() do offset = row.offset_used; break end
+    stmt:finalize()
+    db:close()
+    return offset
+end
+
+-- Load master valve cold R from KB2 baselines.
+function M.load_master_R(kb2_db_path)
+    local mod, err = ensure_lsqlite3()
+    if not mod then return nil, err end
+    local db, code, errmsg = mod.open(kb2_db_path)
+    if not db then return nil, err end
+    local stmt = db:prepare("SELECT R_med FROM baselines_kb2 WHERE valve = ?")
+    if not stmt then db:close(); return nil, "prepare failed" end
+    stmt:bind_values(M.MASTER_VALVE_KEY)
+    local R = nil
+    for row in stmt:nrows() do R = row.R_med; break end
+    stmt:finalize()
+    db:close()
+    return R
 end
 
 return M
