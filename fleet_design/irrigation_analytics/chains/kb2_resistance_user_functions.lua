@@ -153,6 +153,17 @@ M.one_shot.KB2_TICK = function(handle, _node)
         else
             log(id, "topology load skipped/failed: %s", tostring(topo_err))
         end
+        -- On a deploy (image tag change), clear the step-detection prev_R so
+        -- the first post-deploy cycle doesn't false-step against stale prev_R
+        -- from the previous image (the 0.4->0.19 R_SHORT_STEP epidemic).
+        local img = os.getenv("IMAGE_TAG")
+        if img then
+            local did, was = KB2.reset_prev_r_on_new_image(db, img)
+            if did then
+                log(id, "new image %s (was %s) — cleared kb2 prev_R to avoid false R_SHORT_STEP",
+                    img, tostring(was))
+            end
+        end
     end
     local db = st.db
 

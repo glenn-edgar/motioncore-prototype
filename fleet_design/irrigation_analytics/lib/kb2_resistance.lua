@@ -658,4 +658,21 @@ function M.cycle_state_set(db, key, value)
     return true
 end
 
+-- Reset step-detection prev_R (baselines_kb2.last_R) when the running image tag
+-- changes — i.e. on a deploy / calibration transition (Glenn 2026-06-10).
+-- Without this, the first cycle after a deploy compares new-calibration R
+-- against the previous image's stale prev_R and fires a FALSE R_SHORT_STEP
+-- epidemic across whole branches (observed on the Pi 0.4->0.19 swap: sat_2:1-7
+-- all "stepped" -5..-9 Ω at one timestamp). Only last_R is cleared — the
+-- rolling R_med baseline is robust and stays. Auto-detected via IMAGE_TAG so no
+-- manual version bumping. Returns (did_reset, previous_tag).
+function M.reset_prev_r_on_new_image(db, image_tag)
+    if not db or not image_tag or image_tag == "" then return false end
+    local stored = M.cycle_state_get(db, "image_tag")
+    if stored == image_tag then return false, stored end
+    db:exec("UPDATE baselines_kb2 SET last_R = NULL")
+    M.cycle_state_set(db, "image_tag", image_tag)
+    return true, stored
+end
+
 return M
