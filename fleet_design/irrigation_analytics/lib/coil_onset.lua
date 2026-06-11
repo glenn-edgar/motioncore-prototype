@@ -130,6 +130,12 @@ function M.ensure_schema(db)
         sig_group       TEXT,
         last_ms         INTEGER
     );
+    CREATE TABLE IF NOT EXISTS watch_list (
+        valve    TEXT PRIMARY KEY,
+        reason   TEXT,
+        source   TEXT,
+        added_ms INTEGER
+    );
     ]])
 end
 

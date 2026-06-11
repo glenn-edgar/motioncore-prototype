@@ -1417,6 +1417,20 @@ local function load_field_findings()
     return out
 end
 
+-- Watch list — valves under deliberate observation (a falling coil, a thermal
+-- overshoot to confirm, a flagged resistance group). One row per valve in kb4.db.
+local function load_watch_list()
+    local db = open_ro(DB_PATHS.kb4)
+    if not db then return {} end
+    local out = {}
+    for _, r in ipairs(query(db, [[
+        SELECT valve, reason, source, added_ms FROM watch_list ORDER BY added_ms ]])) do
+        out[r.valve] = r
+    end
+    db:close()
+    return out
+end
+
 -- Onset spike groups (within-run; co-energized additions cancel)
 local SPIKE_TAG = {
     SPIKE_SEVERE = "t-bad", SPIKE_STRONG = "t-warn", SPIKE_MILD = "t-warn", FLAT = "t-info",
@@ -1453,6 +1467,7 @@ local function view_coil(_req)
     pcall(function() master, coil, ok, rms = coil_solve.solve(eqs) end)
 
     local findings = load_field_findings()
+    local watch = load_watch_list()
 
     -- per-single-valve onset spike (from its own single-key baseline)
     local spike = {}
@@ -1515,14 +1530,34 @@ local function view_coil(_req)
             '<span class="tiny">—</span>'
         local fld = c.field and ('<span class="tag t-warn">' .. esc(c.field) .. '</span>') or
             '<span class="tiny">—</span>'
+        local vcell = esc(c.valve) ..
+            (watch[c.valve] and ' <span class="tag t-warn" title="'
+                .. esc(watch[c.valve].reason or "watched") .. '">👁 watch</span>' or "")
         trows[#trows + 1] = string.format([[
 <tr><td>%s</td><td style="text-align:right"><span class="tag %s">%s</span></td>
 <td style="text-align:right">%s</td><td>%s</td>
 <td style="text-align:right">%s</td><td>%s</td><td class="tiny">%s</td></tr>
-]], esc(c.valve), amp_tag, num(c.amps, 3),
+]], vcell, amp_tag, num(c.amps, 3),
     c.dmed ~= nil and num(c.dmed, 3) or "—", sg,
     c.n and tostring(c.n) or "—", fld, esc(pdt_from_ms(c.last_ms)))
     end
+
+    -- watch-list panel
+    local wrows = {}
+    for v, w in pairs(watch) do
+        local amps = (coil and coil[v]) and num(coil[v], 3) or "—"
+        wrows[#wrows + 1] = string.format(
+            '<tr><td>%s</td><td style="text-align:right">%s</td><td>%s</td><td class="tiny">%s</td></tr>',
+            esc(v), amps, esc(w.reason or ""), esc(pdt_from_ms(w.added_ms)))
+    end
+    local watch_html = #wrows > 0 and string.format([[
+<div class="panel">
+<div class="panel-h">👁 Watch list (%d)</div>
+<div class="panel-b"><table><thead><tr>
+<th>Valve</th><th>I_coil (A)</th><th>Reason</th><th>Since</th></tr></thead>
+<tbody>%s</tbody></table></div>
+</div>
+]], #wrows, table.concat(wrows)) or ""
 
     local table_html = (ok and #trows > 0) and string.format([[
 <table>
@@ -1536,6 +1571,7 @@ local function view_coil(_req)
         '<p class="tiny">No solved data yet — accumulates as valves run, or the backfill has not been applied.</p>'
 
     local body = string.format([[
+%s
 <div class="panel">
 <div class="panel-h">Per-coil current — least-squares decomposition</div>
 <div class="panel-b">%s</div>
@@ -1553,7 +1589,7 @@ is the weak-coil / high-R signal. <b>Onset</b> is the within-run first-minute sp
 (additions cancel) — informational.
 </p></div>
 </div>
-]], hdr, #connected, table_html)
+]], watch_html, hdr, #connected, table_html)
 
     return html_response(layout("Coil onset", "/irrigation/coil", body, { refresh_s = 300 }))
 end
