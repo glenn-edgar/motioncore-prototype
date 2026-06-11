@@ -18,6 +18,7 @@ local M = {}
 -- =========================================================================
 local lsqlite3 = require("lsqlite3")
 local pt_time  = require("pt_time")
+local coil_solve = require("coil_solve")
 
 local DB_PATHS = {
     kb1    = os.getenv("KB1_DB_PATH")    or "/var/fleet/kb1/kb1.db",
@@ -189,6 +190,7 @@ local NAV_ITEMS = {
     { path = "/irrigation/alerts", label = "Past Actions" },
     { path = "/irrigation/field",  label = "Field"  },
     { path = "/irrigation/meter",  label = "Meter R" },
+    { path = "/irrigation/coil",   label = "Coil onset" },
     { path = "/irrigation/check",  label = "Sprinkler check" },
 }
 
@@ -1387,6 +1389,175 @@ end
 -- Route registration
 -- =========================================================================
 
+-- =========================================================================
+-- COIL ONSET view — solenoid current-onset signature monitor
+-- =========================================================================
+
+-- Latest field finding per valve, from the most recent field check, so the
+-- page can show whether field-failed valves cluster in a signature group.
+local function load_field_findings()
+    local db = open_ro(DB_PATHS.kb4)
+    if not db then return {} end
+    local out = {}
+    local rows = query(db, [[
+        SELECT o.bin AS bin, o.clogged_count AS clogged, o.notes AS notes
+        FROM clog_observations o
+        WHERE o.check_id = (SELECT MAX(id) FROM field_checks) ]])
+    for _, r in ipairs(rows) do
+        -- a composite obs (a/b) annotates each member valve
+        for v in tostring(r.bin):gmatch("[^/]+") do
+            local note = r.notes
+            if (note == nil or note == "") and tonumber(r.clogged) and tonumber(r.clogged) > 0 then
+                note = string.format("clogged x%d", tonumber(r.clogged))
+            end
+            if note and note ~= "" then out[v] = note end
+        end
+    end
+    db:close()
+    return out
+end
+
+-- Onset spike groups (within-run; co-energized additions cancel)
+local SPIKE_TAG = {
+    SPIKE_SEVERE = "t-bad", SPIKE_STRONG = "t-warn", SPIKE_MILD = "t-warn", FLAT = "t-info",
+}
+local SPIKE_LABEL = {
+    SPIKE_SEVERE = "spike≥0.30", SPIKE_STRONG = "spike0.15-0.30",
+    SPIKE_MILD   = "spike0.05-0.15", FLAT = "flat",
+}
+local NULL_A     = 0.10   -- |per-coil current| below this = unconnected / wiring null
+local WEAK_DELTA = 0.10   -- connected coil this far below connected median = weak
+
+local function median_list(t)
+    local n = #t; if n == 0 then return nil end
+    table.sort(t)
+    if n % 2 == 1 then return t[(n + 1) / 2] end
+    return (t[n / 2] + t[n / 2 + 1]) / 2
+end
+
+local function view_coil(_req)
+    local db = open_ro(DB_PATHS.kb4)
+    local rows = db and query(db, [[
+        SELECT valve, n, hold_med, spike_delta_med, sig_group, last_ms
+        FROM coil_onset_baseline WHERE hold_med IS NOT NULL ]]) or {}
+    if db then db:close() end
+
+    -- one equation per energized-set key: hold = master(1:43) + Σ pair-member coils
+    local eqs = {}
+    for _, r in ipairs(rows) do
+        local members = {}
+        for v in tostring(r.valve):gmatch("[^/]+") do members[#members + 1] = v end
+        eqs[#eqs + 1] = { members = members, b = r.hold_med, w = tonumber(r.n) or 1 }
+    end
+    local master, coil, ok, rms = nil, {}, false, 0
+    pcall(function() master, coil, ok, rms = coil_solve.solve(eqs) end)
+
+    local findings = load_field_findings()
+
+    -- per-single-valve onset spike (from its own single-key baseline)
+    local spike = {}
+    for _, r in ipairs(rows) do
+        if not tostring(r.valve):find("/") then
+            spike[r.valve] = { group = r.sig_group, delta = r.spike_delta_med,
+                               last_ms = r.last_ms, n = r.n }
+        end
+    end
+
+    -- split solved coils into connected vs null references
+    local connected, nulls = {}, {}
+    if ok and coil then
+        for v, amps in pairs(coil) do
+            if math.abs(amps) < NULL_A then
+                nulls[#nulls + 1] = { valve = v, amps = amps }
+            else
+                connected[#connected + 1] = { valve = v, amps = amps }
+            end
+        end
+    end
+    local cmed
+    do
+        local list = {}
+        for _, c in ipairs(connected) do list[#list + 1] = c.amps end
+        cmed = median_list(list)
+    end
+    local n_weak = 0
+    for _, c in ipairs(connected) do
+        c.dmed = (cmed and c.amps - cmed) or nil
+        c.weak = (cmed ~= nil and c.amps <= cmed - WEAK_DELTA)
+        if c.weak then n_weak = n_weak + 1 end
+        local sp = spike[c.valve]
+        c.sig = sp and sp.group or nil
+        c.n = sp and sp.n or nil
+        c.last_ms = sp and sp.last_ms or nil
+        c.field = findings[c.valve]
+    end
+    table.sort(connected, function(a, b) return a.amps < b.amps end)   -- weakest first
+    table.sort(nulls, function(a, b) return a.valve < b.valve end)
+
+    local null_str = {}
+    for _, z in ipairs(nulls) do null_str[#null_str + 1] = esc(z.valve) end
+    local hdr = string.format([[
+<p><b>Master (1:43, implicit):</b> %s A&nbsp;&nbsp;
+<b>Typical coil:</b> %s A&nbsp;&nbsp;
+<b>Fit residual:</b> %s A %s&nbsp;&nbsp;
+<b>Weak-coil candidates:</b> <span class="tag %s">%d</span></p>
+<p class="tiny"><b>Null references (≈0 A — unconnected / wiring artifacts; confirm the fit's zero):</b> %s</p>
+]], num(master, 3), num(cmed, 3), num(rms, 3),
+    (rms and rms < 0.10) and '<span class="tag t-info">good</span>' or '<span class="tag t-warn">high</span>',
+    n_weak > 0 and "t-bad" or "t-info", n_weak,
+    #null_str > 0 and table.concat(null_str, ", ") or "none")
+
+    local trows = {}
+    for _, c in ipairs(connected) do
+        local amp_tag = c.weak and "t-bad" or "t-info"
+        local sg = c.sig and string.format('<span class="tag %s">%s</span>',
+            SPIKE_TAG[c.sig] or "t-info", esc(SPIKE_LABEL[c.sig] or c.sig)) or
+            '<span class="tiny">—</span>'
+        local fld = c.field and ('<span class="tag t-warn">' .. esc(c.field) .. '</span>') or
+            '<span class="tiny">—</span>'
+        trows[#trows + 1] = string.format([[
+<tr><td>%s</td><td style="text-align:right"><span class="tag %s">%s</span></td>
+<td style="text-align:right">%s</td><td>%s</td>
+<td style="text-align:right">%s</td><td>%s</td><td class="tiny">%s</td></tr>
+]], esc(c.valve), amp_tag, num(c.amps, 3),
+    c.dmed ~= nil and num(c.dmed, 3) or "—", sg,
+    c.n and tostring(c.n) or "—", fld, esc(pdt_from_ms(c.last_ms)))
+    end
+
+    local table_html = (ok and #trows > 0) and string.format([[
+<table>
+<thead><tr>
+<th>Valve</th><th title="solved per-coil current, master removed">I_coil (A)</th>
+<th title="vs connected-coil median">Δ median</th>
+<th title="within-run onset spike">Onset</th>
+<th>Runs</th><th>Field finding</th><th>Updated</th>
+</tr></thead><tbody>%s</tbody></table>
+]], table.concat(trows)) or
+        '<p class="tiny">No solved data yet — accumulates as valves run, or the backfill has not been applied.</p>'
+
+    local body = string.format([[
+<div class="panel">
+<div class="panel-h">Per-coil current — least-squares decomposition</div>
+<div class="panel-b">%s</div>
+</div>
+<div class="panel">
+<div class="panel-h">Connected coils — weakest first (%d)</div>
+<div class="panel-b">%s
+<p class="tiny" style="margin-top:10px">
+IRRIGATION_CURRENT is a <b>sum</b>: master 1:43 (every run) + the 1–3 pair members.
+We solve the whole run-set as a linear system for each coil and the master, so
+<b>I_coil</b> is the true per-coil current with the master removed. Unconnected valves
+and wiring artifacts solve to ≈0 A (the null references above). A <b>connected</b> coil
+sitting low vs the median, or trending toward the null floor Thursday over Thursday,
+is the weak-coil / high-R signal. <b>Onset</b> is the within-run first-minute spike
+(additions cancel) — informational.
+</p></div>
+</div>
+]], hdr, #connected, table_html)
+
+    return html_response(layout("Coil onset", "/irrigation/coil", body, { refresh_s = 300 }))
+end
+
 function M.register_routes(srv)
     srv:route("GET", "/irrigation", view_now)
     srv:route("GET", "/irrigation/today", view_today)
@@ -1397,6 +1568,7 @@ function M.register_routes(srv)
     srv:route("GET", "/irrigation/field", view_field)
     srv:route("GET", "/irrigation/meter", view_meter)
     srv:route("POST", "/irrigation/meter", post_meter)
+    srv:route("GET", "/irrigation/coil", view_coil)
     srv:route("GET", "/irrigation/check", view_check)
     srv:route("POST", "/irrigation/check", post_check)
 end

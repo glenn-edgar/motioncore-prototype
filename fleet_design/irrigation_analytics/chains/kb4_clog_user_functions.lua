@@ -18,6 +18,7 @@
 local cjson         = require("cjson")
 local controller    = require("controller_client")
 local KB4           = require("kb4_baselines")
+local CoilOnset     = require("coil_onset")
 local app_heartbeat = require("app_heartbeat")
 
 local M = { main = {}, one_shot = {}, boolean = {} }
@@ -160,6 +161,10 @@ function M.one_shot.KB4_TICK(handle, params)
         bb._kb4.eto_set = eto_set
         local n = 0; for _ in pairs(eto_set) do n = n + 1 end
         log(id, "loaded %d ETO valves; db ready at %s", n, db_path)
+
+        -- Solenoid onset-signature monitor (monitor-only; see lib/coil_onset).
+        local ok_co = pcall(CoilOnset.ensure_schema, db)
+        if not ok_co then log(id, "WARN: coil_onset schema init failed") end
     end
 
     local kb4 = bb._kb4
@@ -213,6 +218,10 @@ function M.one_shot.KB4_TICK(handle, params)
                     else
                         local flow_series = (th_entry.HUNTER_FLOW_METER or {}).data or {}
                         local curr_series = (th_entry.IRRIGATION_CURRENT or {}).data or {}
+                        -- monitor-only solenoid onset signature (never breaks KB4)
+                        pcall(CoilOnset.record, kb4.db, bin_sorted,
+                            tonumber(e.stream_id:match("^(%d+)")) or now_ms(),
+                            e.stream_id, curr_series)
                         local metrics = KB4.compute_eto_metrics(flow_series)
                         if not metrics then
                             log(id, "ETO too-short for window: %s (n=%d)",
@@ -320,6 +329,10 @@ function M.one_shot.KB4_TICK(handle, params)
                         else
                             local flow_series = (th_entry.HUNTER_FLOW_METER or {}).data or {}
                             local curr_series = (th_entry.IRRIGATION_CURRENT or {}).data or {}
+                            -- monitor-only solenoid onset signature (never breaks KB4)
+                            pcall(CoilOnset.record, kb4.db, bin_sorted,
+                                tonumber(e.stream_id:match("^(%d+)")) or now_ms(),
+                                e.stream_id, curr_series)
                             -- Non-ETO = LAST value of the run (Glenn 2026-06-10):
                             -- short bins never reach a steady window; the end value
                             -- is the per-run flow. Baseline seed is computed the same.
