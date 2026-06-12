@@ -1,5 +1,78 @@
 # irrigation_analytics — CONTINUE
 
+> ⚠️ Everything below the `--- HISTORICAL ---` marker is the original
+> 2026-05-29 build doc, kept for reference. The authoritative current state is
+> THIS top section. Companion memory: `irrigation-production-state` (the reset
+> runbook).
+
+## ⭐ CURRENT STATE & WINDOWS-RESET RECOVERY (2026-06-11) — READ FIRST
+
+**Production runs on the Pi (`ssh robot` = 192.168.1.66), NOT WSL.** A Windows /
+WSL reset does NOT take down production — the painful 2026-06-10 lesson when the
+WSL-armed robot was dead 11 h overnight. After a reset there is nothing to
+restart; just confirm health.
+
+### After a Windows/WSL reset — do exactly this
+1. **Nothing is down.** Confirm the Pi:
+   ```
+   ssh robot 'docker ps --filter name=irrigation-analytics --format "{{.Image}} {{.Status}}"; \
+     docker logs irrigation-analytics 2>&1 | grep -iE "armed=true|seeded.*non-ETO" | tail'
+   ```
+   Healthy = current image Up; kb1 armed=true (1.8/1.2 A); kb3 armed=true (14 GPM).
+2. **Current image: `0.26-within-run`, armed.** (Confirm the real tag from step 1.)
+3. **WSL is dev-only and normally STOPPED. NEVER run WSL armed while the Pi is
+   armed** — both poll the same controller and double-actuate.
+4. No sqlite3 CLI on the Pi — query DBs via
+   `ssh robot 'docker exec -i irrigation-analytics luajit -e "...lsqlite3..."'`.
+5. Deploy procedure + gotchas: see the `irrigation-production-state` memory.
+
+### PENDING — first thing next session / morning 2026-06-12
+- **Analyze the overnight ETO within-run data.** ETO valves ran from 18:00 PT
+  2026-06-11. KB2_WR (0.26) now logs a segment-averaged **drift slope** + a
+  **1-5 min current peak** per ETO run. Pull from kb2_wr.db:
+  - drift: `SELECT bin,slope_ohm_pm,R_start,R_end,cls FROM runs_kb2_within WHERE ts_ms>=<6pm> ORDER BY slope_ohm_pm DESC`
+  - early peak: `peak_1_5_r` / `peak_1_5_dev` per bin (baseline + trend them)
+  - non-ETO 1-2min-vs-end spike: `coil_onset_baseline.spike_delta_med`
+- **Watch 2:14 / 2:15** (onset overshoot — on the `watch_list`, shown on `/irrigation/coil`).
+- The **KB2 persistence gate** (0.25) verifies on the next valve_test cycle —
+  confirm a single-cycle cohort outlier is suppressed (logged, not alerted).
+
+### What we did 2026-06-11 (the analysis arc — the "why" behind 0.21→0.26)
+1. **Coil current is a SUMMED bus, never one coil.** `IRRIGATION_CURRENT` =
+   master **1:43** (implicit, always on, ~0.46 A) + the **1-3 pair members** in
+   the bin key (1:39 is a normal member). Reading a single hold as one coil is
+   wrong — that mistake (twice) drove the design.
+2. **Per-coil decomposition by least-squares** (`coil_solve.lua`): each run is
+   `hold = master + Σ pair-member coils`; every valve appears in many pairs, so
+   the run-set solves for each coil + the master. **Validated**: residual 0.057 A,
+   master 0.46 A, typical coil 0.26 A. Unconnected valves (1:1/1:28/1:40) +
+   wiring artifacts (3:7/4:8) solve to ≈0 A = **null references** that calibrate
+   the fit's zero each render. Page `/irrigation/coil`; backfilled from a
+   TIME_HISTORY snapshot via `explore/backfill_coil_onset.py`.
+3. **Onset overshoot is benign**, not a fault signature: clogged 2:15 and healthy
+   2:14 overshoot identically (cold-coil thermal). Watched anyway, to test the trend.
+4. **The KB2 "R_SHORT epidemic" (15:01 cycle) was measurement noise, not faults.**
+   The 2-null offset (channels 3:1 + 4:6) already removes common-mode; the 5 V is
+   a regulated supply with ~no load. The residual is **per-channel cycle noise** —
+   proof: the same valve alerted **drift → step → short** across one afternoon
+   (contradictory faults can't coexist). Fix: **same-kind 2-cycle persistence
+   gate** (0.25). Purged 33 noise alerts so the digest stayed clean.
+   Calibration reverse-engineered: `R = 15.45/(I_raw − 0.114)`.
+5. **Controller current path** (`nano_data_center/code/plc_io_cntrl_py3.py
+   make_current_measurement`): ACS712-05B, `I=(V−2.52)/0.185` — hardcoded
+   zero/gain, single sample, no per-channel cal. Controller is hard to change
+   (runs 24/7), so all fixes are robot-side.
+6. **Within-run current analysis split by valve class (0.26):**
+   - **ETO** (15-25 min) → KB2_WR: boxcar segment-averaging + 1-5 min peak.
+   - **non-ETO** (5-8 min) → coil_onset: only the **1-2 min spike vs END of run**.
+   Both monitor-only. Self-normalizing (additions constant within a run).
+
+Image history this session: 0.21 coil-onset → 0.22 coil-cohort → 0.23 coil-solve
+→ 0.24 watchlist → 0.25 kb2-persist → 0.26 within-run. All armed, all monitor-only
+additions (no actuation changed). Commits on `ra4m1-bringup`.
+
+--- HISTORICAL (2026-05-29 build doc) ---
+
 Pick-up doc for the parallel KB1/KB2/KB3/KB4 build. Read first on any
 session resume.
 
