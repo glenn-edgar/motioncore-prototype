@@ -5,7 +5,7 @@
 > THIS top section. Companion memory: `irrigation-production-state` (the reset
 > runbook).
 
-## ⭐ CURRENT STATE & WINDOWS-RESET RECOVERY (2026-06-11) — READ FIRST
+## ⭐ CURRENT STATE & WINDOWS-RESET RECOVERY (2026-06-12) — READ FIRST
 
 **Production runs on the Pi (`ssh robot` = 192.168.1.66), NOT WSL.** A Windows /
 WSL reset does NOT take down production — the painful 2026-06-10 lesson when the
@@ -19,23 +19,57 @@ restart; just confirm health.
      docker logs irrigation-analytics 2>&1 | grep -iE "armed=true|seeded.*non-ETO" | tail'
    ```
    Healthy = current image Up; kb1 armed=true (1.8/1.2 A); kb3 armed=true (14 GPM).
-2. **Current image: `0.26-within-run`, armed.** (Confirm the real tag from step 1.)
+2. **Current image: `0.28-flow-within`, armed.** (Confirm the real tag from step 1.)
 3. **WSL is dev-only and normally STOPPED. NEVER run WSL armed while the Pi is
    armed** — both poll the same controller and double-actuate.
 4. No sqlite3 CLI on the Pi — query DBs via
    `ssh robot 'docker exec -i irrigation-analytics luajit -e "...lsqlite3..."'`.
 5. Deploy procedure + gotchas: see the `irrigation-production-state` memory.
 
-### PENDING — first thing next session / morning 2026-06-12
-- **Analyze the overnight ETO within-run data.** ETO valves ran from 18:00 PT
-  2026-06-11. KB2_WR (0.26) now logs a segment-averaged **drift slope** + a
-  **1-5 min current peak** per ETO run. Pull from kb2_wr.db:
-  - drift: `SELECT bin,slope_ohm_pm,R_start,R_end,cls FROM runs_kb2_within WHERE ts_ms>=<6pm> ORDER BY slope_ohm_pm DESC`
-  - early peak: `peak_1_5_r` / `peak_1_5_dev` per bin (baseline + trend them)
-  - non-ETO 1-2min-vs-end spike: `coil_onset_baseline.spike_delta_med`
-- **Watch 2:14 / 2:15** (onset overshoot — on the `watch_list`, shown on `/irrigation/coil`).
+### PENDING — periodic checks through the week (Glenn checks system periodically)
+- **MULTI-WEEK clog-trend accumulation is the live experiment** (started 06-12).
+  The `flow_within` monitor (0.28) records per ETO run; we need WEEKS to see if the
+  clog trends hold. On each periodic check do the read-time analysis:
+  - `SELECT valve,steady_5_15,flatness,end_droop,ts_ms FROM flow_within ORDER BY ts_ms DESC` (kb4.db)
+  - **Neighbour-normalise**: this bin's steady_5_15 minus its cohort (satellite-N
+    manifold) median the same night → cancels common-mode supply.
+  - **Flag** a sustained MONOTONIC decline > ~2 heads (5 gal) on a CLEAN bin
+    (flatness < ~1 gal). **4:4 is the live candidate** (declining 109→101 post-Thu-
+    fix, neighbour-confirmed). Only after weeks of holding do we add a clog alert.
+  - end_droop is WELL DRAWDOWN — read separately, not a clog.
+- **First-night verification (do once, ~06-13)**: confirm both new monitors actually
+  wrote rows: kb2_wr.db `runs_kb2_within` (max ts = 06-12 night, not 06-09 — the
+  0.27 persistence fix) AND kb4.db `flow_within` (steady_5_15/flatness/end_droop
+  populated per ETO bin).
+- **Watch list** (kb4.db `watch_list`, shown on `/irrigation/coil`): 2:14, 2:15
+  (onset overshoot), **4:4** (developing clog).
 - The **KB2 persistence gate** (0.25) verifies on the next valve_test cycle —
   confirm a single-cycle cohort outlier is suppressed (logged, not alerted).
+
+### What we did 2026-06-12 (clog-detection-by-flow arc — the "why" behind 0.27→0.28)
+1. **Caught a 3-day silent data loss (0.27 fix).** Within-run R rows stopped
+   persisting 06-09→12: the 06-09 thermal-lift change added 4 columns to the INSERT
+   but NO `ALTER` migration, so on the live (pre-existing) DB the prepared INSERT
+   referenced missing columns and failed silently while STILL logging. Fixed:
+   ALTER-migrate all 4 in `open_db` + the call site now logs INSERT failures.
+2. **Per-head flow physics**: sprinkler = 14.5 gph = 0.242 gpm → a blocked head
+   removes **2.42 gal** from the 10-min (5-15) window. Detection floor on a clean
+   bin ≈ 1 head; on noisy bins ~3 heads. Widening window to 5-25 does NOT help
+   (drags in the droopy tail); 6 baseline samples only help the random noise, not
+   the correlated supply-pressure term.
+3. **The unlock = compare TIME BINS WITHIN a run.** Pressure is shared across a
+   run, so steady-bin-to-steady-bin scatter cancels the supply offset → noise floor
+   0.77 gal (2:16) = ~1-head resolution, vs 1.3 gal run-to-run. MUST exclude the
+   end-of-run bins: a late-run droop (−3.5 gal on 2:16's 59-min run) is WELL
+   DRAWDOWN, not a clog. This is what `lib/flow_within_run.lua` records.
+4. **Validated vs the field clog set**: clean-bin negatives (2:16, 4:3 — both field
+   0 blocked) and the multi-head 4:1 (7 heads → +30 recovery after cleaning) MATCH
+   ground truth, zero false alarms. SINGLE-head clogs (4:7, 4:6/4:8, 4:9, 3:1/3:7)
+   are below every bin's flow floor → field-eyeball only. **So flow is a clean-bin
+   clog/recovery detector + multi-head alarm, NOT a single-head detector.**
+5. **4:4 = the one live flow-visible candidate**: head fixed Thu but 5-15 kept
+   declining 109→107→101, bin-specific vs flat neighbours (4:7 −2, 4:9 0) → a NEW
+   multi-head clog likely forming. Watch-listed. Field record corrected: 4:3 → 0.
 
 ### What we did 2026-06-11 (the analysis arc — the "why" behind 0.21→0.26)
 1. **Coil current is a SUMMED bus, never one coil.** `IRRIGATION_CURRENT` =
