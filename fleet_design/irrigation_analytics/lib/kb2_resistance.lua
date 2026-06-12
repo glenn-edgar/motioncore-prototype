@@ -675,4 +675,34 @@ function M.reset_prev_r_on_new_image(db, image_tag)
     return true, stored
 end
 
+-- Persistence gate. The per-cycle valve_test current is noisy enough that a
+-- single cycle's cohort outlier flips drift<->short<->step cycle-to-cycle
+-- (verified 2026-06-11: the same valve alerted drift, then step, then short on
+-- one afternoon). A real fault keeps the SAME direction every cycle. So before
+-- a cohort short/drift (or failure_risk) is allowed to alert, the immediately
+-- prior cycle's row for that valve must already point the same way. Returns a
+-- set like { short=true } / { drift=true } / { failure_risk=true } for the most
+-- recent PRIOR cycle, or {} if none / it was OK.
+function M.prev_cycle_alert_kinds(db, valve, before_ts_ms)
+    local kinds = {}
+    if not db or not valve or not before_ts_ms then return kinds end
+    local sql = string.format(
+        "SELECT coil_cls, cls, coil_R FROM runs_kb2 WHERE valve=%q AND ts_ms < %d " ..
+        "ORDER BY ts_ms DESC LIMIT 1", valve, before_ts_ms)
+    for r in db:nrows(sql) do
+        local cc = r.coil_cls or ""
+        local cl = r.cls or ""
+        if cc:find("SHORT") then kinds.short = true end
+        if cc:find("DRIFT") then kinds.drift = true end
+        -- failure_risk isn't stored in cls; recompute from the prior coil_R
+        -- against the frozen commissioned reference.
+        if cl:find("FAILURE_RISK") then kinds.failure_risk = true end
+        if r.coil_R and M.classify_failure_risk then
+            local frc = M.classify_failure_risk(valve, r.coil_R)
+            if frc then kinds.failure_risk = true end
+        end
+    end
+    return kinds
+end
+
 return M

@@ -344,15 +344,24 @@ M.one_shot.KB2_TICK = function(handle, _node)
                 local baseline_dir = d_base and direction_of(d_base)
                 local cohort_dir = direction_of(cohort_dev)
                 local joint = (baseline_dir and baseline_dir == cohort_dir)
-                if joint or (cohort_dev and math.abs(cohort_dev) > 8) then
+                -- Persistence gate: a real short/drift keeps the SAME direction
+                -- across cycles; per-cycle sensor noise flips. Require the prior
+                -- cycle to have already pointed the same way before alerting.
+                local prev_kinds = KB2.prev_cycle_alert_kinds(db, valve, cycle_ms)
+                local same_kind = prev_kinds[coil_kind == "SHORT" and "short" or "drift"]
+                if (joint or (cohort_dev and math.abs(cohort_dev) > 8)) and same_kind then
                     flagged_alert = flagged_alert + 1
                     record_alert(coil_kind == "SHORT" and "short" or "drift", "alert", valve,
-                        string.format("COIL_%s_ALERT (%s) coil_R=%.1f branch_med=%.1f dev=%+.1f%s",
+                        string.format("COIL_%s_ALERT (%s) coil_R=%.1f branch_med=%.1f dev=%+.1f%s [persisted 2+ cycles]",
                         coil_kind, tostring(branch),
                         coil_R or 0, bm_coil or 0, cohort_dev or 0,
-                        joint and " [confirmed by baseline]" or " [|dev|>8]"))
+                        joint and " confirmed-by-baseline" or " |dev|>8"))
                 else
                     flagged_warn = flagged_warn + 1
+                    if (joint or (cohort_dev and math.abs(cohort_dev) > 8)) and not same_kind then
+                        log(id, "suppress %s %s: single-cycle (not in prior cycle — needs 2 consecutive)",
+                            coil_kind, tostring(valve))
+                    end
                 end
             end
 
@@ -361,9 +370,17 @@ M.one_shot.KB2_TICK = function(handle, _node)
             -- is the sat_2:13 mode: rising R until the solenoid won't pull in.
             local fr_cls, _fr_sev, _fr_over, fr_note = KB2.classify_failure_risk(valve, coil_R)
             if fr_cls then
-                flagged_alert = flagged_alert + 1
-                record_alert("failure_risk", "alert", valve,
-                    string.format("R_HIGH_FAILURE_RISK (%s) — %s", tostring(branch), fr_note))
+                -- Same persistence gate: a real rising-R failure risk persists;
+                -- a one-cycle spike does not.
+                local prev_fr = KB2.prev_cycle_alert_kinds(db, valve, cycle_ms)
+                if prev_fr.failure_risk then
+                    flagged_alert = flagged_alert + 1
+                    record_alert("failure_risk", "alert", valve,
+                        string.format("R_HIGH_FAILURE_RISK (%s) — %s [persisted 2+ cycles]", tostring(branch), fr_note))
+                else
+                    flagged_warn = flagged_warn + 1
+                    log(id, "suppress failure_risk %s: single-cycle (needs 2 consecutive)", tostring(valve))
+                end
             end
 
             -- Update baseline rolling median on OK / R_STEP_NOTED. Both contribute.
