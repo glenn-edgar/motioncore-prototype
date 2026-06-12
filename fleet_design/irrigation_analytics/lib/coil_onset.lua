@@ -84,21 +84,28 @@ function M.extract(curr_series)
     local act = {}
     for k = i, j do act[#act + 1] = a[k] end
 
-    -- first active minute; skip a ramp-start partial sample
-    local first = act[1]
-    if first < M.RAMP_MIN_A and act[2] then first = act[2] end
+    -- 1-2 min spike vs END of run (Glenn 2026-06-11): for the short non-ETO
+    -- runs the only observable is the early transient compared to the run end,
+    -- segment-averaged. `first` = mean of the first 2 active minutes (skipping a
+    -- ramp-start partial sample); `endseg` = mean of the last 2 active minutes.
+    local s1 = (act[1] < M.RAMP_MIN_A and act[2]) and 2 or 1
+    local first
+    if act[s1 + 1] then first = (act[s1] + act[s1 + 1]) / 2 else first = act[s1] end
+    local endseg = (n >= 2) and ((act[n] + act[n - 1]) / 2) or act[n]
 
-    -- settled hold = median of the back ~2/3 of the run
+    -- settled hold = median of the back ~2/3 of the run (kept for the per-coil
+    -- least-squares decomposition, which wants a robust steady-state current).
     local start = math.max(3, math.floor(n / 3))
     local tail = {}
     for k = start, n do tail[#tail + 1] = act[k] end
     local hold = median(tail)
     if not hold or hold < 0.05 then return nil end
 
-    local delta = first - hold
+    -- spike is now first-2-min vs end-of-run
+    local delta = first - endseg
     return {
-        first = first, hold = hold, delta = delta,
-        ratio = first / hold, n_active = n,
+        first = first, hold = hold, endseg = endseg, delta = delta,
+        ratio = endseg > 0.05 and (first / endseg) or 1, n_active = n,
         group = M.group_of(hold, delta),
     }
 end

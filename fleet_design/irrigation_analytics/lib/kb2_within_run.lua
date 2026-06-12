@@ -293,6 +293,26 @@ local function linfit_slope(values, start_idx, end_idx)
     return slope, icpt
 end
 
+-- Short-segment boxcar average (Glenn 2026-06-11): per-minute samples are
+-- noisy; replace each minute with the mean of a w-wide centered window to get
+-- the "true average" before fitting drift. Edge-clamped. Used for slope / start
+-- / end / peak; raw values are kept for step + instability detection (smoothing
+-- would erase a real one-minute intermittent dropout).
+local function boxcar(values, w)
+    local n = #values
+    if n == 0 then return {} end
+    local half = math.floor((w or 3) / 2)
+    local out = {}
+    for i = 1, n do
+        local s, c = 0, 0
+        for j = math.max(1, i - half), math.min(n, i + half) do
+            s = s + values[j]; c = c + 1
+        end
+        out[i] = s / c
+    end
+    return out
+end
+
 -- =========================================================================
 -- Classify
 -- =========================================================================
@@ -307,10 +327,26 @@ function M.analyze_run(R_series)
     end
     local n = #clean
 
-    -- Slope fit over min 5..45 (steady-state window)
+    -- Segment-averaged trace for drift / start / end / peak (denoise).
+    local smooth = boxcar(clean, 3)
+
+    -- Slope fit over min 5..45 (steady-state window) on the smoothed trace
     local start_i = math.min(M.SLOPE_START_MIN + 1, n)
     local end_i = math.min(M.SLOPE_END_MIN, n)
-    local slope, icpt = linfit_slope(clean, start_i, end_i)
+    local slope, icpt = linfit_slope(smooth, start_i, end_i)
+
+    -- Peak in the 1-5 min interval: the segment-averaged current PEAK = R
+    -- MINIMUM in the early window (R = V/I). Track it + how far it sits below
+    -- the steady-state R, a per-run early-transient signature.
+    local peak_1_5_r, peak_1_5_min
+    do
+        local lim = math.min(5, n)
+        for i = 1, lim do
+            if smooth[i] and (not peak_1_5_r or smooth[i] < peak_1_5_r) then
+                peak_1_5_r = smooth[i]; peak_1_5_min = i
+            end
+        end
+    end
 
     -- Step detect — max |R(t+1) - R(t)| in run
     local max_step = 0
@@ -326,15 +362,16 @@ function M.analyze_run(R_series)
     local med = median(clean)
     local m = mad(clean, med) or 0
 
-    -- End-vs-start
+    -- End-vs-start (on the smoothed trace)
     local n_window = math.min(5, n)
     local sum_start = 0
-    for i = 1, n_window do sum_start = sum_start + clean[i] end
+    for i = 1, n_window do sum_start = sum_start + smooth[i] end
     local sum_end = 0
-    for i = n - n_window + 1, n do sum_end = sum_end + clean[i] end
+    for i = n - n_window + 1, n do sum_end = sum_end + smooth[i] end
     local R_start = sum_start / n_window
     local R_end   = sum_end / n_window
     local end_delta = R_end - R_start
+    local peak_1_5_dev = peak_1_5_r and (R_end - peak_1_5_r) or nil
 
     -- Priority classification (most-severe first)
     local cls = "OK"
@@ -364,6 +401,8 @@ function M.analyze_run(R_series)
         R_start = R_start, R_end = R_end, end_delta = end_delta,
         slope_ohm_per_min = slope, intercept = icpt,
         max_step_ohm = max_step, max_step_minute = max_step_i,
+        peak_1_5_r = peak_1_5_r, peak_1_5_minute = peak_1_5_min,
+        peak_1_5_dev = peak_1_5_dev,
     }
 end
 
@@ -412,6 +451,10 @@ CREATE TABLE IF NOT EXISTS runs_kb2_within (
     lift_window     REAL,
     lift_end        REAL,
     lift_max        REAL,
+    -- 1-5 min current peak (Glenn 2026-06-11): segment-averaged early-window
+    -- R minimum (= current peak) + how far below the run end it sits.
+    peak_1_5_r      REAL,
+    peak_1_5_dev    REAL,
     UNIQUE(sid, bin)
 );
 CREATE INDEX IF NOT EXISTS idx_runs_kb2_within_bin ON runs_kb2_within(bin);
@@ -433,6 +476,10 @@ function M.open_db(path)
         db:close()
         return nil, "schema migration failed: " .. tostring(msg)
     end
+    -- Additive migration for existing DBs (ALTER errors harmlessly if the
+    -- column already exists; ignore the rc).
+    db:exec("ALTER TABLE runs_kb2_within ADD COLUMN peak_1_5_r REAL")
+    db:exec("ALTER TABLE runs_kb2_within ADD COLUMN peak_1_5_dev REAL")
     return db
 end
 
@@ -445,8 +492,9 @@ function M.insert_run(db, fields)
             R_med, R_mad, slope_ohm_pm, intercept_ohm,
             max_step_ohm, max_step_minute,
             cls, severity, note,
-            R_baseline_par, lift_window, lift_end, lift_max)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            R_baseline_par, lift_window, lift_end, lift_max,
+            peak_1_5_r, peak_1_5_dev)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ]])
     if not stmt then return nil, db:errmsg() end
     stmt:bind_values(
@@ -456,7 +504,8 @@ function M.insert_run(db, fields)
         fields.R_med, fields.R_mad, fields.slope_ohm_pm, fields.intercept_ohm,
         fields.max_step_ohm, fields.max_step_minute,
         fields.cls, fields.severity, fields.note,
-        fields.R_baseline_par, fields.lift_window, fields.lift_end, fields.lift_max)
+        fields.R_baseline_par, fields.lift_window, fields.lift_end, fields.lift_max,
+        fields.peak_1_5_r, fields.peak_1_5_dev)
     stmt:step()
     stmt:finalize()
     return true
