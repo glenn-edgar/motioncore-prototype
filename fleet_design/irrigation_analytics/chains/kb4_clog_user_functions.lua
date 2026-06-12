@@ -19,6 +19,7 @@ local cjson         = require("cjson")
 local controller    = require("controller_client")
 local KB4           = require("kb4_baselines")
 local CoilOnset     = require("coil_onset")
+local FlowWithin    = require("flow_within_run")
 local app_heartbeat = require("app_heartbeat")
 
 local M = { main = {}, one_shot = {}, boolean = {} }
@@ -165,6 +166,9 @@ function M.one_shot.KB4_TICK(handle, params)
         -- Solenoid onset-signature monitor (monitor-only; see lib/coil_onset).
         local ok_co = pcall(CoilOnset.ensure_schema, db)
         if not ok_co then log(id, "WARN: coil_onset schema init failed") end
+        -- Within-run flow time-bin monitor (monitor-only; lib/flow_within_run).
+        local ok_fw = pcall(FlowWithin.ensure_schema, db)
+        if not ok_fw then log(id, "WARN: flow_within schema init failed") end
     end
 
     local kb4 = bb._kb4
@@ -222,6 +226,12 @@ function M.one_shot.KB4_TICK(handle, params)
                         pcall(CoilOnset.record, kb4.db, bin_sorted,
                             tonumber(e.stream_id:match("^(%d+)")) or now_ms(),
                             e.stream_id, curr_series)
+                        -- monitor-only within-run flow time-bin signature
+                        -- (steady 5-15 level + within-run flatness + end-droop;
+                        -- clog-trend analysis is read-time, see lib/flow_within_run)
+                        pcall(FlowWithin.record, kb4.db, bin_sorted,
+                            tonumber(e.stream_id:match("^(%d+)")) or now_ms(),
+                            e.stream_id, flow_series)
                         local metrics = KB4.compute_eto_metrics(flow_series)
                         if not metrics then
                             log(id, "ETO too-short for window: %s (n=%d)",
