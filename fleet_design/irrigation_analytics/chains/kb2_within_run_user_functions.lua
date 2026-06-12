@@ -299,7 +299,7 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
                         log(id, "thermal: bin=%s baseline skipped — %s", bin_key, baseline_err)
                     end
 
-                    KB2_WR.insert_run(db, {
+                    local ins_ok, ins_err = KB2_WR.insert_run(db, {
                         ts_ms       = now_ms(),
                         sid         = ent.stream_id,
                         bin         = bin_key,
@@ -330,6 +330,10 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
                         severity    = result.severity,
                         note        = result.note,
                     })
+                    if not ins_ok then
+                        log(id, "INSERT FAILED bin=%s: %s — within-run row NOT stored",
+                            bin_key, tostring(ins_err))
+                    end
                     processed = processed + 1
                     log(id, "ETO %s: n=%d R_med=%.1f R_start=%.1f R_end=%.1f slope=%+.3f cls=%s",
                         bin_key, result.n,

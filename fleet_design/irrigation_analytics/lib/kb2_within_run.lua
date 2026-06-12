@@ -477,7 +477,17 @@ function M.open_db(path)
         return nil, "schema migration failed: " .. tostring(msg)
     end
     -- Additive migration for existing DBs (ALTER errors harmlessly if the
-    -- column already exists; ignore the rc).
+    -- column already exists; ignore the rc). NOTE: every column the INSERT in
+    -- insert_run references MUST be ALTER-migrated here — CREATE TABLE IF NOT
+    -- EXISTS is a no-op on a pre-existing table, so a column added only to the
+    -- SCHEMA literal is invisible to an old DB and the prepared INSERT then
+    -- fails silently (no row stored). This bit us 2026-06-09→06-12: the
+    -- thermal-lift columns were added to SCHEMA + the INSERT but had no ALTER,
+    -- so within-run persistence was dead for 3 days while still logging.
+    db:exec("ALTER TABLE runs_kb2_within ADD COLUMN R_baseline_par REAL")
+    db:exec("ALTER TABLE runs_kb2_within ADD COLUMN lift_window REAL")
+    db:exec("ALTER TABLE runs_kb2_within ADD COLUMN lift_end REAL")
+    db:exec("ALTER TABLE runs_kb2_within ADD COLUMN lift_max REAL")
     db:exec("ALTER TABLE runs_kb2_within ADD COLUMN peak_1_5_r REAL")
     db:exec("ALTER TABLE runs_kb2_within ADD COLUMN peak_1_5_dev REAL")
     return db
