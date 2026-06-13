@@ -222,10 +222,12 @@ function M.one_shot.KB4_TICK(handle, params)
                     else
                         local flow_series = (th_entry.HUNTER_FLOW_METER or {}).data or {}
                         local curr_series = (th_entry.IRRIGATION_CURRENT or {}).data or {}
-                        -- monitor-only solenoid onset signature (never breaks KB4)
+                        -- monitor-only solenoid onset signature (never breaks KB4).
+                        -- step/schedule tag the run's cycle for the per-coil
+                        -- decomposition monitor (group runs into cycles).
                         pcall(CoilOnset.record, kb4.db, bin_sorted,
                             tonumber(e.stream_id:match("^(%d+)")) or now_ms(),
-                            e.stream_id, curr_series)
+                            e.stream_id, curr_series, det.step, det.schedule_name)
                         -- monitor-only within-run flow time-bin signature
                         -- (steady 5-15 level + within-run flatness + end-droop;
                         -- clog-trend analysis is read-time, see lib/flow_within_run)
@@ -342,7 +344,7 @@ function M.one_shot.KB4_TICK(handle, params)
                             -- monitor-only solenoid onset signature (never breaks KB4)
                             pcall(CoilOnset.record, kb4.db, bin_sorted,
                                 tonumber(e.stream_id:match("^(%d+)")) or now_ms(),
-                                e.stream_id, curr_series)
+                                e.stream_id, curr_series, det.step, det.schedule_name)
                             -- Non-ETO = LAST value of the run (Glenn 2026-06-10):
                             -- short bins never reach a steady window; the end value
                             -- is the per-run flow. Baseline seed is computed the same.

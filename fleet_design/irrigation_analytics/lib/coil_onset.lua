@@ -125,9 +125,17 @@ function M.ensure_schema(db)
         spike_delta REAL,
         spike_ratio REAL,
         sig_group   TEXT,
+        step        INTEGER,
+        schedule    TEXT,
         UNIQUE(sid, valve)
     );
     CREATE INDEX IF NOT EXISTS idx_coil_onset_valve ON coil_onset(valve, ts_ms);
+    -- additive migration for pre-existing DBs (cycle context for the per-coil
+    -- decomposition monitor — group runs into cycles by schedule + step-reset).
+    -- NOTE: any column the INSERT names must be ALTER-migrated here, else the
+    -- prepared INSERT fails silently on an old DB (the kb2_wr lesson).
+    pcall(function() db:exec("ALTER TABLE coil_onset ADD COLUMN step INTEGER") end)
+    pcall(function() db:exec("ALTER TABLE coil_onset ADD COLUMN schedule TEXT") end)
     CREATE TABLE IF NOT EXISTS coil_onset_baseline (
         valve           TEXT PRIMARY KEY,
         n               INTEGER DEFAULT 0,
@@ -176,17 +184,21 @@ end
 
 -- Record one run's onset for a valve. Returns the signature table or nil.
 -- Safe to call with composite bins (the page filters to single valves).
-function M.record(db, valve, ts_ms, sid, curr_series)
+-- step/schedule (optional) tag the run with its cycle context so the per-coil
+-- decomposition monitor can group runs into actual irrigation cycles (a cycle =
+-- contiguous runs of one schedule; boundary = schedule change or step reset).
+function M.record(db, valve, ts_ms, sid, curr_series, step, schedule)
     if not db or not valve or valve == "" then return nil end
     local sig = M.extract(curr_series)
     if not sig then return nil end
     local stmt = db:prepare([[
         INSERT OR IGNORE INTO coil_onset
-            (ts_ms, sid, valve, n_active, first_a, hold_a, spike_delta, spike_ratio, sig_group)
-        VALUES (?,?,?,?,?,?,?,?,?) ]])
+            (ts_ms, sid, valve, n_active, first_a, hold_a, spike_delta, spike_ratio, sig_group, step, schedule)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?) ]])
     if not stmt then return nil end
     stmt:bind_values(ts_ms, sid or "", valve, sig.n_active,
-        sig.first, sig.hold, sig.delta, sig.ratio, sig.group)
+        sig.first, sig.hold, sig.delta, sig.ratio, sig.group,
+        tonumber(step), schedule)
     stmt:step(); stmt:finalize()
     M.update_baseline(db, valve)
     return sig
