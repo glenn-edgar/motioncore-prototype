@@ -28,6 +28,7 @@ local KB3           = require("kb3_sustained")
 local KB4V2         = require("kb4_v2")    -- read-only access to baselines_kb4v2 for secondary trip
 local NOTIFY        = require("notifications")
 local WsCommand     = require("ws_command")
+local WellDrawdown  = require("well_drawdown")   -- monitor-only, parallel to leak
 local app_heartbeat = require("app_heartbeat")
 
 local NOTIFY_DB_PATH = os.getenv("NOTIFY_DB_PATH") or "/var/fleet/notify/notifications.db"
@@ -162,10 +163,13 @@ M.one_shot.KB3_TICK = function(handle, _node)
                     baseline_gpm  = baseline_gpm,
                     schedule      = ent.details.schedule_name,
                     station_step  = ent.details.step,
+                    run_time      = tonumber(ent.details.run_time),
                     started_sid   = ent.stream_id,
                     prev_elapsed  = nil,
                     consecutive   = 0,
                     fired         = false,
+                    -- monitor-only well-drawdown detector state (pcall-isolated)
+                    well_state    = WellDrawdown.new_station(),
                 }
                 log(id, "STATION_START bin=%s sched=%s step=%s (ETO%s%s — armed)",
                     bin_key,
@@ -186,6 +190,21 @@ M.one_shot.KB3_TICK = function(handle, _node)
             if st.arming then
                 log(id, "STEP_COMPLETE/SKIP bin=%s — disarming",
                     st.arming.bin)
+                -- record this station's well plateau as the well's demonstrated
+                -- cycle capacity (rolling median of last 6) — the floor
+                -- reference for the NEXT station (catches an already-dry start).
+                pcall(function()
+                    local ws = st.arming.well_state
+                    if ws and ws.plateau then
+                        st.well_plateaus = st.well_plateaus or {}
+                        st.well_plateaus[#st.well_plateaus + 1] = ws.plateau
+                        while #st.well_plateaus > 6 do table.remove(st.well_plateaus, 1) end
+                        local c = {}
+                        for i = 1, #st.well_plateaus do c[i] = st.well_plateaus[i] end
+                        table.sort(c)
+                        st.well_cycle_cap = c[math.floor((#c + 1) / 2)]
+                    end
+                end)
             end
             st.arming = nil
         end
@@ -213,6 +232,34 @@ M.one_shot.KB3_TICK = function(handle, _node)
     local elapsed = tonumber(popup.ELASPED_TIME)
     local plc     = tonumber(popup.PLC_FLOW_METER)
     local hunter  = tonumber(popup.FILTERED_HUNTER_VALVE)
+
+    -- MONITOR-ONLY well-drawdown detector, in PARALLEL with the leak check
+    -- below. Reads the same raw well-source flow (plc). Runs once per new
+    -- minute. pcall-isolated: a fault here must NEVER disturb the armed leak
+    -- path that shares this tick. It logs only what it WOULD do (rpush the
+    -- 15-min `wait` recovery + SKIP); the actuation is wired separately, later.
+    if elapsed and st.arming.well_state
+       and st.arming.well_last_min ~= elapsed then
+        st.arming.well_last_min = elapsed
+        pcall(function()
+            local cap = st.well_cycle_cap   -- from PRIOR stations this cycle
+            local r = WellDrawdown.observe(st.arming.well_state, plc, elapsed,
+                { run_time = st.arming.run_time, cycle_capacity = cap })
+            if r.would_trigger then
+                log(id, "WELL-DRAWDOWN [monitor] bin=%s min=%s PLC=%.1f plateau=%.1f frac=%.2f hits=%d/%d cap=%s remain=%s reason=%s -> WOULD rpush wait + SKIP_STATION | wait=%s",
+                    st.arming.bin, tostring(elapsed), plc or 0, r.plateau or 0,
+                    r.frac or 0, r.hits or 0, WellDrawdown.WINDOW,
+                    cap and string.format("%.1f", cap) or "nil",
+                    st.arming.run_time and tostring(st.arming.run_time - elapsed) or "?",
+                    tostring(r.reason), WellDrawdown.WAIT_JOB)
+            elseif r.below then
+                log(id, "well-drawdown [monitor] bin=%s min=%s PLC=%.1f plateau=%.1f frac=%.2f hits=%d/%d below%s",
+                    st.arming.bin, tostring(elapsed), plc or 0, r.plateau or 0,
+                    r.frac or 0, r.hits or 0, WellDrawdown.WINDOW,
+                    r.guard_ok and "" or " (guard-blocked)")
+            end
+        end)
+    end
 
     local result = KB3.evaluate_step(st.arming, elapsed, plc, hunter)
 
