@@ -130,12 +130,6 @@ function M.ensure_schema(db)
         UNIQUE(sid, valve)
     );
     CREATE INDEX IF NOT EXISTS idx_coil_onset_valve ON coil_onset(valve, ts_ms);
-    -- additive migration for pre-existing DBs (cycle context for the per-coil
-    -- decomposition monitor — group runs into cycles by schedule + step-reset).
-    -- NOTE: any column the INSERT names must be ALTER-migrated here, else the
-    -- prepared INSERT fails silently on an old DB (the kb2_wr lesson).
-    pcall(function() db:exec("ALTER TABLE coil_onset ADD COLUMN step INTEGER") end)
-    pcall(function() db:exec("ALTER TABLE coil_onset ADD COLUMN schedule TEXT") end)
     CREATE TABLE IF NOT EXISTS coil_onset_baseline (
         valve           TEXT PRIMARY KEY,
         n               INTEGER DEFAULT 0,
@@ -152,6 +146,12 @@ function M.ensure_schema(db)
         added_ms INTEGER
     );
     ]])
+    -- Additive migration for pre-existing DBs — REAL Lua, OUTSIDE the SQL string
+    -- (cycle context for the per-coil decomposition monitor: group runs into cycles
+    -- by schedule + step-reset). Every column the INSERT names must be ALTER'd here
+    -- or the prepared INSERT fails silently on an old DB (the kb2_wr lesson).
+    pcall(function() db:exec("ALTER TABLE coil_onset ADD COLUMN step INTEGER") end)
+    pcall(function() db:exec("ALTER TABLE coil_onset ADD COLUMN schedule TEXT") end)
 end
 
 -- Recompute the rolling per-valve baseline from the most recent BASELINE_WIN
