@@ -38,6 +38,9 @@ local KB3_ARM_KILL = (os.getenv("KB3_ARM_KILL") == "1")
 -- well-exhaustion). Default OFF so their thresholds are validated on real
 -- alerts before they're allowed to close the master (Glenn 2026-06-10).
 local KB3_HYDRAULIC_ARM = (os.getenv("KB3_HYDRAULIC_ARM") == "1")
+-- Well-drawdown actuation gate: on trigger, rpush the 1:39 wait recharge
+-- (/ajax/irrigation_queue_front) then SKIP_STATION. Default OFF.
+local KB3_WELL_ARM = (os.getenv("KB3_WELL_ARM") == "1")
 
 local M = { main = {}, one_shot = {}, boolean = {} }
 
@@ -254,13 +257,31 @@ M.one_shot.KB3_TICK = function(handle, _node)
             end
             -- WELL DRAWDOWN (retuned: onset/2-consec OR 3-of-4 window; SEVERE if HUNTER drops)
             if r.would_trigger then
-                log(id, "WELL-DRAWDOWN [monitor]%s bin=%s min=%s PLC=%.1f plateau=%.1f frac=%.2f consec=%d hits=%d/%d cap=%s remain=%s reason=%s -> WOULD rpush wait + SKIP_STATION | wait=%s",
+                log(id, "WELL-DRAWDOWN%s bin=%s min=%s PLC=%.1f plateau=%.1f frac=%.2f consec=%d hits=%d/%d cap=%s remain=%s reason=%s",
                     r.severe and " SEVERE(downstream-starving)" or "",
                     st.arming.bin, tostring(elapsed), plc or 0, r.plateau or 0,
                     r.frac or 0, r.below_consec or 0, r.hits or 0, WellDrawdown.WINDOW,
                     cap and string.format("%.1f", cap) or "nil",
                     st.arming.run_time and tostring(st.arming.run_time - elapsed) or "?",
-                    tostring(r.reason), WellDrawdown.WAIT_JOB)
+                    tostring(r.reason))
+                -- ACTUATE (KB3_WELL_ARM): rpush the 1:39 wait recharge (runs NEXT)
+                -- then SKIP the current over-drawing step. GUARD (run_time-min>1)
+                -- already applied in observe(). Fires once/station (well_state.triggered).
+                if KB3_WELL_ARM then
+                    local jok, jcode, jerr = WsCommand.queue_front(WellDrawdown.WAIT_JOB,
+                        { logger = function(m) log(id, "[ws] %s", m) end })
+                    log(id, "WELL-DRAWDOWN ARMED bin=%s: rpush wait → ok=%s code=%s err=%s",
+                        st.arming.bin, tostring(jok), tostring(jcode), tostring(jerr))
+                    local sok, scode, serr = WsCommand.post("SKIP_STATION", {
+                        schedule_name = st.arming.schedule or "",
+                        step          = tostring(st.arming.station_step or ""),
+                        logger        = function(m) log(id, "[ws] %s", m) end })
+                    log(id, "WELL-DRAWDOWN ARMED bin=%s: SKIP_STATION → ok=%s code=%s err=%s",
+                        st.arming.bin, tostring(sok), tostring(scode), tostring(serr))
+                else
+                    log(id, "WELL-DRAWDOWN [monitor] bin=%s: KB3_WELL_ARM off → WOULD rpush wait + SKIP | wait=%s",
+                        st.arming.bin, WellDrawdown.WAIT_JOB)
+                end
             elseif r.below then
                 log(id, "well-drawdown [monitor] bin=%s min=%s PLC=%.1f plateau=%.1f frac=%.2f consec=%d hits=%d/%d below%s",
                     st.arming.bin, tostring(elapsed), plc or 0, r.plateau or 0,

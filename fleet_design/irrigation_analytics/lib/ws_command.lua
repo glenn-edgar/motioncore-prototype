@@ -131,6 +131,51 @@ function M.post(command, opts)
     return false, code, string.format("http %d (body=%s)", code, body)
 end
 
+-- POST a raw job body to the queue-front (rpush) route — the well-drawdown
+-- recharge insert. `body` is the full IRRIGATION_STEP JSON (e.g. the 15-min
+-- 1:39 `wait`). Controller route POST /ajax/irrigation_queue_front rpushes it
+-- onto IRRIGATION_PENDING (tail = popped NEXT). Same Digest+cookie auth +
+-- SKIP_LIVE dry-run gate as M.post. Returns (ok, http_code, err).
+function M.queue_front(body, opts)
+    opts = opts or {}
+    local logger = opts.logger or function() end
+    if not body or body == "" then return false, nil, "body empty" end
+    local path = "/ajax/irrigation_queue_front"
+
+    if not live_mode() then
+        logger(string.format("dry_run: WOULD POST %s %s body=%s",
+            CONTROLLER_HOST, path, body))
+        return false, nil, "dry_run"
+    end
+
+    local user, pass, cerr = load_credentials()
+    if not user then return false, nil, "credentials: " .. tostring(cerr) end
+
+    local url = string.format("http://%s%s", CONTROLLER_HOST, path)
+    local cmd = string.format(
+        "curl -sS --digest -u %s -b '' --max-time %d " ..
+        "-H 'Content-Type: application/json' " ..
+        "-X POST -d %s -o /dev/null -w '%%{http_code}' %s 2>&1",
+        shell_quote(user .. ":" .. pass),
+        CURL_TIMEOUT_S,
+        shell_quote(body),
+        shell_quote(url))
+
+    local pipe = io.popen(cmd, "r")
+    if not pipe then return false, nil, "io.popen failed" end
+    local out = pipe:read("*a") or ""
+    pipe:close()
+    local code = tonumber(out:match("(%d%d%d)$"))
+    if not code then
+        return false, nil, "curl: no http_code in output: " .. out:sub(1, 200)
+    end
+    if code >= 200 and code < 300 then
+        logger(string.format("POST %s queue_front → %d", CONTROLLER_HOST, code))
+        return true, code, nil
+    end
+    return false, code, string.format("http %d (body=%s)", code, body)
+end
+
 -- Expose for tests.
 M._live_mode = live_mode
 M._load_credentials = load_credentials
