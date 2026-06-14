@@ -106,6 +106,16 @@ desktop.ini
 # === Claude Code working state ===
 .claude/
 
+# ...except the committed irrigation operator skill, which must travel with the
+# clone (a fresh agent operates the controller from it). Scoped to this one path;
+# all other .claude/ working state stays ignored. Re-include each parent level
+# (git won't descend into an excluded dir), then track only irrigation-ops/.
+!/fleet_design/irrigation_analytics/.claude/
+/fleet_design/irrigation_analytics/.claude/*
+!/fleet_design/irrigation_analytics/.claude/skills/
+/fleet_design/irrigation_analytics/.claude/skills/*
+!/fleet_design/irrigation_analytics/.claude/skills/irrigation-ops/
+
 # === External library working copies (canonical lives in knowledge_base_assembly) ===
 /zenoh_libs/
 
