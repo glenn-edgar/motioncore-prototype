@@ -44,6 +44,13 @@ done
 
 ls -la "$LIB_DIR"
 
+# Regenerate the chain IR (connection.json) from build.lua so the baked IR can
+# never go stale vs the chain/KB sources. The chain_tree DSL lives on the host
+# (not in the image), so this must run here, host-side, before the docker build.
+echo "==> Regenerating chain IR: irrigation_analytics/chains/connection.json"
+( cd "$REPO_ROOT/irrigation_analytics" \
+  && luajit chains/build.lua chains/connection.json )
+
 echo "==> docker build -t $IMAGE_TAG (context=$REPO_ROOT)"
 cd "$REPO_ROOT"
 docker build -f packaging_irrigation_analytics/Dockerfile -t "$IMAGE_TAG" .

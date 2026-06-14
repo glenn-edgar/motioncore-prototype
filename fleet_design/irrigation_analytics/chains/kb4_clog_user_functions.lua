@@ -20,6 +20,7 @@ local controller    = require("controller_client")
 local KB4           = require("kb4_baselines")
 local CoilOnset     = require("coil_onset")
 local FlowWithin    = require("flow_within_run")
+local FieldLog      = require("field_log")   -- manual-log baseline-reset watcher (monitor)
 local app_heartbeat = require("app_heartbeat")
 
 local M = { main = {}, one_shot = {}, boolean = {} }
@@ -169,7 +170,18 @@ function M.one_shot.KB4_TICK(handle, params)
         -- Within-run flow time-bin monitor (monitor-only; lib/flow_within_run).
         local ok_fw = pcall(FlowWithin.ensure_schema, db)
         if not ok_fw then log(id, "WARN: flow_within schema init failed") end
+        -- Manual-log baseline-reset watcher (monitor-only; lib/field_log).
+        local ok_fl = pcall(FieldLog.ensure_schema, db)
+        if not ok_fl then log(id, "WARN: field_log schema init failed") end
     end
+
+    -- Manual-log watcher: scan clog_observations for new field-maintenance
+    -- actions and log what baselines they WOULD reset (monitor-only, isolated).
+    pcall(function()
+        local nf = FieldLog.scan(bb._kb4.db, now_ms(),
+            function(fmt, ...) log(id, fmt, ...) end)
+        if nf and nf > 0 then log(id, "field-log: %d new field-action row(s)", nf) end
+    end)
 
     local kb4 = bb._kb4
     local opts = {

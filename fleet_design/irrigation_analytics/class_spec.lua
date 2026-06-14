@@ -21,7 +21,7 @@ M.capabilities = {
 
 M.app_kbs = { "monitor", "detector", "kb4_clog", "kb2_resistance",
               "kb1_overcurrent", "kb2_within_run", "kb3_sustained",
-              "kb4_v2", "digest", "manual_reset" }
+              "kb4_v2", "digest" }
 
 -- Controller config — where to fetch popup + past_actions from.
 -- Reused by lib/controller_client.lua (which wraps the SSH+python popup
