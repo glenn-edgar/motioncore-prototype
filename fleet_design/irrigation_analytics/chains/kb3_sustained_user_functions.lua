@@ -243,19 +243,28 @@ M.one_shot.KB3_TICK = function(handle, _node)
         st.arming.well_last_min = elapsed
         pcall(function()
             local cap = st.well_cycle_cap   -- from PRIOR stations this cycle
-            local r = WellDrawdown.observe(st.arming.well_state, plc, elapsed,
+            local r = WellDrawdown.observe(st.arming.well_state, plc, hunter, elapsed,
                 { run_time = st.arming.run_time, cycle_capacity = cap })
+            -- INTERNAL LEAK (PLC>>HUNTER, loss between meters) — supply-line break;
+            -- also the EARLY well-drawdown warning (the over-draw precursor).
+            if r.internal_leak then
+                log(id, "INTERNAL-LEAK [monitor] bin=%s min=%s PLC=%.1f HUNTER=%.1f div=%+.1f (ref %+.1f) -> supply-line loss ~%.1f GPM; EARLY WELL-DRAWDOWN WARNING",
+                    st.arming.bin, tostring(elapsed), plc or 0, hunter or 0,
+                    r.div or 0, r.div_ref or 0, r.div or 0)
+            end
+            -- WELL DRAWDOWN (retuned: onset/2-consec OR 3-of-4 window; SEVERE if HUNTER drops)
             if r.would_trigger then
-                log(id, "WELL-DRAWDOWN [monitor] bin=%s min=%s PLC=%.1f plateau=%.1f frac=%.2f hits=%d/%d cap=%s remain=%s reason=%s -> WOULD rpush wait + SKIP_STATION | wait=%s",
+                log(id, "WELL-DRAWDOWN [monitor]%s bin=%s min=%s PLC=%.1f plateau=%.1f frac=%.2f consec=%d hits=%d/%d cap=%s remain=%s reason=%s -> WOULD rpush wait + SKIP_STATION | wait=%s",
+                    r.severe and " SEVERE(downstream-starving)" or "",
                     st.arming.bin, tostring(elapsed), plc or 0, r.plateau or 0,
-                    r.frac or 0, r.hits or 0, WellDrawdown.WINDOW,
+                    r.frac or 0, r.below_consec or 0, r.hits or 0, WellDrawdown.WINDOW,
                     cap and string.format("%.1f", cap) or "nil",
                     st.arming.run_time and tostring(st.arming.run_time - elapsed) or "?",
                     tostring(r.reason), WellDrawdown.WAIT_JOB)
             elseif r.below then
-                log(id, "well-drawdown [monitor] bin=%s min=%s PLC=%.1f plateau=%.1f frac=%.2f hits=%d/%d below%s",
+                log(id, "well-drawdown [monitor] bin=%s min=%s PLC=%.1f plateau=%.1f frac=%.2f consec=%d hits=%d/%d below%s",
                     st.arming.bin, tostring(elapsed), plc or 0, r.plateau or 0,
-                    r.frac or 0, r.hits or 0, WellDrawdown.WINDOW,
+                    r.frac or 0, r.below_consec or 0, r.hits or 0, WellDrawdown.WINDOW,
                     r.guard_ok and "" or " (guard-blocked)")
             end
         end)
