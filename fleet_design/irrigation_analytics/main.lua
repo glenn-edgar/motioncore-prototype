@@ -78,12 +78,13 @@ local kb2_within_run_fns = require("kb2_within_run_user_functions")
 local kb3_sustained_fns = require("kb3_sustained_user_functions")
 local kb4_v2_fns = require("kb4_v2_user_functions")
 local digest_fns = require("digest_user_functions")
+local manual_reset_fns = require("manual_reset_user_functions")
 fn_registry.register_functions(ir, builtins,
     conn_fns.registry, monitor_fns.registry, detector_fns.registry,
     kb4_clog_fns.registry, kb2_resistance_fns.registry,
     kb1_overcurrent_fns.registry, kb2_within_run_fns.registry,
     kb3_sustained_fns.registry, kb4_v2_fns.registry,
-    digest_fns.registry)
+    digest_fns.registry, manual_reset_fns.registry)
 
 local ok, missing = fn_registry.validate(ir)
 if not ok then
