@@ -1303,7 +1303,7 @@ local function view_check(req)
 
 <h3 style="margin-top:18px;font-size:14px;color:var(--muted);">Per-valve observations (leave blank if not inspected)</h3>
 <table style="width:auto;">
-<thead><tr><th>Bin</th><th>Total heads</th><th>Clogged</th><th>Fixed?</th><th>Notes</th></tr></thead>
+<thead><tr><th>Bin</th><th>Total heads</th><th>Clogged</th><th>Fixed?</th><th>Action</th><th>Notes</th></tr></thead>
 <tbody>
 %s
 </tbody></table>
@@ -1323,8 +1323,9 @@ local function view_check(req)
 <td><input type="number" name="total_%d" min="0" max="200" style="width:80px;"></td>
 <td><input type="number" name="clog_%d" min="0" max="200" style="width:80px;"></td>
 <td><input type="checkbox" name="fixed_%d" value="1"></td>
+<td><select name="action_%d"><option value="">—</option><option value="inspect_ok">inspected OK</option><option value="clean_heads">cleaned heads</option><option value="cap_heads">capped/removed heads</option><option value="replace_valve">replaced valve</option><option value="replace_solenoid">replaced solenoid</option><option value="repair_leak">repaired leak</option><option value="other">other</option></select></td>
 <td><input type="text" name="note_%d" style="width:200px;"></td></tr>
-]], i, esc(b.bin), esc(b.bin), i, i, i, i)
+]], i, esc(b.bin), esc(b.bin), i, i, i, i, i)
     end
     return table.concat(rows)
 end)())
@@ -1342,6 +1343,11 @@ local function post_check(req)
     end
     local db = open_rw(DB_PATHS.kb4)
     if not db then return redirect("/irrigation/check", "err", "DB unavailable") end
+
+    -- additive migration: per-valve maintenance ACTION (drives the manual-log
+    -- baseline-reset watcher). Harmless if the column already exists.
+    pcall(function() db:exec("ALTER TABLE clog_observations ADD COLUMN action TEXT") end)
+    pcall(function() db:exec("ALTER TABLE clog_observations ADD COLUMN action_applied INTEGER DEFAULT 0") end)
 
     local ck_stmt = db:prepare([[
         INSERT INTO field_checks(ts_ms, check_date, inspector, notes)
@@ -1363,13 +1369,15 @@ local function post_check(req)
             local clog = tonumber(req.form["clog_" .. idx])
             local fixed = (req.form["fixed_" .. idx] == "1") and 1 or 0
             local note = req.form["note_" .. idx]
+            local action = req.form["action_" .. idx]
+            if action == "" then action = nil end
             -- Only insert if user entered something
-            if total or clog or (note and note ~= "") then
+            if total or clog or action or (note and note ~= "") then
                 local obs = db:prepare([[
-                    INSERT INTO clog_observations(check_id, bin, total_heads, clogged_count, fixed_int, notes)
-                    VALUES(?, ?, ?, ?, ?, ?)
+                    INSERT INTO clog_observations(check_id, bin, total_heads, clogged_count, fixed_int, action, notes)
+                    VALUES(?, ?, ?, ?, ?, ?, ?)
                 ]])
-                obs:bind_values(check_id, bin, total, clog, fixed, note or "")
+                obs:bind_values(check_id, bin, total, clog, fixed, action, note or "")
                 obs:step(); obs:finalize()
                 obs_count = obs_count + 1
             end
