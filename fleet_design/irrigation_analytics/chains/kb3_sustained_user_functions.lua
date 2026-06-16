@@ -241,7 +241,14 @@ M.one_shot.KB3_TICK = function(handle, _node)
     -- minute. pcall-isolated: a fault here must NEVER disturb the armed leak
     -- path that shares this tick. It logs only what it WOULD do (rpush the
     -- 15-min `wait` recovery + SKIP); the actuation is wired separately, later.
-    if elapsed and st.arming.well_state
+    -- City-backed bins (1:39 in spec) are EXCLUDED from the well-drawdown detector
+    -- entirely: city water augments the well, so a PLC sag is expected (city carries
+    -- the load), not a dying well — and the recharge action (insert a 1:39 wait) is
+    -- redundant when 1:39 is already running. Field checks are ALWAYS city-backed, so
+    -- this also stops the actuator from skipping a station you're inspecting. Skipping
+    -- observe() also keeps city plateaus OUT of the cap median (well_state.plateau stays
+    -- nil → not recorded at STEP_COMPLETE) so cap reflects true well-only capacity.
+    if elapsed and st.arming.well_state and not st.arming.is_city
        and st.arming.well_last_min ~= elapsed then
         st.arming.well_last_min = elapsed
         pcall(function()
@@ -352,8 +359,27 @@ M.one_shot.KB3_TICK = function(handle, _node)
         -- thresholds can be validated on real alerts before they're armed.
         local armed = (ftype == "leak") and KB3_ARM_KILL or KB3_HYDRAULIC_ARM
         local actions_sent = {}
-        if armed then
-            -- CLOSE_MASTER_VALVE first (water off) then SKIP_STATION
+        if armed and ftype == "leak" then
+            -- LEAK (Glenn 2026-06-15): SKIP the leaking step + insert the 15-min
+            -- 1:39 wait recharge (runs NEXT). NO CLOSE_MASTER — same skip+wait the
+            -- well-drawdown uses. queue_front first so the wait is the next job,
+            -- then SKIP ends the leaking step.
+            local jok, jcode, jerr = WsCommand.queue_front(WellDrawdown.WAIT_JOB,
+                { logger = function(m) log(id, "[ws] %s", m) end })
+            log(id, "ws_command queue_front(wait) → ok=%s code=%s err=%s",
+                tostring(jok), tostring(jcode), tostring(jerr))
+            actions_sent[#actions_sent+1] = string.format("INSERT_WAIT(%s)", tostring(jok))
+            local sok, scode, serr = WsCommand.post("SKIP_STATION", {
+                schedule_name = st.arming.schedule or "",
+                step          = tostring(st.arming.station_step or ""),
+                run_time      = "",
+                logger        = function(m) log(id, "[ws] %s", m) end })
+            log(id, "ws_command SKIP_STATION → ok=%s code=%s err=%s",
+                tostring(sok), tostring(scode), tostring(serr))
+            actions_sent[#actions_sent+1] = string.format("SKIP_STATION(%s)", tostring(sok))
+        elseif armed then
+            -- divergence / well-exhaustion (KB3_HYDRAULIC_ARM, monitor-only today):
+            -- CLOSE_MASTER_VALVE first (water off) then SKIP_STATION.
             for _, action in ipairs({ "CLOSE_MASTER_VALVE", "SKIP_STATION" }) do
                 local ok, code, err = WsCommand.post(action, {
                     schedule_name = st.arming.schedule or "",
@@ -388,13 +414,16 @@ M.one_shot.KB3_TICK = function(handle, _node)
             title = string.format("KB3 SUSTAINED LEAK %s — HUNTER=%.1f GPM @ min %d",
                 st.arming.bin, hunter or 0, elapsed or 0)
             if result.trip_path == "secondary" then
-                trip_desc = string.format("3 consec min HUNTER > %.1f GPM (secondary: baseline %.1f + %.1f)",
+                trip_desc = string.format("%d consec min HUNTER > %.1f GPM (secondary: baseline %.1f + %.1f) → skip + 15-min wait",
+                    KB3.CONSECUTIVE_REQUIRED,
                     (result.baseline_gpm or 0) + KB3.BASELINE_DELTA_GPM,
                     result.baseline_gpm or 0, KB3.BASELINE_DELTA_GPM)
             elseif result.trip_path == "both" then
-                trip_desc = string.format("3 consec min HUNTER > %.0f GPM (both primary AND secondary)", KB3.GPM_THRESHOLD)
+                trip_desc = string.format("%d consec min HUNTER > %.1f GPM (both primary AND secondary) → skip + 15-min wait",
+                    KB3.CONSECUTIVE_REQUIRED, KB3.GPM_THRESHOLD)
             else
-                trip_desc = string.format("3 consec min HUNTER > %.0f GPM (primary/absolute)", KB3.GPM_THRESHOLD)
+                trip_desc = string.format("%d consec min HUNTER > %.1f GPM (primary/absolute) → skip + 15-min wait",
+                    KB3.CONSECUTIVE_REQUIRED, KB3.GPM_THRESHOLD)
             end
         end
         local city_tail = st.arming.is_city and result.city_delta

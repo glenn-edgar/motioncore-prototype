@@ -29,7 +29,13 @@ local M = {}
 -- Thresholds (overridable via env in class_spec.kb1_overcurrent)
 -- =========================================================================
 M.IRR_KILL_A = 1.8   -- irrigation rail
-M.EQ_KILL_A  = 1.2   -- equipment rail
+-- Equipment rail raised 1.2→1.8 A (Glenn 2026-06-15): still wiring-safe. The
+-- equipment-current reading carries a quasi-periodic ~0.4 A excursion that is
+-- NOT a real load (constant load, only relays switch; uniform across all
+-- satellites/relay counts). The 732s sit on a separate 5 V step-down rail and
+-- the ADC is on yet another supply, so the swing is measurement/step-down noise.
+-- 1.2 risked a false EQ kill on that artifact; 1.8 clears it. See the EQ sampler.
+M.EQ_KILL_A  = tonumber(os.getenv("KB1_EQ_KILL_A")) or 1.8   -- equipment rail
 
 -- =========================================================================
 -- Classify

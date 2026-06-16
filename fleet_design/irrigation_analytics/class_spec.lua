@@ -126,12 +126,14 @@ M.kb3_sustained = {
     poll_s               = tonumber(os.getenv("IRRIGATION_KB3_POLL_S") or "30"),
     db_path              = os.getenv("KB3_DB_PATH") or "/var/fleet/kb3/kb3.db",
     -- Trip signal is the SMOOTH HUNTER meter (GPM curve), not PLC — Glenn
-    -- 2026-06-10. 14.0 validated against the sat_3:5 leak (Hunter peaked
-    -- 14.8) with 0 false positives across 33 clean ETO runs; the old
-    -- PLC-era 15.0 would have MISSED it on Hunter. See explore/kb3_replay_hunter.py.
-    gpm_threshold        = tonumber(os.getenv("KB3_GPM_THRESHOLD")    or "14.0"),
+    -- 2026-06-10. Retuned 2026-06-15: 13.5 = expected MAX filtered flow in the
+    -- 5-15 window for a functioning well; consec 3→4. Replay-validated: 0 false
+    -- trips in 125 runs (healthy max 11.9), catches 4:4 (~14). Action on the
+    -- leak trip is now SKIP + insert 15-min wait (not CLOSE_MASTER). The
+    -- secondary base+2 (lib BASELINE_DELTA_GPM) catches sub-13.5 leaks (e.g. 4:10).
+    gpm_threshold        = tonumber(os.getenv("KB3_GPM_THRESHOLD")    or "13.5"),
     warmup_minutes       = tonumber(os.getenv("KB3_WARMUP_MIN")       or "5"),
-    consecutive_required = tonumber(os.getenv("KB3_CONSECUTIVE_MIN")  or "3"),
+    consecutive_required = tonumber(os.getenv("KB3_CONSECUTIVE_MIN")  or "4"),
 }
 
 -- KB3-curve REMOVED 2026-06-09. Replaced by kb3_sustained (Glenn's redesign).

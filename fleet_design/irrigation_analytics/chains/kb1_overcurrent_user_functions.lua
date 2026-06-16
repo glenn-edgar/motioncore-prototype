@@ -90,6 +90,13 @@ M.one_shot.KB1_TICK = function(handle, _node)
         st.db = db
         st.notify_db = NOTIFY.open_db(NOTIFY_DB_PATH)  -- past-actions log (shared)
         if not st.notify_db then log(id, "notifications log open failed at %s", NOTIFY_DB_PATH) end
+        -- EQ SAMPLER table (monitor-only, Glenn 2026-06-15): timestamped equipment
+        -- + irrigation current, to read the quasi-period of the EQ excursion. pcall
+        -- so a schema hiccup can NEVER disturb the armed kill path.
+        pcall(function()
+            db:exec([[CREATE TABLE IF NOT EXISTS eq_samples (
+                ts_ms INTEGER, eq_i REAL, irr_i REAL, step INTEGER, sched TEXT)]])
+        end)
         log(id, "db ready at %s (armed=%s, IRR_KILL=%.1fA EQ_KILL=%.1fA)",
             db_path, tostring(KB1_ARM_KILL), KB1.IRR_KILL_A, KB1.EQ_KILL_A)
     end
@@ -112,6 +119,19 @@ M.one_shot.KB1_TICK = function(handle, _node)
     local eq_I   = tonumber(popup.PLC_EQUIPMENT_CURRENT)  or 0
     local step   = tonumber(popup.STEP) or 0
     local sched  = popup.SCHEDULE_NAME or "?"
+
+    -- EQ SAMPLER (monitor-only): one timestamped row per tick (~30 s) so we can
+    -- read the quasi-period of the equipment-current excursion (suspected
+    -- step-down/measurement noise off the 732's separate 5 V rail, NOT a real
+    -- load). pcall-isolated: must NEVER disturb the armed kill path below.
+    pcall(function()
+        local stmt = db:prepare(
+            "INSERT INTO eq_samples(ts_ms,eq_i,irr_i,step,sched) VALUES(?,?,?,?,?)")
+        if stmt then
+            stmt:bind_values(now_ms(), eq_I, irr_I, step, sched)
+            stmt:step(); stmt:finalize()
+        end
+    end)
 
     local cls, sev, excess, note = KB1.classify(irr_I, eq_I)
 
