@@ -585,4 +585,24 @@ function M.load_master_R(kb2_db_path)
     return R
 end
 
+-- Persistence gate for the noisy R_STEP_DURING_RUN detector.
+-- The within-run R = V/(I_obs − offset) division is unstable at the low coil
+-- currents here (single-sample ACS712, no per-channel cal), so one jittery
+-- current minute can trip a >5 Ω step on almost any bin — it fired fleet-wide
+-- (16/20 bins) 2026-06-16, the signature of measurement noise, not 16 faults.
+-- Return the cls of the most-recent PRIOR run for this bin (excluding the
+-- just-inserted current run by sid). The caller requires it to also be
+-- R_STEP_DURING_RUN before alerting — random jitter won't repeat on the same
+-- bin run-over-run, a real intermittent dropout will. Mirrors kb2_resistance's
+-- prev_cycle_alert_kinds 2-consecutive gate.
+function M.prev_run_cls(db, bin, exclude_sid)
+    if not db or not bin then return nil end
+    local sql = string.format(
+        "SELECT cls FROM runs_kb2_within WHERE bin=%q AND sid <> %q " ..
+        "ORDER BY ts_ms DESC LIMIT 1", bin, tostring(exclude_sid or ""))
+    local cls = nil
+    for r in db:nrows(sql) do cls = r.cls; break end
+    return cls
+end
+
 return M

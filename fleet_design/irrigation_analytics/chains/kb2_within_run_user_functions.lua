@@ -359,7 +359,22 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
                             end
                         end
                     end
-                    if result.severity == "alert" or result.cls == "R_HEATING_DURING_RUN" then
+                    -- Persistence gate: R_STEP_DURING_RUN is noisy (V/(I-offset)
+                    -- is unstable at these currents → a single jittery sample
+                    -- trips a >5 Ω step; fired on 16/20 bins 2026-06-16). Require
+                    -- the SAME bin to step on two consecutive runs before it
+                    -- reaches the digest. R_HEATING/other alerts are unaffected.
+                    local step_gated = false
+                    if result.cls == "R_STEP_DURING_RUN" then
+                        local prev_cls = KB2_WR.prev_run_cls(db, bin_key, ent.stream_id)
+                        if prev_cls ~= "R_STEP_DURING_RUN" then
+                            step_gated = true
+                            log(id, "suppress R_STEP %s: single-run (prior=%s — needs 2 consecutive)",
+                                bin_key, tostring(prev_cls))
+                        end
+                    end
+                    if (result.severity == "alert" or result.cls == "R_HEATING_DURING_RUN")
+                       and not step_gated then
                         flagged = flagged + 1
                         -- Two-tier notify: record for the 18:00 digest, no per-run Discord.
                         KB_ALERTS.record(db, {
