@@ -127,6 +127,7 @@ local ir = ct_loader.load(ir_path)
 -- + the daily-digest KB's user fns.
 local conn_fns         = require("connection_user_functions")
 local moisture_fns     = require("moisture_user_functions")
+local openmeteo_fns    = require("openmeteo_user_functions")
 local cimis_fns        = require("cimis_user_functions")
 local synoptic_fns     = require("synoptic_user_functions")
 local eto_resolver_fns = require("eto_resolver_user_functions")
@@ -134,7 +135,7 @@ local digest_fns       = require("digest_user_functions")
 local eto_sync_fns     = require("eto_sync_user_functions")
 local watchdog_fns     = require("irrigation_watchdog_user_functions")
 fn_registry.register_functions(ir, builtins,
-    conn_fns.registry, moisture_fns.registry,
+    conn_fns.registry, moisture_fns.registry, openmeteo_fns.registry,
     cimis_fns.registry, synoptic_fns.registry,
     eto_resolver_fns.registry, digest_fns.registry,
     eto_sync_fns.registry, watchdog_fns.registry)
@@ -159,6 +160,10 @@ handle.blackboard.shutdown_requested = false
 -- last_recorded_date gate flag. One entry per cimis_<source> KB; the KBs
 -- read/write their own entry, and the repost queryable handler reads it.
 handle.blackboard._cimis = { station = {}, spatial = {} }
+
+-- Open-Meteo runtime state — single-source in-memory store + last_recorded_date
+-- gate flag. The openmeteo_eto KB reads/writes it; the resolver reads it.
+handle.blackboard._openmeteo = {}
 
 -- Per-station Synoptic runtime state — same shape as _cimis. Each
 -- synoptic_<stid> KB reads/writes its own slot. Stations come from the

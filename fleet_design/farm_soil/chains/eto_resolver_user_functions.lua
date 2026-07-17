@@ -71,6 +71,16 @@ local function probe_source(bb, source_id, yesterday, min_coverage)
                  coverage = r.coverage, n_obs = r.n_obs, status_str = r.status }
     end
 
+    if source_id == "openmeteo" then
+        local r = (bb._openmeteo or {}).last_record
+        if not r then return { verdict = "no_record" } end
+        if r.date ~= yesterday then
+            return { verdict = "stale", date = r.date, eto_in = r.value }
+        end
+        if r.value == nil then return { verdict = "no_record", date = r.date } end
+        return { verdict = "ok", date = r.date, eto_in = r.value, coverage = 1.0 }
+    end
+
     if source_id == "cimis_spatial" or source_id == "cimis_station" then
         local short = (source_id == "cimis_spatial") and "spatial" or "station"
         local cs = (bb._cimis or {})[short]
@@ -105,7 +115,7 @@ M.one_shot.ETO_RESOLVE_TICK = function(handle, _node)
     local cs       = bb._class_spec
     local id, ps   = bb._identity, bb._pubsub
     local cfg      = (cs and cs.eto_resolver) or {}
-    local priority = cfg.priority or { "SE224", "cimis_spatial", "SRUC1", "cimis_station" }
+    local priority = cfg.priority or { "openmeteo", "SE224", "cimis_spatial", "SRUC1", "cimis_station" }
     local min_cov  = cfg.min_coverage or DEFAULT_MIN_COV
     local retry_s  = cfg.retry_s or DEFAULT_RETRY_S
     local kb_label = "eto_resolver"

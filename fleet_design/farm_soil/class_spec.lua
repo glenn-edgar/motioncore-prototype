@@ -12,6 +12,7 @@ M.capabilities = {
     "soil_moisture",
     "et_reference",         -- daily ASCE ETo via the CIMIS Web API
     "synoptic_eto",         -- daily per-bin Penman ETo from Synoptic stations
+    "openmeteo_eto",        -- daily FAO-56 ETo via the Open-Meteo forecast API
     "eto_resolver",         -- priority-chain selection of daily ETo source
 }
 
@@ -20,9 +21,11 @@ M.capabilities = {
 -- (chains/cimis.lua) — one per CIMIS provider, each with its own retry loop.
 -- synoptic_se224/synoptic_sruc1 are two instances of the Synoptic skill
 -- (chains/synoptic.lua) — one per station, per-bin Penman computed locally.
+-- openmeteo_eto is a single instance of chains/openmeteo.lua — free FAO-56
+-- reference ETo from the Open-Meteo forecast API (no key, no WAF).
 -- eto_resolver picks the daily ETo source by priority chain and publishes
 -- the winner to <ns>/eto/{daily,latest} for the dashboard.
-M.app_kbs = { "moisture", "cimis_station", "cimis_spatial",
+M.app_kbs = { "moisture", "openmeteo_eto", "cimis_station", "cimis_spatial",
               "sce_se224", "synoptic_sruc1", "eto_resolver",
               "digest", "eto_sync", "irrigation_watchdog" }
 
@@ -110,15 +113,34 @@ M.synoptic = {
     },
 }
 
+-- Open-Meteo config for the openmeteo_eto KB. The forecast API returns FAO-56
+-- Penman-Monteith reference ET0 as a ready-made DAILY value, so there is no
+-- secret and no local Penman calc — see chains/openmeteo_user_functions.lua.
+-- Coordinates are the field location (DMS 33°34'41.303" N, 117°18'01.128" W).
+-- No pre-window gate: yesterday's value is a completed model day, available
+-- any time after the Pacific date rolls over. lookback_days = past_days for
+-- gap self-heal after downtime.
+M.openmeteo = {
+    api_base      = "https://api.open-meteo.com/v1/forecast",
+    latitude      = 33.578140,
+    longitude     = -117.300313,
+    timezone      = "America/Los_Angeles",
+    lookback_days = 7,             -- multi-day fetch window for gap-self-heal
+    retry_s       = 900,           -- 15 minutes between attempts
+    timeout_s     = 30,            -- per-curl timeout
+}
+
 -- Daily ETo priority resolver — read by chains/eto_resolver_user_functions.lua.
 -- Walks priority[] in order, picks the first source whose latest record is
 -- for yesterday with status OK and coverage >= min_coverage. Non-Synoptic
--- (CIMIS) sources are treated as coverage=1.0 since they don't report it.
+-- (CIMIS / Open-Meteo) sources are treated as coverage=1.0 since they don't
+-- report it. Open-Meteo leads: keyless + WAF-free, so it's the reliable
+-- primary, with CIMIS/Synoptic retained as fallback if their access returns.
 -- Publishes to <namespace>/eto/{daily,latest}; the dashboard reads these.
 M.eto_resolver = {
     retry_s      = 900,
     min_coverage = 0.85,
-    priority     = { "SE224", "cimis_spatial", "SRUC1", "cimis_station" },
+    priority     = { "openmeteo", "SE224", "cimis_spatial", "SRUC1", "cimis_station" },
 }
 
 -- Daily-digest config — read by chains/digest_user_functions.lua.
@@ -159,7 +181,7 @@ M.eto_sync = {
     hour_pacific          = 14,    -- window opens 14:00 PT (2pm)
     failure_hour_pacific  = 17,    -- discord-failure deadline = 17:00 PT
     retry_s               = 900,   -- 15 min retry cadence
-    cap                   = 0.20,  -- per-row upper clamp
+    cap                   = 0.18,  -- per-row upper clamp
     floor                 = 0.0,   -- per-row lower clamp
 }
 
@@ -214,6 +236,19 @@ function M.persistence_topology()
             desc = "CIMIS daily ETo latest (" .. source_id .. ")",
         }
     end
+    -- Open-Meteo daily ETo (keyless FAO-56 reference). Same sample/latest
+    -- shape as a CIMIS source.
+    topo[#topo + 1] = {
+        path   = "openmeteo/sample",
+        kind   = "stream",
+        length = 30,                       -- ~1 month of daily ETo
+        desc   = "Open-Meteo daily FAO-56 ETo per-day stream",
+    }
+    topo[#topo + 1] = {
+        path = "openmeteo/latest",
+        kind = "status",
+        desc = "Open-Meteo daily FAO-56 ETo latest",
+    }
     for device, location in pairs(M.device_locations) do
         topo[#topo + 1] = {
             path   = device .. "/" .. location .. "/latest",

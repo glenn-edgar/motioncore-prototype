@@ -20,6 +20,7 @@ package.path = _self .. "?.lua;"                            -- this class's app-
 local ChainTreeMaster = require("chain_tree_master")
 local kb0      = require("connection")   -- shared: build_kb0, KB0_NAME
 local moisture = require("moisture")     -- this class's app KB
+local openmeteo = require("openmeteo")   -- keyless FAO-56 ETo app KB
 local cimis    = require("cimis")        -- two CIMIS app KBs (station + spatial)
 local synoptic = require("synoptic")     -- two Synoptic app KBs (SE224 + SRUC1)
 local eto_resolver = require("eto_resolver")  -- daily-ETo priority resolver
@@ -35,6 +36,7 @@ end
 local ct = ChainTreeMaster.new(arg[1])
 kb0.build_kb0(ct, kb0.KB0_NAME)
 moisture.build_moisture(ct, moisture.MOISTURE_KB_NAME)
+openmeteo.build_openmeteo(ct, openmeteo.OPENMETEO_KB_NAME)
 cimis.build_cimis_station(ct, cimis.STATION_KB_NAME)
 cimis.build_cimis_spatial(ct, cimis.SPATIAL_KB_NAME)
 synoptic.build_sce_se224(ct, synoptic.SE224_KB_NAME)
