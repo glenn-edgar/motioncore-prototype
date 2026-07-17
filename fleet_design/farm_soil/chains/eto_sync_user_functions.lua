@@ -1,19 +1,24 @@
 -- chains/eto_sync_user_functions.lua — ct_* user fns for the irrigation
 -- ETo-sync KB.
 --
--- ETO_SYNC_TICK: daily one-shot that adjusts the irrigation controller's
--- per-zone ETo accumulator to follow the difference between CIMIS station
--- and spatial readings.
+-- ETO_SYNC_TICK: daily one-shot that writes the irrigation controller's
+-- per-zone ETo table to yesterday's resolved reference ETo, capped.
 --
 -- Gates (evaluated each tick, every retry_s):
 --   1. already-succeeded today                  -> idle ok
 --   2. pre-window (Pacific hour < hour_pacific) -> idle ok
---   3. CIMIS station+spatial both present       -> idle (or 17:00 failure)
+--   3. resolved ETo present for yesterday        -> idle (or 17:00 failure)
 --   4. perform apply                            -> success or 17:00 failure
 --
--- Math, per row in eto_update_table:
---   delta   = cimis.station.value - cimis.spatial.value          (one daily delta)
---   new_eto = clamp(0.0, 0.20, current_eto - delta)
+-- Math (uniform across every row in eto_update_table):
+--   eto_in  = eto_resolver winner for yesterday  (Open-Meteo primary; CIMIS/
+--             Synoptic fallback — bb._eto_resolver.last_record.eto_in, inches)
+--   eto_out = min(eto_in, cap)  floored at `floor`   (cap=0.18, floor=0.0)
+--   every zone row := eto_out
+--
+-- (Historical: this used to subtract a CIMIS station-minus-spatial delta from
+-- each row; CIMIS's WAF killed that source 2026-07, so it now sets each row to
+-- the single capped resolved ETo — see farm-soil-eto-openmeteo-2026-07-17.)
 --
 -- Persistence: two leaves are published on success.
 --   <namespace>/eto_sync/latest  — status row with last result
@@ -21,7 +26,7 @@
 --
 -- Discord push: a body string is published on the shared
 -- `fleet/notify/digest/daily` topic. notification_service POSTs it.
---   * success    "ETO sync ok — N rows, K capped (cap=0.20), delta=+0.0234"
+--   * success    "ETO sync ok DATE — set N/T zones to ETo=0.180 [capped] ..."
 --   * failure    "ETO sync FAILED — <reason>"  (sent at-most-once per day,
 --                                                only at-or-after 17:00 PT)
 --
@@ -83,13 +88,6 @@ local function hydrate(state, id)
     state.success_date          = daily_marker.read(id, MARKER_SUCCESS)
     state.failure_reported_date = daily_marker.read(id, MARKER_FAILURE)
     state._loaded = true
-end
-
--- Pacific-tz-aware floor/cap on the per-row math.
-local function clamp(v, lo, hi)
-    if v < lo then return lo, "floor" end
-    if v > hi then return hi, "cap"   end
-    return v, nil
 end
 
 -- Returns true if it's at-or-after the failure-deadline hour.
@@ -154,20 +152,24 @@ M.one_shot.ETO_SYNC_TICK = function(handle, _node)
         return
     end
 
-    -- Gate 3: CIMIS station + spatial both present?
-    local cimis = bb._cimis or {}
-    local r_st  = cimis.station and cimis.station.last_record or nil
-    local r_sp  = cimis.spatial and cimis.spatial.last_record or nil
-    if not r_st or not r_sp then
-        local missing = (not r_st) and "station"
-                          or "spatial"
-        if (not r_st) and (not r_sp) then missing = "station+spatial" end
+    -- Gate 3: resolved daily ETo present for yesterday? eto_sync applies the
+    -- ETo lost yesterday, so it reads the eto_resolver's finalized winner
+    -- (bb._eto_resolver.last_record — Open-Meteo primary, CIMIS/Synoptic
+    -- fallback). Replaces the retired CIMIS station+spatial pair.
+    local yesterday = clock.california_yesterday()
+    local res = (bb._eto_resolver or {}).last_record
+    if not res or type(res.eto_in) ~= "number" or res.date ~= yesterday then
+        local why = (not res or res.eto_in == nil)
+            and "no resolved ETo yet"
+            or  ("resolved ETo is for " .. tostring(res.date) .. ", not " .. yesterday)
         maybe_report_failure(handle, state, id, ps, p, pacific_today,
-            "CIMIS data not ready (missing " .. missing .. ")")
+            "resolved ETo not ready (" .. why .. ")")
         app_heartbeat.stamp(handle, kb_label, "degraded",
-            "waiting for CIMIS " .. missing, retry_s)
+            "waiting for resolved ETo (" .. why .. ")", retry_s)
         return
     end
+    local eto_in  = res.eto_in
+    local eto_src = res.source or "?"
 
     -- Gate 4: read+write. Either step can fail; either failure triggers
     -- the 17:00 notification path.
@@ -213,21 +215,22 @@ M.one_shot.ETO_SYNC_TICK = function(handle, _node)
         return
     end
 
-    -- Compute the new dict and accounting fields.
-    local delta = (r_st.value or 0) - (r_sp.value or 0)
-    local cap   = cfg.cap   or 0.20
+    -- Per-zone value: the capped resolved ETo, applied UNIFORMLY to every row.
+    --   eto_out = min(eto_in, cap), floored at `floor` (default 0).
+    local cap   = cfg.cap   or 0.18
     local floor = cfg.floor or 0.0
+    local eto_out    = eto_in
+    local was_capped = false
+    if eto_out > cap   then eto_out = cap;   was_capped = true end
+    if eto_out < floor then eto_out = floor end
+
     local new_table = {}
-    local rows_total, rows_modified, rows_capped, rows_floored = 0, 0, 0, 0
+    local rows_total, rows_modified = 0, 0
     for k, v in pairs(current) do
         if type(v) == "number" then
-            local proposed = v - delta
-            local clamped, why = clamp(proposed, floor, cap)
-            new_table[k] = clamped
-            rows_total = rows_total + 1
-            if math.abs(clamped - v) > 1e-9 then rows_modified = rows_modified + 1 end
-            if why == "cap"   then rows_capped   = rows_capped   + 1 end
-            if why == "floor" then rows_floored  = rows_floored  + 1 end
+            new_table[k] = eto_out
+            rows_total   = rows_total + 1
+            if math.abs(eto_out - v) > 1e-9 then rows_modified = rows_modified + 1 end
         end
     end
 
@@ -237,18 +240,20 @@ M.one_shot.ETO_SYNC_TICK = function(handle, _node)
         local summary = {
             schema      = SCHEMA_SUMMARY,
             date        = pacific_today,
+            eto_date    = yesterday,
             success     = true,
             no_op       = true,
-            delta       = delta,
+            eto_in      = eto_in,
+            eto_out     = eto_out,
+            capped      = was_capped,
+            source      = eto_src,
             cap         = cap, floor = floor,
             rows_total  = 0,   rows_modified = 0,
-            rows_capped = 0,   rows_floored  = 0,
-            cimis = { station = r_st.value, spatial = r_sp.value },
         }
         publish_result_leaves(ps, id, summary)
         push_notify(ps, id, string.format(
-            "ETO sync ok %s — table empty, no-op (delta=%+.4f)",
-            pacific_today, delta))
+            "ETO sync ok %s — table empty, no-op (ETo=%.3f src=%s)",
+            pacific_today, eto_out, eto_src))
         daily_marker.write(id, MARKER_SUCCESS, pacific_today)
         state.success_date = pacific_today
         app_heartbeat.stamp(handle, kb_label, "ok",
@@ -271,24 +276,24 @@ M.one_shot.ETO_SYNC_TICK = function(handle, _node)
     local summary = {
         schema        = SCHEMA_SUMMARY,
         date          = pacific_today,
+        eto_date      = yesterday,
         success       = true,
-        delta         = delta,
+        eto_in        = eto_in,
+        eto_out       = eto_out,
+        capped        = was_capped,
+        source        = eto_src,
         cap           = cap,
         floor         = floor,
         rows_total    = rows_total,
         rows_modified = rows_modified,
-        rows_capped   = rows_capped,
-        rows_floored  = rows_floored,
-        cimis = { station = r_st.value, spatial = r_sp.value,
-                  station_date = r_st.date, spatial_date = r_sp.date },
-        reply = reply,
+        reply         = reply,
     }
     publish_result_leaves(ps, id, summary)
 
     local body = string.format(
-        "ETO sync ok %s — %d rows, %d capped, %d floored (cap=%.2f, delta=%+.4f, station=%.4f spatial=%.4f)",
-        pacific_today, rows_modified, rows_capped, rows_floored,
-        cap, delta, r_st.value or 0, r_sp.value or 0)
+        "ETO sync ok %s — set %d/%d zones to ETo=%.3f%s (src=%s, %s actual=%.3f, cap=%.2f)",
+        pacific_today, rows_modified, rows_total, eto_out,
+        was_capped and " [capped]" or "", eto_src, yesterday, eto_in, cap)
     push_notify(ps, id, body)
 
     local _, mark_err = daily_marker.write(id, MARKER_SUCCESS, pacific_today)
@@ -298,12 +303,12 @@ M.one_shot.ETO_SYNC_TICK = function(handle, _node)
     end
     state.success_date = pacific_today
 
-    log(id, "applied %s — %d/%d rows changed, %d capped, %d floored, delta=%+.4f",
-        pacific_today, rows_modified, rows_total,
-        rows_capped, rows_floored, delta)
+    log(id, "applied %s — set %d/%d zones to ETo=%.3f (src=%s, in=%.3f cap=%.2f%s)",
+        pacific_today, rows_modified, rows_total, eto_out, eto_src, eto_in, cap,
+        was_capped and ", capped" or "")
     app_heartbeat.stamp(handle, kb_label, "ok",
-        string.format("applied %s — %d rows, delta=%+.4f",
-            pacific_today, rows_modified, delta),
+        string.format("applied %s — %d zones ETo=%.3f",
+            pacific_today, rows_modified, eto_out),
         retry_s)
 end
 

@@ -170,10 +170,11 @@ M.irrigation = {
 }
 
 -- ETO-sync skill config — read by chains/eto_sync_user_functions.lua.
--- Daily one-shot that adjusts the irrigation controller's per-zone ETo
--- accumulator (eto_update_table Redis hash) by the CIMIS station-vs-spatial
--- delta, clamped to [floor, cap]. retry_s ticks; the actual once-per-day
--- gate is evaluated inside ETO_SYNC_TICK. If we haven't succeeded by
+-- Daily one-shot that writes the irrigation controller's per-zone ETo table
+-- (eto_update_table Redis hash): every zone := min(eto_in, cap) floored at
+-- `floor`, where eto_in is the eto_resolver's finalized ETo for yesterday
+-- (Open-Meteo primary; CIMIS/Synoptic fallback). retry_s ticks; the actual
+-- once-per-day gate is evaluated inside ETO_SYNC_TICK. If we haven't succeeded by
 -- failure_hour_pacific, a single Discord failure notification fires for
 -- the day (failure_hour_pacific=17 = 5pm Pacific). See [[cimis-skill-2026-05-22]]
 -- for the daily-gate pattern this mirrors.
