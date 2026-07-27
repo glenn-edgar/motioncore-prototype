@@ -283,25 +283,28 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
                     local result = KB2_WR.analyze_run(R_series)
 
                     -- Cohort-relative coil check: compare this valve's steady
-                    -- coil current to its OWN satellite group, where master /
-                    -- offset / PSU / branch wiring are common-mode. Absolute
-                    -- thresholds cannot do this — all four sat2 valves sit ~8%
-                    -- high together (cable), which is not four faults.
+                    -- coil current: LEVEL vs the valve's OWN self-baseline (a
+                    -- fixed wire offset cancels — 4:9–4:12's 200 ft 18 AWG spur
+                    -- is +2.5 Ω forever and must NOT read as a fault); DIRECTION
+                    -- (rising current) vs the satellite cohort, where master /
+                    -- offset / PSU are common-mode.
                     local coil = KB2_WR.coil_metrics(I_trim, cal, st.kb2_R_master)
                     local cohort_grp = KB2_WR.cohort_of(bin_key)
                     local cohort = nil
                     if coil and cohort_grp and n_coils == 1 then
                         local cstats = KB2_WR.cohort_stats(db, cohort_grp, now_ms(), bin_key)
+                        local sbase = KB2_WR.self_baseline(db, bin_key, now_ms(), ent.stream_id)
                         if cstats then
-                            cohort = KB2_WR.cohort_score(coil, cstats)
+                            cohort = KB2_WR.cohort_score(coil, cstats, sbase)
                         end
                     end
                     if coil then
                         log(id, "coil %s [%s]: I_steady=%.3f I_coil=%.3f R_coil=%.1f drift=%+.1f mA%s",
                             bin_key, cohort_grp or "?", coil.I_steady, coil.I_coil,
                             coil.R_coil or 0, coil.drift_mA or 0,
-                            cohort and string.format(" z=%+.1f n=%d %s",
-                                cohort.z_cur, cohort.n_peers, cohort.cls) or "")
+                            cohort and string.format(" z_self=%s n_self=%s %s",
+                                cohort.z_cur and string.format("%+.1f", cohort.z_cur) or "—",
+                                tostring(cohort.self_n or "—"), cohort.cls) or "")
                     end
 
                     -- Thermal-lift analysis (Glenn 2026-06-09 PM). Uses

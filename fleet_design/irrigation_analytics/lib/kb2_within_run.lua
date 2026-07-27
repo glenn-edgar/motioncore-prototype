@@ -484,38 +484,75 @@ function M.cohort_stats(db, group, now_ms, exclude_bin)
     }
 end
 
--- Score one run against its cohort. Returns cls, severity, note, z-scores.
-function M.cohort_score(metrics, stats)
+-- Self-baseline: the valve's OWN rolling I_coil history. A fixed wire offset
+-- (Glenn 2026-07-27: 4:9–4:12 sit +2.5 Ω on a 200 ft 18 AWG spur, permanently)
+-- is CONSTANT per valve, so it cancels when a valve is compared to itself. The
+-- cohort-level check couldn't see that — it lumps a whole satellite together and
+-- would flag every wire-lengthened valve as WEAK_COIL forever. The LEVEL fault
+-- we actually want is a valve MOVING from where it has always been (a connection
+-- loosening, a coil opening/shorting over time), which the self-baseline sees
+-- and the wire offset does not mask.
+M.SELF_LOOKBACK_D = tonumber(os.getenv("KB2_SELF_LOOKBACK_D")) or 30
+M.SELF_MIN_RUNS   = tonumber(os.getenv("KB2_SELF_MIN_RUNS"))   or 5
+
+function M.self_baseline(db, bin, now_ms, exclude_sid)
+    if not db or not bin then return nil end
+    local since = (now_ms or 0) - M.SELF_LOOKBACK_D * 86400 * 1000
+    local sql = string.format([[
+        SELECT i_coil FROM runs_kb2_within
+         WHERE bin = %q AND ts_ms >= %d AND i_coil IS NOT NULL
+           AND sid <> %q
+         ORDER BY ts_ms DESC LIMIT 40
+    ]], bin, since, tostring(exclude_sid or ""))
+    local vals = {}
+    for r in db:nrows(sql) do vals[#vals+1] = r.i_coil end
+    if #vals < M.SELF_MIN_RUNS then return nil end
+    local m = median(vals)
+    return { n = #vals, med = m,
+             mad = math.max(mad(vals, m) or 0, M.COHORT_MAD_FLOOR_A) }
+end
+
+-- Score one run. LEVEL (weak / high current) is judged against the valve's own
+-- self-baseline so a fixed wire offset cancels; DRIFT/direction (rising current)
+-- is judged against the cohort, where common-mode still cancels and a per-run
+-- warming trend has no per-valve baseline to compare to. `self` may be nil until
+-- the valve has SELF_MIN_RUNS of history — then the level check is skipped (the
+-- drift check still runs).
+function M.cohort_score(metrics, stats, self)
     if not metrics or not stats or not metrics.I_coil then return nil end
-    local z_cur = 0.6745 * (metrics.I_coil - stats.cur_med) / stats.cur_mad
     local z_dr
     if metrics.drift_mA and stats.drift_med then
         z_dr = 0.6745 * (metrics.drift_mA - stats.drift_med) / stats.drift_mad
     end
     local cls, sev, note
-    -- Both gates must agree: statistically an outlier AND physically large.
-    local dev = math.abs(metrics.I_coil - stats.cur_med)
-    if dev < M.COHORT_MIN_DEV_A then z_cur = 0 end
-    if z_cur <= -M.COHORT_Z then
-        cls, sev = "COHORT_WEAK_COIL", "warn"
-        note = string.format(
-            "I_coil %.3f A vs cohort %.3f A (z=%+.1f, n=%d) — R_coil %.1f Ω vs %.1f Ω: high-resistance connection or partly-open coil",
-            metrics.I_coil, stats.cur_med, z_cur, stats.n_peers,
-            metrics.R_coil or 0, M.PSU_VOLTAGE / stats.cur_med)
-    elseif z_cur >= M.COHORT_Z then
-        cls, sev = "COHORT_HIGH_CURRENT", "alert"
-        note = string.format(
-            "I_coil %.3f A vs cohort %.3f A (z=%+.1f, n=%d) — drawing above peers: shorted turns",
-            metrics.I_coil, stats.cur_med, z_cur, stats.n_peers)
-    elseif z_dr and z_dr >= M.COHORT_Z
-           and (metrics.drift_mA or 0) >= M.COHORT_MIN_RISE_MA then
+    local z_self
+    if self then
+        z_self = 0.6745 * (metrics.I_coil - self.med) / self.mad
+        -- Must be statistically AND physically a move from the valve's history.
+        if math.abs(metrics.I_coil - self.med) < M.COHORT_MIN_DEV_A then z_self = 0 end
+        if z_self <= -M.COHORT_Z then
+            cls, sev = "COHORT_WEAK_COIL", "warn"
+            note = string.format(
+                "I_coil %.3f A DROPPED from own baseline %.3f A (z=%+.1f over %d runs) — R_coil %.1f Ω rising: connection loosening or coil opening",
+                metrics.I_coil, self.med, z_self, self.n,
+                metrics.R_coil or 0)
+        elseif z_self >= M.COHORT_Z then
+            cls, sev = "COHORT_HIGH_CURRENT", "alert"
+            note = string.format(
+                "I_coil %.3f A ROSE from own baseline %.3f A (z=%+.1f over %d runs) — drawing above its own history: shorting turns",
+                metrics.I_coil, self.med, z_self, self.n)
+        end
+    end
+    if not cls and z_dr and z_dr >= M.COHORT_Z
+       and (metrics.drift_mA or 0) >= M.COHORT_MIN_RISE_MA then
         cls, sev = "COHORT_RISING_I", "warn"
         note = string.format(
             "current RISING %+.1f mA over run vs cohort %+.1f mA (z=%+.1f) — coil should warm and current FALL",
             metrics.drift_mA, stats.drift_med, z_dr)
     end
     return { cls = cls or "COHORT_OK", severity = sev or "ok", note = note,
-             z_cur = z_cur, z_drift = z_dr, n_peers = stats.n_peers }
+             z_cur = z_self, z_drift = z_dr, n_peers = stats.n_peers,
+             self_n = self and self.n }
 end
 
 -- =========================================================================
