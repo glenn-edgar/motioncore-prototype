@@ -116,14 +116,19 @@ M.synoptic = {
 -- Open-Meteo config for the openmeteo_eto KB. The forecast API returns FAO-56
 -- Penman-Monteith reference ET0 as a ready-made DAILY value, so there is no
 -- secret and no local Penman calc — see chains/openmeteo_user_functions.lua.
--- Coordinates are the field location (DMS 33°34'41.303" N, 117°18'01.128" W).
+-- Coordinates are the CITY OF MURRIETA reference point, not the field's own
+-- GPS fix — same locality the cimis_spatial KB already targets by zip 92562,
+-- so every source in the priority chain now describes the same place. The
+-- city point sits ~400 m lower than the field (335 m vs 736 m) and reads
+-- ~4% lower ETo; well above the eto_sync cap either way.
 -- No pre-window gate: yesterday's value is a completed model day, available
 -- any time after the Pacific date rolls over. lookback_days = past_days for
 -- gap self-heal after downtime.
 M.openmeteo = {
     api_base      = "https://api.open-meteo.com/v1/forecast",
-    latitude      = 33.578140,
-    longitude     = -117.300313,
+    -- Murrieta, CA (Open-Meteo geocoder canonical point for the city).
+    latitude      = 33.55391,
+    longitude     = -117.21392,
     timezone      = "America/Los_Angeles",
     lookback_days = 7,             -- multi-day fetch window for gap-self-heal
     retry_s       = 900,           -- 15 minutes between attempts
@@ -182,7 +187,7 @@ M.eto_sync = {
     hour_pacific          = 14,    -- window opens 14:00 PT (2pm)
     failure_hour_pacific  = 17,    -- discord-failure deadline = 17:00 PT
     retry_s               = 900,   -- 15 min retry cadence
-    cap                   = 0.18,  -- per-row upper clamp
+    cap                   = 0.22,  -- per-row upper clamp
     floor                 = 0.0,   -- per-row lower clamp
 }
 

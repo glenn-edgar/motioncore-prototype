@@ -13,7 +13,7 @@
 -- Math (uniform across every row in eto_update_table):
 --   eto_in  = eto_resolver winner for yesterday  (Open-Meteo primary; CIMIS/
 --             Synoptic fallback — bb._eto_resolver.last_record.eto_in, inches)
---   eto_out = min(eto_in, cap)  floored at `floor`   (cap=0.18, floor=0.0)
+--   eto_out = min(eto_in, cap)  floored at `floor`   (cap=0.22, floor=0.0)
 --   every zone row := eto_out
 --
 -- (Historical: this used to subtract a CIMIS station-minus-spatial delta from
@@ -26,7 +26,7 @@
 --
 -- Discord push: a body string is published on the shared
 -- `fleet/notify/digest/daily` topic. notification_service POSTs it.
---   * success    "ETO sync ok DATE — set N/T zones to ETo=0.180 [capped] ..."
+--   * success    "ETO sync ok DATE — set N/T zones to ETo=0.220 [capped] ..."
 --   * failure    "ETO sync FAILED — <reason>"  (sent at-most-once per day,
 --                                                only at-or-after 17:00 PT)
 --
@@ -217,7 +217,7 @@ M.one_shot.ETO_SYNC_TICK = function(handle, _node)
 
     -- Per-zone value: the capped resolved ETo, applied UNIFORMLY to every row.
     --   eto_out = min(eto_in, cap), floored at `floor` (default 0).
-    local cap   = cfg.cap   or 0.18
+    local cap   = cfg.cap   or 0.22
     local floor = cfg.floor or 0.0
     local eto_out    = eto_in
     local was_capped = false
