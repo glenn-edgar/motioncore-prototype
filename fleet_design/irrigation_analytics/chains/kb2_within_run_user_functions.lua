@@ -111,26 +111,45 @@ import redis, msgpack, json, sys
 r = redis.Redis(db=%d)
 KEY = %q
 WANT = sorted(%q.split("/"))
-v = r.hget(KEY, %q)
-if v is None:
-    for field in r.hkeys(KEY):
-        f = field.decode() if isinstance(field, bytes) else field
-        if sorted(f.split("/")) == WANT:
-            v = r.hget(KEY, field); break
-if v is None:
+# The controller keeps BOTH orderings of a multi-part bin key ("1:39/3:14" and
+# "3:14/1:39") and only ONE of them is still being appended to. Taking the
+# exact-name hit blindly can land on a ring that died months ago and then
+# re-derive the SAME run every night: 3:14 read an 8-entry dead ring while the
+# live one held 49, so kb2_wr stored bit-identical R_start/R_end for days and
+# the 2-consecutive-run gate on R_STEP was defeated (the "same" step recurred
+# forever). Ordering is inconsistent per bin — for 3:2/4:12 the OTHER ordering
+# is the live one — so pick by ring depth, not by a fixed order.
+cands = []
+if r.hexists(KEY, %q):
+    cands.append(%q)
+for field in r.hkeys(KEY):
+    f = field.decode() if isinstance(field, bytes) else field
+    if sorted(f.split("/")) == WANT and f not in cands:
+        cands.append(f)
+best, best_runs, best_n = None, None, -1
+for f in cands:
+    try:
+        rr = msgpack.unpackb(r.hget(KEY, f), raw=False)
+    except Exception:
+        continue
+    if not rr:
+        continue
+    if len(rr) > best_n:
+        best, best_runs, best_n = f, rr, len(rr)
+if best is None:
     sys.stdout.write(json.dumps({"_error": "bin not found"})); sys.exit(0)
-runs = msgpack.unpackb(v, raw=False)
-if not runs:
-    sys.stdout.write(json.dumps({"_error": "empty runs"})); sys.exit(0)
+runs = best_runs
 rec = runs[-1]
 out = {
     "I_data":   (rec.get("IRRIGATION_CURRENT") or {}).get("data") or [],
     "I_mean":   (rec.get("IRRIGATION_CURRENT") or {}).get("mean"),
     "I_sd":     (rec.get("IRRIGATION_CURRENT") or {}).get("sd"),
     "n_runs":   len(runs),
+    "th_key":   best,
+    "n_keys":   len(cands),
 }
 sys.stdout.write(json.dumps(out, default=str))
-]], TH_DB, TH_KEY, bin_key, bin_key)
+]], TH_DB, TH_KEY, bin_key, bin_key, bin_key)
     local tmp = os.tmpname()
     local f = io.open(tmp, "w"); if not f then return nil end
     f:write(py); f:close()
@@ -250,9 +269,40 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
                     ssh_host = ssh_host, timeout_s = cfg.timeout_s or 8,
                 }, bin_key)
                 if th and th.I_data and #th.I_data > 0 then
+                    -- Drop the energize ramp BEFORE deriving R. A pre-energize
+                    -- sample (I ≈ null_offset) turns into a ~124 Ω phantom and
+                    -- both inflates R_start and fires R_STEP. See
+                    -- KB2_WR.trim_energize for the 3:14 worked example.
+                    local I_trim, n_head, n_tail = KB2_WR.trim_energize(th.I_data)
+                    if n_head > 0 or n_tail > 0 then
+                        log(id, "trim %s: dropped %d head + %d tail sample(s) of %d (energize ramp)",
+                            bin_key, n_head, n_tail, #th.I_data)
+                    end
                     local R_series = KB2_WR.compute_R_per_minute_calibrated(
-                        th.I_data, cal, st.kb2_R_master, n_coils)
+                        I_trim, cal, st.kb2_R_master, n_coils)
                     local result = KB2_WR.analyze_run(R_series)
+
+                    -- Cohort-relative coil check: compare this valve's steady
+                    -- coil current to its OWN satellite group, where master /
+                    -- offset / PSU / branch wiring are common-mode. Absolute
+                    -- thresholds cannot do this — all four sat2 valves sit ~8%
+                    -- high together (cable), which is not four faults.
+                    local coil = KB2_WR.coil_metrics(I_trim, cal, st.kb2_R_master)
+                    local cohort_grp = KB2_WR.cohort_of(bin_key)
+                    local cohort = nil
+                    if coil and cohort_grp and n_coils == 1 then
+                        local cstats = KB2_WR.cohort_stats(db, cohort_grp, now_ms(), bin_key)
+                        if cstats then
+                            cohort = KB2_WR.cohort_score(coil, cstats)
+                        end
+                    end
+                    if coil then
+                        log(id, "coil %s [%s]: I_steady=%.3f I_coil=%.3f R_coil=%.1f drift=%+.1f mA%s",
+                            bin_key, cohort_grp or "?", coil.I_steady, coil.I_coil,
+                            coil.R_coil or 0, coil.drift_mA or 0,
+                            cohort and string.format(" z=%+.1f n=%d %s",
+                                cohort.z_cur, cohort.n_peers, cohort.cls) or "")
+                    end
 
                     -- Thermal-lift analysis (Glenn 2026-06-09 PM). Uses
                     -- per-bin parallel-R baseline (all bin valves + master)
@@ -329,6 +379,15 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
                         cls         = result.cls,
                         severity    = result.severity,
                         note        = result.note,
+                        i_steady    = coil and coil.I_steady,
+                        i_coil      = coil and coil.I_coil,
+                        r_coil      = coil and coil.R_coil,
+                        drift_ma    = coil and coil.drift_mA,
+                        n_trim_head = n_head,
+                        n_valves    = n_coils,
+                        cohort_grp  = cohort_grp,
+                        cohort_z    = cohort and cohort.z_cur,
+                        cohort_cls  = cohort and cohort.cls,
                     })
                     if not ins_ok then
                         log(id, "INSERT FAILED bin=%s: %s — within-run row NOT stored",
@@ -364,13 +423,55 @@ M.one_shot.KB2_WR_TICK = function(handle, _node)
                     -- trips a >5 Ω step; fired on 16/20 bins 2026-06-16). Require
                     -- the SAME bin to step on two consecutive runs before it
                     -- reaches the digest. R_HEATING/other alerts are unaffected.
+                    --
+                    -- 2026-07-21: that gate was ALSO defeated — a dead
+                    -- TIME_HISTORY ring replayed the identical run nightly, so
+                    -- "2 consecutive" was always true. With the ring fix + the
+                    -- energize trim the remaining R_STEP hits are still the
+                    -- unstable-division artifact (every 07-18..21 hit was), and
+                    -- the cohort check below is the replacement signal. R_STEP
+                    -- is now MONITOR-ONLY: logged, never digest-notified,
+                    -- unless KB2_STEP_ARM=1 re-enables it.
+                    local STEP_ARM = os.getenv("KB2_STEP_ARM") == "1"
                     local step_gated = false
                     if result.cls == "R_STEP_DURING_RUN" then
                         local prev_cls = KB2_WR.prev_run_cls(db, bin_key, ent.stream_id)
-                        if prev_cls ~= "R_STEP_DURING_RUN" then
+                        if not STEP_ARM then
+                            step_gated = true
+                            log(id, "[monitor] R_STEP %s: %s (unstable-division artifact — not notified; KB2_STEP_ARM=0)",
+                                bin_key, result.note or "")
+                        elseif prev_cls ~= "R_STEP_DURING_RUN" then
                             step_gated = true
                             log(id, "suppress R_STEP %s: single-run (prior=%s — needs 2 consecutive)",
                                 bin_key, tostring(prev_cls))
+                        end
+                    end
+
+                    -- Cohort finding. Monitor-only until validated against a
+                    -- real field event (skill safety rule 5): logs WOULD-alert
+                    -- unless KB2_COHORT_ARM=1. Needs the same bin to score
+                    -- outlier on two consecutive runs before it counts.
+                    if cohort and cohort.cls ~= "COHORT_OK" then
+                        local armed = os.getenv("KB2_COHORT_ARM") == "1"
+                        local prev = KB2_WR.prev_cohort_cls(db, bin_key, ent.stream_id)
+                        local persistent = (prev == cohort.cls)
+                        if not persistent then
+                            log(id, "[monitor] %s %s: %s (single-run, prior=%s — needs 2 consecutive)",
+                                cohort.cls, bin_key, cohort.note or "", tostring(prev))
+                        elseif not armed then
+                            log(id, "[monitor] WOULD alert %s %s: %s (KB2_COHORT_ARM=0)",
+                                cohort.cls, bin_key, cohort.note or "")
+                        else
+                            flagged = flagged + 1
+                            KB_ALERTS.record(db, {
+                                ts_ms = now_ms(), source = "kb2_wr",
+                                kind = "coil_cohort", severity = cohort.severity,
+                                target = bin_key,
+                                summary = string.format("%s step=%s — %s",
+                                    cohort.cls, tostring(ent.details.step),
+                                    cohort.note or "") })
+                            log(id, "alert[coil_cohort/%s] %s: %s",
+                                cohort.severity, bin_key, cohort.cls)
                         end
                     end
                     if (result.severity == "alert" or result.cls == "R_HEATING_DURING_RUN")

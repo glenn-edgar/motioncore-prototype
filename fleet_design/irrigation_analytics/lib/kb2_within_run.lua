@@ -314,6 +314,211 @@ local function boxcar(values, w)
 end
 
 -- =========================================================================
+-- Energize-transient trim  (2026-07-21)
+-- =========================================================================
+-- The FIRST samples of a run can be taken before the valve is fully energized
+-- — sometimes before ANY coil is on, where I_obs ≈ null_offset. Because
+-- R_zone = 1/(1/R_total - 1/R_master) is a difference of two close
+-- reciprocals, a small current dip explodes into a huge apparent R:
+--
+--   3:14 2026-07-21   I=0.727 A (onset) -> R = 123.7 Ω
+--                     I=1.017 A (steady) -> R =  37.2 Ω     ΔR = 86.5 Ω
+--
+-- That single sample is what produced the `R_STEP_DURING_RUN ΔR=86.8 Ω`
+-- alert AND inflated R_start enough to invert end_delta's sign — the run's
+-- raw current actually FALLS (healthy copper warming), while the stored
+-- end_delta claimed −13.3 Ω (current rising = shorting coil). Every valve
+-- flagged by R_STEP over 2026-07-18..21 was this artifact.
+--
+-- `solenoid-health.md` already states the rule this enforces: "onset current
+-- spike is a red herring — benign cold-coil thermal. Don't flag it" and "the
+-- R = V/(I−offset) division is unstable".
+--
+-- Trim leading AND trailing samples below `frac` of the run's median current;
+-- those are ramp-in / ramp-out, not steady state. Returns the trimmed array
+-- plus how many were dropped at each end.
+M.TRIM_FRAC = tonumber(os.getenv("KB2_TRIM_FRAC")) or 0.80
+
+function M.trim_energize(I_data, frac)
+    if not I_data or #I_data == 0 then return I_data, 0, 0 end
+    frac = frac or M.TRIM_FRAC
+    local med = median(I_data)
+    if not med or med <= 0 then return I_data, 0, 0 end
+    local thr = frac * med
+    local i0 = 1
+    while i0 <= #I_data and I_data[i0] < thr do i0 = i0 + 1 end
+    local i1 = #I_data
+    while i1 >= i0 and I_data[i1] < thr do i1 = i1 - 1 end
+    if i1 - i0 + 1 < 10 then return I_data, 0, 0 end   -- refuse to over-trim
+    local out = {}
+    for i = i0, i1 do out[#out+1] = I_data[i] end
+    return out, i0 - 1, #I_data - i1
+end
+
+-- =========================================================================
+-- Coil current + cohort comparison  (2026-07-21)
+-- =========================================================================
+-- Absolute R thresholds cannot separate a bad valve from a long cable run:
+-- all four satellite-2 valves sit ~8% higher R than sat3/sat4 with a MAD of
+-- 0.003 A — a branch property, not four faults. Within one satellite the
+-- master coil, the null offset, the PSU rail and the branch wiring are all
+-- common-mode, so compare each valve to ITS OWN GROUP and the common mode
+-- cancels. (This is the cohort-relative rule `solenoid-health.md` states for
+-- valve_test, applied to the during-run current where it actually decides.)
+--
+--   I_coil = I_observed - null_offset - I_master
+--   flag when |robust z vs group| > M.COHORT_Z
+--
+-- LOW  vs cohort -> weak coil / high-resistance connection (oxidised contact)
+-- HIGH vs cohort -> shorted turns
+M.COHORT_Z         = tonumber(os.getenv("KB2_COHORT_Z")) or 3.5
+M.COHORT_MIN_PEERS = 3       -- need a real cohort before scoring
+M.COHORT_LOOKBACK_D = 14
+
+-- A tight cohort collapses the MAD toward zero and then a 4 mA spread scores
+-- z = ±4000. sat2's four valves agree to 0.003 A, which made two of them
+-- "faults" on the first pass. Two physical guards:
+--
+--   MAD floor  — the current sensor quantises at ~6.5 mA, so no MAD below
+--                ~1.5 LSB is real precision.
+--   min deviation — a finding must ALSO be physically large. 0.05 A off a
+--                ~0.58 A coil is ~9% (≈2.5 Ω); below that it is noise no
+--                matter how tight the peers are.
+M.COHORT_MAD_FLOOR_A  = tonumber(os.getenv("KB2_COHORT_MAD_FLOOR_A"))  or 0.010
+M.COHORT_MAD_FLOOR_MA = tonumber(os.getenv("KB2_COHORT_MAD_FLOOR_MA")) or 8.0
+M.COHORT_MIN_DEV_A    = tonumber(os.getenv("KB2_COHORT_MIN_DEV_A"))    or 0.05
+-- Current must be rising by a real amount, not just more than the peers.
+M.COHORT_MIN_RISE_MA  = tonumber(os.getenv("KB2_COHORT_MIN_RISE_MA"))  or 15.0
+M.MASTER_KEYS = { ["satellite_1:39"] = true, ["satellite_1:40"] = true,
+                  ["satellite_1:43"] = true }
+
+-- Non-master valve legs of a bin key.
+function M.bin_valves(bin_key)
+    local out = {}
+    for part in tostring(bin_key or ""):gmatch("[^/]+") do
+        if not M.MASTER_KEYS[part] then out[#out+1] = part end
+    end
+    return out
+end
+
+-- Satellite group of a bin: "sat4", or "sat3+4" when a bin spans branches.
+function M.cohort_of(bin_key)
+    local seen, order = {}, {}
+    for _, v in ipairs(M.bin_valves(bin_key)) do
+        local s = v:match("^satellite_(%d+):")
+        if s and not seen[s] then seen[s] = true; order[#order+1] = s end
+    end
+    if #order == 0 then return nil end
+    table.sort(order)
+    return "sat" .. table.concat(order, "+")
+end
+
+-- Steady-state coil current for a run. I_data must already be trimmed.
+function M.coil_metrics(I_data, calibration, R_master)
+    if not I_data or #I_data < 10 then return nil end
+    local v_psu = (calibration and calibration.v_psu) or M.PSU_VOLTAGE
+    local null_offset
+    if calibration and calibration.source == "controller" then
+        null_offset = calibration.controller_offset or 0
+    else
+        null_offset = (calibration and calibration.offset) or 0
+    end
+    R_master = R_master or M.R_MASTER_DEFAULT
+    local I_master = v_psu / R_master
+    local n = #I_data
+    local function mean_of(a, b)
+        local s, c = 0, 0
+        for i = a, b do if I_data[i] then s = s + I_data[i]; c = c + 1 end end
+        return c > 0 and (s / c) or nil
+    end
+    local I_steady = median(I_data)
+    local I_start  = mean_of(1, math.min(5, n))
+    local I_end    = mean_of(math.max(1, n - 2), n)
+    local I_coil   = I_steady - null_offset - I_master
+    return {
+        I_steady = I_steady,
+        I_coil   = I_coil,
+        I_master = I_master,
+        R_coil   = (I_coil > 0.01) and (v_psu / I_coil) or nil,
+        -- NEGATIVE drift = current falling = R rising = copper warming = healthy.
+        drift_mA = (I_start and I_end) and ((I_end - I_start) * 1000) or nil,
+    }
+end
+
+-- Cohort statistics from recent history: median + MAD of I_coil and drift for
+-- every SINGLE-valve bin in `group`. Multi-valve bins are excluded — their
+-- current is the sum of coils and is not a peer of a single coil.
+function M.cohort_stats(db, group, now_ms, exclude_bin)
+    if not db or not group then return nil end
+    local since = (now_ms or 0) - M.COHORT_LOOKBACK_D * 86400 * 1000
+    local cur, drift = {}, {}
+    local sql = string.format([[
+        SELECT bin, i_coil, drift_ma FROM runs_kb2_within
+         WHERE ts_ms >= %d AND cohort_grp = %q AND n_valves = 1
+           AND i_coil IS NOT NULL
+    ]], since, group)
+    -- One record per bin (its median across the window) so a frequently-run
+    -- valve cannot dominate the cohort median.
+    local per_bin = {}
+    for row in db:nrows(sql) do
+        if row.bin ~= exclude_bin then
+            per_bin[row.bin] = per_bin[row.bin] or { c = {}, d = {} }
+            per_bin[row.bin].c[#per_bin[row.bin].c + 1] = row.i_coil
+            if row.drift_ma then
+                per_bin[row.bin].d[#per_bin[row.bin].d + 1] = row.drift_ma
+            end
+        end
+    end
+    for _, v in pairs(per_bin) do
+        cur[#cur+1] = median(v.c)
+        local dm = median(v.d)
+        if dm then drift[#drift+1] = dm end
+    end
+    if #cur < M.COHORT_MIN_PEERS then return nil end
+    local cm = median(cur)
+    local dm = median(drift)
+    return {
+        n_peers  = #cur,
+        cur_med  = cm,  cur_mad  = math.max(mad(cur, cm) or 0, M.COHORT_MAD_FLOOR_A),
+        drift_med = dm, drift_mad = math.max(mad(drift, dm) or 0, M.COHORT_MAD_FLOOR_MA),
+    }
+end
+
+-- Score one run against its cohort. Returns cls, severity, note, z-scores.
+function M.cohort_score(metrics, stats)
+    if not metrics or not stats or not metrics.I_coil then return nil end
+    local z_cur = 0.6745 * (metrics.I_coil - stats.cur_med) / stats.cur_mad
+    local z_dr
+    if metrics.drift_mA and stats.drift_med then
+        z_dr = 0.6745 * (metrics.drift_mA - stats.drift_med) / stats.drift_mad
+    end
+    local cls, sev, note
+    -- Both gates must agree: statistically an outlier AND physically large.
+    local dev = math.abs(metrics.I_coil - stats.cur_med)
+    if dev < M.COHORT_MIN_DEV_A then z_cur = 0 end
+    if z_cur <= -M.COHORT_Z then
+        cls, sev = "COHORT_WEAK_COIL", "warn"
+        note = string.format(
+            "I_coil %.3f A vs cohort %.3f A (z=%+.1f, n=%d) — R_coil %.1f Ω vs %.1f Ω: high-resistance connection or partly-open coil",
+            metrics.I_coil, stats.cur_med, z_cur, stats.n_peers,
+            metrics.R_coil or 0, M.PSU_VOLTAGE / stats.cur_med)
+    elseif z_cur >= M.COHORT_Z then
+        cls, sev = "COHORT_HIGH_CURRENT", "alert"
+        note = string.format(
+            "I_coil %.3f A vs cohort %.3f A (z=%+.1f, n=%d) — drawing above peers: shorted turns",
+            metrics.I_coil, stats.cur_med, z_cur, stats.n_peers)
+    elseif z_dr and z_dr >= M.COHORT_Z
+           and (metrics.drift_mA or 0) >= M.COHORT_MIN_RISE_MA then
+        cls, sev = "COHORT_RISING_I", "warn"
+        note = string.format(
+            "current RISING %+.1f mA over run vs cohort %+.1f mA (z=%+.1f) — coil should warm and current FALL",
+            metrics.drift_mA, stats.drift_med, z_dr)
+    end
+    return { cls = cls or "COHORT_OK", severity = sev or "ok", note = note,
+             z_cur = z_cur, z_drift = z_dr, n_peers = stats.n_peers }
+end
+
+-- =========================================================================
 -- Classify
 -- =========================================================================
 -- Returns table with all detection results + selected cls + Discord-worthy flag.
@@ -490,6 +695,17 @@ function M.open_db(path)
     db:exec("ALTER TABLE runs_kb2_within ADD COLUMN lift_max REAL")
     db:exec("ALTER TABLE runs_kb2_within ADD COLUMN peak_1_5_r REAL")
     db:exec("ALTER TABLE runs_kb2_within ADD COLUMN peak_1_5_dev REAL")
+    -- Cohort-detector columns (2026-07-21). See the cohort section above.
+    db:exec("ALTER TABLE runs_kb2_within ADD COLUMN i_steady REAL")
+    db:exec("ALTER TABLE runs_kb2_within ADD COLUMN i_coil REAL")
+    db:exec("ALTER TABLE runs_kb2_within ADD COLUMN r_coil REAL")
+    db:exec("ALTER TABLE runs_kb2_within ADD COLUMN drift_ma REAL")
+    db:exec("ALTER TABLE runs_kb2_within ADD COLUMN n_trim_head INTEGER")
+    db:exec("ALTER TABLE runs_kb2_within ADD COLUMN n_valves INTEGER")
+    db:exec("ALTER TABLE runs_kb2_within ADD COLUMN cohort_grp TEXT")
+    db:exec("ALTER TABLE runs_kb2_within ADD COLUMN cohort_z REAL")
+    db:exec("ALTER TABLE runs_kb2_within ADD COLUMN cohort_cls TEXT")
+    db:exec("CREATE INDEX IF NOT EXISTS idx_runs_kb2_within_cohort ON runs_kb2_within(cohort_grp, n_valves)")
     return db
 end
 
@@ -503,8 +719,11 @@ function M.insert_run(db, fields)
             max_step_ohm, max_step_minute,
             cls, severity, note,
             R_baseline_par, lift_window, lift_end, lift_max,
-            peak_1_5_r, peak_1_5_dev)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            peak_1_5_r, peak_1_5_dev,
+            i_steady, i_coil, r_coil, drift_ma, n_trim_head,
+            n_valves, cohort_grp, cohort_z, cohort_cls)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ]])
     if not stmt then return nil, db:errmsg() end
     stmt:bind_values(
@@ -515,7 +734,9 @@ function M.insert_run(db, fields)
         fields.max_step_ohm, fields.max_step_minute,
         fields.cls, fields.severity, fields.note,
         fields.R_baseline_par, fields.lift_window, fields.lift_end, fields.lift_max,
-        fields.peak_1_5_r, fields.peak_1_5_dev)
+        fields.peak_1_5_r, fields.peak_1_5_dev,
+        fields.i_steady, fields.i_coil, fields.r_coil, fields.drift_ma, fields.n_trim_head,
+        fields.n_valves, fields.cohort_grp, fields.cohort_z, fields.cohort_cls)
     stmt:step()
     stmt:finalize()
     return true
@@ -602,6 +823,18 @@ function M.prev_run_cls(db, bin, exclude_sid)
         "ORDER BY ts_ms DESC LIMIT 1", bin, tostring(exclude_sid or ""))
     local cls = nil
     for r in db:nrows(sql) do cls = r.cls; break end
+    return cls
+end
+
+-- Same, for the cohort classification (persistence gate on COHORT_* findings).
+function M.prev_cohort_cls(db, bin, exclude_sid)
+    if not db or not bin then return nil end
+    local sql = string.format(
+        "SELECT cohort_cls FROM runs_kb2_within WHERE bin=%q AND sid <> %q " ..
+        "AND cohort_cls IS NOT NULL ORDER BY ts_ms DESC LIMIT 1",
+        bin, tostring(exclude_sid or ""))
+    local cls = nil
+    for r in db:nrows(sql) do cls = r.cohort_cls; break end
     return cls
 end
 
