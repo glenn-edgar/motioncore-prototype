@@ -95,6 +95,21 @@ function M.count_valves(io_setup)
     return n
 end
 
+-- Canonicalize a compound bin_key by sorting its valve components.
+-- Mirrors baselines.canonicalize_key; needed because explore-side
+-- derive_kb1_thresholds.py keys bins in past_actions io_setup natural
+-- order while runtime canonicalizes to sorted order. Without this,
+-- sat_4:6/sat_4:8/sat_1:39 in the file misses lookup for the runtime's
+-- sat_1:39/sat_4:6/sat_4:8 → silent BIN_UNCALIBRATED.
+function M.canonicalize_key(bin_key)
+    if not bin_key or type(bin_key) ~= "string" then return bin_key end
+    if not bin_key:find("/", 1, true) then return bin_key end
+    local parts = {}
+    for p in bin_key:gmatch("[^/]+") do parts[#parts+1] = p end
+    table.sort(parts)
+    return table.concat(parts, "/")
+end
+
 -- Curve lookup. Returns the calibrated entry or nil (uncalibrated bin).
 function M.lookup_curve(curves, bin_key)
     if not curves or not bin_key or bin_key == "" then return nil end

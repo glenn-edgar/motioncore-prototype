@@ -50,15 +50,22 @@ local function log(fmt, ...)
     io.stderr:flush()
 end
 
-if WEBHOOK == "" then
-    log("FATAL DISCORD_WEBHOOK_URL not set (export it or fill secrets/discord.env)")
-    os.exit(2)
+-- Webhook may be empty (eg. Docker Desktop WSL2 read-only bind-mount staleness
+-- prevents /secrets/discord.env from appearing inside the container). Don't
+-- crash — log it loudly and degrade to no-op delivery so the rest of the
+-- container (zenohd / fleet_manager / persistence / gateway) stays up.
+-- Under tini's exit-on-first-child-crash policy, FATAL-exiting here used to
+-- knock the whole container into a restart loop every ~90 s.
+local NOOP_DELIVERY = (WEBHOOK == "")
+if NOOP_DELIVERY then
+    log("WARN DISCORD_WEBHOOK_URL not set — running in no-op delivery mode")
+    log("  (digests will be received and acknowledged but NOT POSTed to Discord)")
+else
+    -- Mask the webhook URL — keep the host + path-prefix, drop the token suffix.
+    local mask = WEBHOOK:match("^(https?://[^/]+/[^/]+/[^/]+/)") or "(mask-failed)"
+    log("webhook configured: %s…", mask)
 end
-
 log("starting (locator=%s, username=%s)", LOCATOR, USERNAME)
--- Mask the webhook URL — keep the host + path-prefix, drop the token suffix.
-local mask = WEBHOOK:match("^(https?://[^/]+/[^/]+/[^/]+/)") or "(mask-failed)"
-log("webhook configured: %s…", mask)
 
 local ps = zps.PubSub.new({ locators = { LOCATOR }, client_name = SERVICE_ID })
 ps:connect()
@@ -89,6 +96,12 @@ local function handle_digest(payload)
     local instance = tostring(obj.instance or "?")
     local content  = string.format("[%s/%s]\n%s", class, instance, obj.body)
 
+    if NOOP_DELIVERY then
+        sent_ok = sent_ok + 1
+        log("digest received [NO-OP, webhook unset]: %s/%s (%d chars)",
+            class, instance, #content)
+        return
+    end
     local ok_send, err = discord.send(WEBHOOK, content, {
         username = USERNAME,
         logger   = function(s) log("%s", s) end,

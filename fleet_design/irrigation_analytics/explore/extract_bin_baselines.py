@@ -100,6 +100,27 @@ def main():
     vt = json.loads((here / "data" / "valve_test.json").read_text())
     active_valves = set(vt.keys())
 
+    # Controller stores compound bins in BOTH valve orderings (e.g.
+    # sat_1:39/sat_4:12 AND sat_4:12/sat_1:39 — same physical bin, both
+    # 49-run buffers). Canonicalize at READ and MERGE the runs so the
+    # baseline uses all observations of the physical bin.
+    def canonical(k):
+        return "/".join(sorted(k.split("/"))) if "/" in k else k
+
+    th_canonical = {}
+    merged_count = 0
+    for k, runs in th.items():
+        ck = canonical(k)
+        if ck in th_canonical:
+            th_canonical[ck] = th_canonical[ck] + runs
+            merged_count += 1
+        else:
+            th_canonical[ck] = runs
+    if merged_count:
+        print(f"  merged {merged_count} duplicate non-canonical bins "
+              f"({len(th)} → {len(th_canonical)})")
+    th = th_canonical
+
     out = {}
     skipped_retired = []
     skipped_short = []
@@ -162,6 +183,18 @@ def main():
             entry["baseline"] = baseline_for(asyms, flows_t, flows_r, lengths)
 
         out[bin_key] = entry
+
+    # Canonicalize compound bin_keys (sort components) before writing.
+    # time_history.json keys inherit the controller's natural valve order
+    # from past_actions; the robot canonicalizes by sorting on lookup.
+    # See generate_curves.py for the same pattern.
+    def canonical(k):
+        return "/".join(sorted(k.split("/"))) if "/" in k else k
+
+    out_canonical = {canonical(k): v for k, v in out.items()}
+    if len(out_canonical) != len(out):
+        print(f"  collapsed {len(out) - len(out_canonical)} duplicate non-canonical bins")
+    out = out_canonical
 
     out_path = here / "bin_baselines.json"
     out_path.write_text(json.dumps(out, indent=2))

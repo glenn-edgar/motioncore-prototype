@@ -5,6 +5,23 @@
 > THIS top section. Companion memory: `irrigation-production-state` (the reset
 > runbook).
 
+## ⭐⭐ 2026-06-14 UPDATE — next task: KB3 LEAK CURVE DETECTOR
+Full plan + measured data in the `irrigation-kb3-curve-tracker-plan` memory. In short:
+- A REAL 4:10 pipe break (coyote pipe) went uncaught by KB3 today. Root cause: KB3
+  polls `popup.FILTERED_HUNTER_VALVE` once/min (saw **HUNTER=8.4 flat**, strict >14),
+  while the real leak in `PLC_MEASUREMENTS_STREAM` was raw HUNTER ~11–12 / PLC ~12–13.4.
+  Lowering the absolute threshold (14→13) is **cosmetic** and was NOT shipped.
+- Also: the held-out 4-bank is baseline-starved (4:10 n=1, 4:11 n=1, 4:9 n=6 < the
+  7-clean-run gate) → KB3 ran `primary-only`, relative trip disabled.
+- **2026-06-15 build:** KB3 curve detector — read the STREAM (raw HUNTER + PLC,
+  sub-minute, windowed median), per-bin clean baseline, RELATIVE trip (~+3 GPM).
+  Leak lift measured: 4:10 clean ~8 vs leak ~11–12. Cohort fallback for sparse bins.
+  Monitor-first, no controller change, isolated from the armed path.
+- Aftermath: first live well-drawdown actuation fired (4:11, skip+recharge, OK) — it
+  catches the downstream symptom not the source. 4:10 field-repaired; 4:10+4:11
+  `repair_leak` field reports applied by the watcher; post-fix runs clean (4:10 ~8,
+  4:11 ~6), baselines re-learning. Operator skill `irrigation-ops` shipped (commit 638a215).
+
 ## ⭐ CURRENT STATE & WINDOWS-RESET RECOVERY (2026-06-12) — READ FIRST
 
 **Production runs on the Pi (`ssh robot` = 192.168.1.66), NOT WSL.** A Windows /

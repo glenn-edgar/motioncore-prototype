@@ -59,9 +59,16 @@ def main():
         "sample0_skip":            True,
     }
 
+    # Canonicalize compound bin_keys before writing. Defensive guard —
+    # bin_baselines.json should already be canonical (extract_bin_baselines.py
+    # canonicalizes), but apply here too so this file is correct even if a
+    # hand-edited / stale baselines file slips in.
+    def canonical(k):
+        return "/".join(sorted(k.split("/"))) if "/" in k else k
+
     out = {"universal": universal, "per_bin": {}}
     for bin_key, entry in baselines.items():
-        out["per_bin"][bin_key] = derive(entry)
+        out["per_bin"][canonical(bin_key)] = derive(entry)
 
     out_path = here / "kb1_thresholds.json"
     out_path.write_text(json.dumps(out, indent=2))
@@ -78,10 +85,13 @@ def main():
     # Sanity check: for any bin, derived i_high_trip should not be < I_asym_max_observed
     # That would mean a real run would trip the rule.
     print(f"\n  Sanity: per-bin i_high_trip vs observed max-asym:")
+    # baselines may still be keyed pre-canonical (if extract step hasn't been
+    # re-run); build a canonical-keyed view for the lookup.
+    baselines_canon = {canonical(k): v for k, v in baselines.items()}
     flagged = []
     for bin_key, t in out["per_bin"].items():
         if t["bimodal"]: continue
-        b = baselines[bin_key]["baseline"]
+        b = baselines_canon[bin_key]["baseline"]
         if b["i_asym"]["max"] >= t["i_high_trip"]:
             flagged.append((bin_key, b["i_asym"]["max"], t["i_high_trip"]))
     print(f"    bins where observed max ≥ i_high_trip: {len(flagged)}")

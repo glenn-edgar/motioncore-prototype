@@ -107,7 +107,7 @@ do
         if ok and decoded and decoded.per_bin then
             for bin_key, e in pairs(decoded.per_bin) do
                 if e.mu_i_asym and e.i_low_open then
-                    curves[bin_key] = {
+                    curves[T.canonicalize_key(bin_key)] = {
                         mu        = e.mu_i_asym,
                         sd        = e.sd_i_asym,
                         i_low_open = e.i_low_open,

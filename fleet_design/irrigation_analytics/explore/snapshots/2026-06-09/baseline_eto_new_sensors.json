@@ -1,0 +1,398 @@
+{
+  "schema": "baseline_eto_new_sensors/1",
+  "since_pdt": "2026-06-08 17:00 UTC-07:00",
+  "n_runs": 16,
+  "per_bin": [
+    {
+      "bin": "satellite_1:39/satellite_2:16",
+      "n_runs": 1,
+      "plc_avg": 11.828067228518645,
+      "fhv_avg": 10.833898305084746,
+      "hhi_avg": 14.033898305084746
+    },
+    {
+      "bin": "satellite_1:39/satellite_4:6/satellite_4:8",
+      "n_runs": 1,
+      "plc_avg": 11.048526909875001,
+      "fhv_avg": 9.75,
+      "hhi_avg": 12.614583333333334
+    },
+    {
+      "bin": "satellite_2:13",
+      "n_runs": 1,
+      "plc_avg": 8.677192483451021,
+      "fhv_avg": 7.983673469387755,
+      "hhi_avg": 9.653061224489797
+    },
+    {
+      "bin": "satellite_2:14",
+      "n_runs": 1,
+      "plc_avg": 6.0071111652,
+      "fhv_avg": 6.9624999999999995,
+      "hhi_avg": 7.8125
+    },
+    {
+      "bin": "satellite_2:15",
+      "n_runs": 1,
+      "plc_avg": 9.3842433128,
+      "fhv_avg": 8.566666666666666,
+      "hhi_avg": 11.177083333333334
+    },
+    {
+      "bin": "satellite_3:1/satellite_3:7",
+      "n_runs": 1,
+      "plc_avg": 10.510576656275001,
+      "fhv_avg": 9.495833333333334,
+      "hhi_avg": 11.96875
+    },
+    {
+      "bin": "satellite_3:14",
+      "n_runs": 1,
+      "plc_avg": 10.387834593350847,
+      "fhv_avg": 9.525423728813559,
+      "hhi_avg": 11.85593220338983
+    },
+    {
+      "bin": "satellite_3:15",
+      "n_runs": 1,
+      "plc_avg": 11.379889323030001,
+      "fhv_avg": 10.42,
+      "hhi_avg": 10.65
+    },
+    {
+      "bin": "satellite_3:18",
+      "n_runs": 1,
+      "plc_avg": 9.790926490629312,
+      "fhv_avg": 9.013793103448277,
+      "hhi_avg": 11.698275862068966
+    },
+    {
+      "bin": "satellite_3:2/satellite_4:12",
+      "n_runs": 1,
+      "plc_avg": 9.0340152831125,
+      "fhv_avg": 8.054166666666667,
+      "hhi_avg": 10.520833333333334
+    },
+    {
+      "bin": "satellite_3:5",
+      "n_runs": 1,
+      "plc_avg": 15.939668468564516,
+      "fhv_avg": 13.32258064516129,
+      "hhi_avg": 17.112903225806452
+    },
+    {
+      "bin": "satellite_4:1",
+      "n_runs": 1,
+      "plc_avg": 7.446626195666667,
+      "fhv_avg": 6.825396825396825,
+      "hhi_avg": 8.968253968253968
+    },
+    {
+      "bin": "satellite_4:3",
+      "n_runs": 1,
+      "plc_avg": 8.09493719284375,
+      "fhv_avg": 7.3500000000000005,
+      "hhi_avg": 9.770833333333334
+    },
+    {
+      "bin": "satellite_4:4",
+      "n_runs": 1,
+      "plc_avg": 11.621032995737501,
+      "fhv_avg": 10.166666666666666,
+      "hhi_avg": 13.28125
+    },
+    {
+      "bin": "satellite_4:7",
+      "n_runs": 1,
+      "plc_avg": 11.0531966169375,
+      "fhv_avg": 9.708333333333334,
+      "hhi_avg": 12.645833333333334
+    },
+    {
+      "bin": "satellite_4:9",
+      "n_runs": 1,
+      "plc_avg": 10.932237861998573,
+      "fhv_avg": 9.814285714285715,
+      "hhi_avg": 12.442857142857143
+    }
+  ],
+  "runs": [
+    {
+      "bin": "satellite_3:15",
+      "valves": [
+        "satellite_3:15"
+      ],
+      "start_ms": 1780960680393,
+      "end_ms": 1780963800393,
+      "run_time_min": 52,
+      "schedule": "No_city_water",
+      "step": 31,
+      "n_plc": 10,
+      "plc_mean": 11.379889323030001,
+      "plc_max": 11.8124909853,
+      "fhv_mean": 10.42,
+      "fhv_max": 10.6,
+      "hhi_mean": 10.65
+    },
+    {
+      "bin": "satellite_4:9",
+      "valves": [
+        "satellite_4:9"
+      ],
+      "start_ms": 1780966810272,
+      "end_ms": 1780971060626,
+      "run_time_min": 70,
+      "schedule": "No_city_water",
+      "step": 1,
+      "n_plc": 70,
+      "plc_mean": 10.932237861998573,
+      "plc_max": 18.155821059,
+      "fhv_mean": 9.814285714285715,
+      "fhv_max": 11.0,
+      "hhi_mean": 12.442857142857143
+    },
+    {
+      "bin": "satellite_4:1",
+      "valves": [
+        "satellite_4:1"
+      ],
+      "start_ms": 1780972335222,
+      "end_ms": 1780976160429,
+      "run_time_min": 63,
+      "schedule": "No_city_water",
+      "step": 3,
+      "n_plc": 63,
+      "plc_mean": 7.446626195666667,
+      "plc_max": 8.8537645905,
+      "fhv_mean": 6.825396825396825,
+      "fhv_max": 7.4,
+      "hhi_mean": 8.968253968253968
+    },
+    {
+      "bin": "satellite_1:39/satellite_2:16",
+      "valves": [
+        "satellite_1:39",
+        "satellite_2:16"
+      ],
+      "start_ms": 1780977436228,
+      "end_ms": 1780981020889,
+      "run_time_min": 59,
+      "schedule": "No_city_water",
+      "step": 5,
+      "n_plc": 59,
+      "plc_mean": 11.828067228518645,
+      "plc_max": 15.331582227600002,
+      "fhv_mean": 10.833898305084746,
+      "fhv_max": 11.6,
+      "hhi_mean": 14.033898305084746
+    },
+    {
+      "bin": "satellite_4:4",
+      "valves": [
+        "satellite_4:4"
+      ],
+      "start_ms": 1780981995276,
+      "end_ms": 1780984920545,
+      "run_time_min": 48,
+      "schedule": "No_city_water",
+      "step": 7,
+      "n_plc": 48,
+      "plc_mean": 11.621032995737501,
+      "plc_max": 13.224610401000001,
+      "fhv_mean": 10.166666666666666,
+      "fhv_max": 11.0,
+      "hhi_mean": 13.28125
+    },
+    {
+      "bin": "satellite_4:7",
+      "valves": [
+        "satellite_4:7"
+      ],
+      "start_ms": 1780985595253,
+      "end_ms": 1780988520377,
+      "run_time_min": 48,
+      "schedule": "No_city_water",
+      "step": 9,
+      "n_plc": 48,
+      "plc_mean": 11.0531966169375,
+      "plc_max": 12.372855832800001,
+      "fhv_mean": 9.708333333333334,
+      "fhv_max": 10.2,
+      "hhi_mean": 12.645833333333334
+    },
+    {
+      "bin": "satellite_4:3",
+      "valves": [
+        "satellite_4:3"
+      ],
+      "start_ms": 1780989495205,
+      "end_ms": 1780992420543,
+      "run_time_min": 48,
+      "schedule": "No_city_water",
+      "step": 11,
+      "n_plc": 48,
+      "plc_mean": 8.09493719284375,
+      "plc_max": 12.8883914925,
+      "fhv_mean": 7.3500000000000005,
+      "fhv_max": 8.6,
+      "hhi_mean": 9.770833333333334
+    },
+    {
+      "bin": "satellite_1:39/satellite_4:6/satellite_4:8",
+      "valves": [
+        "satellite_4:6",
+        "satellite_4:8",
+        "satellite_1:39"
+      ],
+      "start_ms": 1780993697293,
+      "end_ms": 1780996621634,
+      "run_time_min": 48,
+      "schedule": "No_city_water",
+      "step": 13,
+      "n_plc": 48,
+      "plc_mean": 11.048526909875001,
+      "plc_max": 14.0987795631,
+      "fhv_mean": 9.75,
+      "fhv_max": 11.0,
+      "hhi_mean": 12.614583333333334
+    },
+    {
+      "bin": "satellite_3:2/satellite_4:12",
+      "valves": [
+        "satellite_3:2",
+        "satellite_4:12"
+      ],
+      "start_ms": 1780997596285,
+      "end_ms": 1781000520945,
+      "run_time_min": 48,
+      "schedule": "No_city_water",
+      "step": 15,
+      "n_plc": 48,
+      "plc_mean": 9.0340152831125,
+      "plc_max": 13.7177314668,
+      "fhv_mean": 8.054166666666667,
+      "fhv_max": 9.0,
+      "hhi_mean": 10.520833333333334
+    },
+    {
+      "bin": "satellite_3:1/satellite_3:7",
+      "valves": [
+        "satellite_3:1",
+        "satellite_3:7"
+      ],
+      "start_ms": 1781000536231,
+      "end_ms": 1781003460965,
+      "run_time_min": 48,
+      "schedule": "No_city_water",
+      "step": 16,
+      "n_plc": 48,
+      "plc_mean": 10.510576656275001,
+      "plc_max": 14.345340096000001,
+      "fhv_mean": 9.495833333333334,
+      "fhv_max": 10.2,
+      "hhi_mean": 11.96875
+    },
+    {
+      "bin": "satellite_3:5",
+      "valves": [
+        "satellite_3:5"
+      ],
+      "start_ms": 1781004735206,
+      "end_ms": 1781006640574,
+      "run_time_min": 31,
+      "schedule": "No_city_water",
+      "step": 18,
+      "n_plc": 31,
+      "plc_mean": 15.939668468564516,
+      "plc_max": 17.259237303000003,
+      "fhv_mean": 13.32258064516129,
+      "fhv_max": 14.8,
+      "hhi_mean": 17.112903225806452
+    },
+    {
+      "bin": "satellite_2:14",
+      "valves": [
+        "satellite_2:14"
+      ],
+      "start_ms": 1781006655275,
+      "end_ms": 1781009580585,
+      "run_time_min": 48,
+      "schedule": "No_city_water",
+      "step": 19,
+      "n_plc": 48,
+      "plc_mean": 6.0071111652,
+      "plc_max": 13.157366619300001,
+      "fhv_mean": 6.9624999999999995,
+      "fhv_max": 11.8,
+      "hhi_mean": 7.8125
+    },
+    {
+      "bin": "satellite_2:13",
+      "valves": [
+        "satellite_2:13"
+      ],
+      "start_ms": 1781010555214,
+      "end_ms": 1781013540585,
+      "run_time_min": 49,
+      "schedule": "No_city_water",
+      "step": 21,
+      "n_plc": 49,
+      "plc_mean": 8.677192483451021,
+      "plc_max": 8.988252153900001,
+      "fhv_mean": 7.983673469387755,
+      "fhv_max": 8.6,
+      "hhi_mean": 9.653061224489797
+    },
+    {
+      "bin": "satellite_3:14",
+      "valves": [
+        "satellite_3:14"
+      ],
+      "start_ms": 1781015115262,
+      "end_ms": 1781018700549,
+      "run_time_min": 59,
+      "schedule": "No_city_water",
+      "step": 23,
+      "n_plc": 59,
+      "plc_mean": 10.387834593350847,
+      "plc_max": 10.826248853700001,
+      "fhv_mean": 9.525423728813559,
+      "fhv_max": 10.2,
+      "hhi_mean": 11.85593220338983
+    },
+    {
+      "bin": "satellite_3:18",
+      "valves": [
+        "satellite_3:18"
+      ],
+      "start_ms": 1781019375208,
+      "end_ms": 1781022900564,
+      "run_time_min": 58,
+      "schedule": "No_city_water",
+      "step": 25,
+      "n_plc": 58,
+      "plc_mean": 9.790926490629312,
+      "plc_max": 10.1313964428,
+      "fhv_mean": 9.013793103448277,
+      "fhv_max": 9.6,
+      "hhi_mean": 11.698275862068966
+    },
+    {
+      "bin": "satellite_2:15",
+      "valves": [
+        "satellite_2:15"
+      ],
+      "start_ms": 1781023575225,
+      "end_ms": 1781026500572,
+      "run_time_min": 48,
+      "schedule": "No_city_water",
+      "step": 27,
+      "n_plc": 48,
+      "plc_mean": 9.3842433128,
+      "plc_max": 9.705519158700001,
+      "fhv_mean": 8.566666666666666,
+      "fhv_max": 9.2,
+      "hhi_mean": 11.177083333333334
+    }
+  ]
+}
