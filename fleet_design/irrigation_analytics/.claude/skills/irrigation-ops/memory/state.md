@@ -47,6 +47,13 @@ the container.
   I_coil, LSQ coil_onset decomposition, valve_test proof-of-life) with FLAT onset
   signatures. **Not coil faults, not a corroded terminal — just wire length.** Do NOT
   service these solenoids. The expected R_coil for anything on this spur is cohort+2.5 Ω.
+- **⭐ 2:13–2:17 = a WIRE SUB-BRANCH (2026-07-27). All HEALTHY.** sat2 has TWO wire runs:
+  2:1–2:7/2:11 read valve_test ≈ 0.54 A (~28 Ω); 2:13/2:14/2:15/2:16/**2:17** all read
+  ≈ 0.447–0.452 A (~34 Ω), a tight cluster ~6 Ω higher = the longer run, not faults.
+  Compare a sat2 valve to its OWN sub-branch, NOT the whole-sat2 median (0.541) — doing
+  the latter falsely flagged 2:17 "17% low" when it is identical to 2:13–2:16 (known-good
+  ETO valves). Same class as the 4:9–4:12 spur; the 0.74 self-baseline check handles it,
+  but a hand-run cross-sectional cohort will re-trip it. **2:17 is fine.**
 - **4:10 / 4:11 = ACTIVE hydraulic LEAKS (2026-07-25/26).** KB3 leak-curve caught + live
   skip+recharge: 4:11 07-25 (Hunter 11.6 then 14.4 vs 7.3 base), 4:10 07-26 (Hunter
   ramped 5.8→15 GPM through the run vs 9.1 base). Downstream pipe/head — INDEPENDENT of
