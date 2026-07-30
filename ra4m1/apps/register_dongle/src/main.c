@@ -52,11 +52,15 @@
 #include "mode.h"            // multi-mode foundation (VTOR reloc + mode table)
 #include "ra4m1_hal.h"       // HIL peripheral drivers
 #include "control.h"         // motor-control core (Tier1/PendSV/two-slot motor)
+#include "ra4m1_rs485.h"     // SCI2 RS-485 transport (ROLE_SLAVE)
 
 // Implemented in user_functions.c.
 extern void     register_dongle_load_commissioning(void);
 extern uint32_t g_pending_commission_instance_id;
 extern bool     shell_pending_push(const uint8_t* payload, uint8_t len);
+extern uint8_t  register_dongle_rs485_addr(void);
+extern uint16_t shell_dispatch_payload(const uint8_t* exec, uint16_t exec_len,
+                                       uint8_t* reply);
 extern void     workbench_analog_poll(void);   // ra4m1_commands.c — ADC sampler
 extern void     spectral_pump(void);            // spectral.c — mode-2 FFT pump
 extern void     goertzel_pump(void);            // goertzel.c — mode-4 block finalize
@@ -326,6 +330,127 @@ static void rx_drain_to_event_queue(s_expr_tree_instance_t* tree) {
     }
 }
 
+#if defined(ROLE_SLAVE)
+// ----------------------------------------------------------------------------
+// RS-485 slave, ISR-driven response (ported from the SAMD21 register_dongle).
+// The RXI handler assembles each frame addressed to us and dispatches it via
+// slave_rx_isr (IN ISR CONTEXT):
+//   * POLL -> if a command reply is armed, ship it on this window (frees BUSY);
+//             else NO_MESSAGE carrying a summary byte (always 0 — the RA4M1 has
+//             no interlock framework, unlike the SAMD21's two-buffer model).
+//   * DATA -> ACK + claim the one-in-flight slot (or NAK if already BUSY). The
+//             ACK frees the bus the instant it shifts out, so a slow command
+//             runs entirely off the bus.
+// The main loop (rs485_slave_poll) executes a claimed command through the SAME
+// shell layer used over USB (shell_dispatch_payload) and arms the reply, which
+// the ISR emits on the next poll. A BUSY-watchdog frees a slot whose command
+// overran exec_timeout+margin (wedged command, or a master that vanished).
+// ----------------------------------------------------------------------------
+#define RS485_SHELL_EXEC_HEADER_LEN 4u     // request_id u16 + command_id u16
+#define SLAVE_ABORT_MARGIN_MS       1000u  // BUSY-watchdog slack over exec_timeout
+
+static volatile uint8_t g_slave_summary;        // NO_MESSAGE summary byte (0 here)
+
+static volatile bool     g_slave_busy;          // claimed a command; held until reply ships
+static volatile bool     g_slave_work_fresh;    // a claimed command awaits main-loop execution
+static rs485_frame_t     g_slave_in;            // ISR -> main loop (the claimed command)
+static volatile bool     g_slave_reply_ready;   // main loop armed a reply; ISR emits on a poll
+static uint32_t          g_slave_claim_ms;      // when the in-flight command was picked up
+static uint16_t          g_slave_exec_to;       // its exec_timeout (0 = watchdog disabled)
+
+static uint8_t g_slave_reply[RS485_PAYLOAD_MAX]; // [OP_SHELL_REPLY:u16][req_id][status][result]
+static uint8_t g_slave_reply_len;
+
+// Locate the shell-exec body inside a bus DATA command + extract exec_timeout.
+// Returns the header length (offset to [req_id][cmd][args]), or 0 if not a command.
+static uint8_t slave_cmd_parse(const rs485_frame_t* f, uint16_t* exec_timeout_ms) {
+    if (f->len < 2u) return 0u;
+    uint16_t opcode = (uint16_t)f->payload[0] | ((uint16_t)f->payload[1] << 8);
+    if (opcode == OP_BUS_EXEC) {
+        if (f->len < (uint8_t)(4u + RS485_SHELL_EXEC_HEADER_LEN)) return 0u;
+        *exec_timeout_ms = (uint16_t)f->payload[2] | ((uint16_t)f->payload[3] << 8);
+        return 4u;   // opcode(2) + exec_timeout(2)
+    }
+    if (opcode == OP_SHELL_EXEC) {
+        if (f->len < (uint8_t)(2u + RS485_SHELL_EXEC_HEADER_LEN)) return 0u;
+        *exec_timeout_ms = 0u;
+        return 2u;   // opcode(2)
+    }
+    return 0u;
+}
+
+// ISR context.
+static void slave_rx_isr(const rs485_frame_t* f) {
+    uint8_t cls = (uint8_t)(f->type & RS485_FT_MASK);
+    if (cls == RS485_FT_POLL) {
+        if (g_slave_reply_ready) {
+            if (rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
+                                     RS485_FT_DATA, f->seq,
+                                     g_slave_reply, g_slave_reply_len)) {
+                g_slave_reply_ready = false;
+                g_slave_busy        = false;   // done; ready for the next command
+            }
+            // TX busy this round -> retry on the next poll (reply stays armed).
+        } else {
+            rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
+                                 RS485_FT_NO_MESSAGE, f->seq,
+                                 (const uint8_t*)&g_slave_summary, 1);
+        }
+    } else if (cls == RS485_FT_DATA) {
+        uint16_t to;
+        uint8_t hdr = slave_cmd_parse(f, &to);
+        if (hdr == 0u) return;                                 // not a recognised command
+        uint8_t rid[2] = { f->payload[hdr], f->payload[hdr + 1u] };
+        if (!g_slave_busy) {
+            g_slave_in         = *f;
+            g_slave_busy       = true;
+            g_slave_work_fresh = true;
+            rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
+                                 RS485_FT_ACK, f->seq, rid, 2);
+        } else {
+            rs485_tx_async_start(RS485_ADDR_MASTER, register_dongle_rs485_addr(),
+                                 RS485_FT_NAK, f->seq, rid, 2);
+        }
+    }
+}
+
+// Main loop: BUSY-watchdog, then execute a claimed command and arm its reply for
+// the ISR to ship on the next poll. Does NOT transmit (the ISR owns the wire).
+static void rs485_slave_poll(void) {
+    // BUSY-watchdog: a claimed command that overruns exec_timeout+margin (or whose
+    // reply never ships because the master vanished) frees the slot.
+    if (g_slave_busy && g_slave_exec_to > 0u &&
+        (uint32_t)(board_millis() - g_slave_claim_ms) >
+            (uint32_t)g_slave_exec_to + SLAVE_ABORT_MARGIN_MS) {
+        g_slave_busy        = false;
+        g_slave_work_fresh  = false;
+        g_slave_reply_ready = false;
+        g_slave_exec_to     = 0u;
+    }
+
+    if (!g_slave_work_fresh) return;
+    g_slave_work_fresh = false;
+    rs485_frame_t f = g_slave_in;      // stable while BUSY (ISR won't reclaim until reply ships)
+
+    uint16_t to;
+    uint8_t hdr = slave_cmd_parse(&f, &to);
+    if (hdr == 0u) { g_slave_busy = false; return; }   // malformed (ISR already filtered)
+    g_slave_claim_ms = board_millis();
+    g_slave_exec_to  = to;
+    const uint8_t* exec     = &f.payload[hdr];
+    uint16_t       exec_len = (uint16_t)(f.len - hdr);
+
+    uint8_t  reply_body[COMM_PAYLOAD_MAX];
+    uint16_t reply_len = shell_dispatch_payload(exec, exec_len, reply_body);
+    if (reply_len > (uint16_t)(RS485_PAYLOAD_MAX - 2u)) reply_len = RS485_PAYLOAD_MAX - 2u;
+    g_slave_reply[0] = (uint8_t)(OP_SHELL_REPLY & 0xFFu);
+    g_slave_reply[1] = (uint8_t)(OP_SHELL_REPLY >> 8);
+    for (uint16_t i = 0; i < reply_len; i++) g_slave_reply[2u + i] = reply_body[i];
+    g_slave_reply_len   = (uint8_t)(2u + reply_len);
+    g_slave_reply_ready = true;        // ISR ships it on the next poll
+}
+#endif  // ROLE_SLAVE
+
 // ----------------------------------------------------------------------------
 // Entry
 // ----------------------------------------------------------------------------
@@ -358,6 +483,16 @@ int main(void) {
     // L0: read commissioning blob from data flash before engine starts.
     // Factory-fresh dongles read nothing; defaults to UNCOMMISSIONED.
     register_dongle_load_commissioning();
+
+#if defined(ROLE_SLAVE)
+    // RS-485 slave transport. rs485_init installs ISR handlers into the relocated
+    // RAM vector table, so it must run after mode_init(). Address = low byte of
+    // the commissioned instance_id (0 if uncommissioned), so after commissioning
+    // is loaded. flags=0: no self-echo discard on bare-TTL / 4-wire xcvr.
+    rs485_init();
+    rs485_config(0, register_dongle_rs485_addr(), 0);
+    rs485_set_isr_dispatch(slave_rx_isr);   // answer POLLs straight from the RXI ISR
+#endif
 
     s_expr_allocator_t alloc = {
         .malloc      = bump_malloc,
@@ -411,6 +546,12 @@ int main(void) {
         // Tier-0 motor-control housekeeping (pseudo-interlock event delivery
         // lands here with MODE_SCURVE). No-op for IDLE / MANUAL.
         control_service();
+
+#if defined(ROLE_SLAVE)
+        // RS-485 slave: execute any claimed command off the bus and arm its
+        // reply for the RXI ISR to ship on the next poll. No-op when idle.
+        rs485_slave_poll();
+#endif
 
         // Host-reattach edge detection.
         if (tree != NULL) {

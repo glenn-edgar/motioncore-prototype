@@ -29,6 +29,7 @@
 #include "spectral.h"                 // mode 2: averaged power spectrum
 #include "goertzel.h"                 // mode 4: order-tracked Goertzel bank
 #include "control.h"                  // motor slot: control core (Tier1/PendSV)
+#include "ra4m1_rs485.h"              // RS-485 slave transport diagnostics
 #include "bsp/board_api.h"            // board_millis()
 
 // ---- RA4M1-specific command IDs (0x0110+: multi-mode control) --------------
@@ -83,6 +84,7 @@ extern uint32_t firmware_stack_hwm(void);
 #define CMD_DAC_SQUARE      ((uint16_t)0x015A)   // bench: DAC square wave (A0→A1 decimation test)
 #define CMD_STREAMS_READ    ((uint16_t)0x015B)   // read the 9 decimator taps
 #define CMD_ENCODER_STIM    ((uint16_t)0x015C)   // bench: Gray-code quadrature on D4/D5
+#define CMD_RS485_STATS     ((uint16_t)0x015D)   // bench: RS-485 SCI2 driver counters (slave bring-up)
 
 // ---- DAC waveform-generator state ------------------------------------------
 // Lives in the shared mode arena — only the workbench mode owns it. Written by
@@ -456,8 +458,13 @@ static uint8_t cmd_counter_setup(shell_reader_t* args, shell_writer_t* result)
         hal_encoder_setup();                        // D9/D10 -> GPT1 quadrature
         g_counter_backend = CTR_ENCODER;
     } else if (port == 3u && pin == 1u) {
+#if defined(ROLE_SLAVE)
+        // D7/P301 is SCI2 RXD2 in slave mode — the RS-485 bus owns the pin.
+        return SHELL_STATUS_BAD_ARGS;
+#else
         hal_counter_setup();                        // D7 -> GPT4 edge counter
         g_counter_backend = CTR_COUNTER;
+#endif
     } else {
         return SHELL_STATUS_BAD_ARGS;
     }
@@ -1153,6 +1160,29 @@ static uint8_t cmd_stack_hwm(shell_reader_t* args, shell_writer_t* result)
     return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
 }
 
+// CMD_RS485_STATS — bench diagnostic for the SCI2 slave bring-up. No args.
+// Result: rx_words u32, frames_ok u32, crc_fail u32, overrun u32, tx_frames u32,
+// last_tx_len u8. rx_words>0 proves the slave hears the BC; frames_ok>0 proves a
+// CRC-valid frame addressed to us assembled. All zero on a ROLE_DONGLE build.
+static uint8_t cmd_rs485_stats(shell_reader_t* args, shell_writer_t* result)
+{
+    if (sr_remaining(args) != 0) return SHELL_STATUS_BAD_ARGS;
+    // First 4 u32 = the contract dongle_console decodes (rx_words, frames_ok,
+    // crc_fail, overrun). Everything after is bring-up trace, parsed by hand.
+    sw_u32(result, rs485_rx_word_count());
+    sw_u32(result, rs485_frames_ok_count());
+    sw_u32(result, rs485_crc_fail_count());
+    sw_u32(result, rs485_rx_overrun_count());
+    // Bring-up trace: config readback (SMR, SCR, SEMR, BRR) + last 8 raw words.
+    uint8_t  regs[4];
+    uint16_t words[8];
+    rs485_dbg_regs(regs);
+    rs485_dbg_words(words);
+    for (uint32_t i = 0; i < 4u; i++) sw_u8(result, regs[i]);
+    for (uint32_t i = 0; i < 8u; i++) sw_u16(result, words[i]);
+    return result->overflow ? SHELL_STATUS_RESULT_TOO_BIG : SHELL_STATUS_OK;
+}
+
 // ---- chip-specific dispatch table ------------------------------------------
 
 static const shell_cmd_entry_t g_chip_commands[] = {
@@ -1203,6 +1233,7 @@ static const shell_cmd_entry_t g_chip_commands[] = {
     { CMD_DAC_SQUARE,         "dac_square",         cmd_dac_square         },
     { CMD_STREAMS_READ,       "streams_read",       cmd_streams_read       },
     { CMD_ENCODER_STIM,       "encoder_stim",       cmd_encoder_stim       },
+    { CMD_RS485_STATS,        "rs485_stats",        cmd_rs485_stats        },
 };
 
 const shell_cmd_entry_t* chip_commands_table(void)

@@ -18,6 +18,22 @@ CMSIS_DSP  := $(CURDIR)/vendor/cmsis_dsp
 
 include $(TINYUSB)/examples/build_system/make/make.mk
 
+# Build role: dongle (default — USB-CDC HIL dongle, full mode set)
+#             slave  (RS-485 slave responder on SCI2/D6/D7; USB stays up for
+#                     flash + commissioning). Role-specific paths gated by
+#                     ROLE_DONGLE / ROLE_SLAVE #ifdef in main.c + ra4m1_commands.c.
+# Same source tree. NOTE: switching ROLE requires a clean build
+# (`make BOARD=xiao_ra4m1 clean` first) — make dep-tracking does not see the
+# -DROLE_* change, same caveat as header changes (see ra4m1 bring-up notes).
+ROLE ?= dongle
+ifeq ($(ROLE),dongle)
+  CFLAGS += -DROLE_DONGLE=1
+else ifeq ($(ROLE),slave)
+  CFLAGS += -DROLE_SLAVE=1
+else
+  $(error ROLE must be one of: dongle, slave (got '$(ROLE)'))
+endif
+
 # FSP low-power flash driver — drives the data flash for commissioning storage.
 # TODO-verify (Pi): confirm these paths against the vendored FSP tree. The
 # inc/api + inc/instances dirs are usually already on the include path via the
@@ -50,6 +66,7 @@ SRC_C += \
   shell_commands.c \
   ra4m1_commands.c \
   ra4m1_hal.c \
+  ra4m1_rs485.c \
   control.c \
   mode.c \
   spectral.c \
