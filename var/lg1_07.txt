@@ -1,0 +1,1 @@
+LOADGEN inst=1: 465 ok, 0 err in 25.0s = 19 req/s, mean 53.8 ms, max 224 ms (payload 64B)
